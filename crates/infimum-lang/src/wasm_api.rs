@@ -6,12 +6,12 @@
 use crate::canon::{canonicalize_fn, CanonicalNode};
 use crate::diag::{InfimumDiagnostic, Span};
 use crate::light_verify::{verify_module_light, LightVerifyReport};
-use crate::parser::parse_module;
+use crate::parser::parse_module_from_virtual_fs;
 use crate::store::topo_sort_functions;
 use crate::strata_wasm::{compute_module_layout_end_word, emit_strata_wasm_bytes_with_layout_end};
 use crate::typecheck::typecheck_node;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Embedded `std/*.ifm` standard library so Online Infimum Code works out of the box with zero extra fetches.
 pub fn embedded_std_file(name: &str) -> Option<&'static str> {
@@ -62,98 +62,6 @@ pub fn list_embedded_std_files() -> &'static [&'static str] {
     ]
 }
 
-fn normalize_rel(base_dir: &str, rel: &str) -> String {
-    let raw = if base_dir.is_empty() || rel.starts_with("std/") {
-        rel.to_string()
-    } else {
-        format!("{base_dir}/{rel}")
-    };
-    let mut parts: Vec<&str> = Vec::new();
-    for seg in raw.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
-            s => parts.push(s),
-        }
-    }
-    parts.join("/")
-}
-
-fn parent_dir(path: &str) -> &str {
-    match path.rsplit_once('/') {
-        Some((dir, _)) => dir,
-        None => "",
-    }
-}
-
-fn expand_uses_in_memory(
-    cur_path: &str,
-    files: &BTreeMap<String, String>,
-    visited: &mut BTreeSet<String>,
-    out: &mut String,
-) -> Result<(), InfimumDiagnostic> {
-    let key = normalize_rel("", cur_path);
-    if !visited.insert(key.clone()) {
-        return Ok(());
-    }
-    let src = if let Some(s) = files.get(&key) {
-        s.as_str()
-    } else if let Some(s) = embedded_std_file(&key) {
-        s
-    } else if let Some(std_tail) = key.split("std/").nth(1).and_then(embedded_std_file) {
-        std_tail
-    } else {
-        return Err(InfimumDiagnostic::new(
-            "E010_IMPORT_NOT_FOUND",
-            "parser",
-            format!("Cannot resolve `use \"{cur_path}\"` in virtual project"),
-            Span::zero(),
-            "Check that the imported .ifm file exists in the project or std/",
-        ));
-    };
-
-    let base_dir = parent_dir(&key);
-    let mut body_lines = Vec::new();
-    for line in src.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("use \"") {
-            if let Some(end_q) = rest.find('"') {
-                let imp = &rest[..end_q];
-                let resolved = if imp.starts_with("std/") || imp.contains("/std/") {
-                    if let Some(tail) = imp.split("std/").nth(1) {
-                        format!("std/{tail}")
-                    } else {
-                        normalize_rel(base_dir, imp)
-                    }
-                } else {
-                    normalize_rel(base_dir, imp)
-                };
-                expand_uses_in_memory(&resolved, files, visited, out)?;
-                continue;
-            }
-        }
-        if let Some(rest) = trimmed.strip_prefix("mod ") {
-            if let Some((mname, after_from)) = rest.split_once(" from \"") {
-                if let Some(end_q) = after_from.find('"') {
-                    let mname = mname.trim();
-                    let imp = &after_from[..end_q];
-                    let resolved = normalize_rel(base_dir, imp);
-                    let mut mod_body = String::new();
-                    expand_uses_in_memory(&resolved, files, visited, &mut mod_body)?;
-                    out.push_str(&format!("mod {mname} {{\n{mod_body}\n}}\n"));
-                    continue;
-                }
-            }
-        }
-        body_lines.push(line);
-    }
-    out.push_str(&body_lines.join("\n"));
-    out.push('\n');
-    Ok(())
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InMemoryCompileResult {
     pub ok: bool,
@@ -169,11 +77,7 @@ pub fn compile_project_in_memory(
     entry_path: &str,
     files: &BTreeMap<String, String>,
 ) -> Result<(Vec<u8>, InMemoryCompileResult), InfimumDiagnostic> {
-    let mut combined = String::new();
-    let mut visited = BTreeSet::new();
-    expand_uses_in_memory(entry_path, files, &mut visited, &mut combined)?;
-
-    let module = parse_module(&combined)?;
+    let module = parse_module_from_virtual_fs(entry_path, files)?;
     let light_report: LightVerifyReport = verify_module_light(&module)?;
 
     let order = topo_sort_functions(&module.functions)?;
@@ -317,16 +221,7 @@ mod js_bindings {
                 return serde_json::json!({ "ok": false, "error": format!("Invalid files JSON: {e}") }).to_string();
             }
         };
-        let mut combined = String::new();
-        let mut visited = BTreeSet::new();
-        if let Err(diag) = expand_uses_in_memory(entry_path, &files, &mut visited, &mut combined) {
-            return serde_json::json!({
-                "ok": false,
-                "error": format!("error [{}] ({}:{}): {}\n  hint: {}", diag.code, diag.span.line, diag.span.col, diag.message, diag.repair_hint),
-            })
-            .to_string();
-        }
-        let module = match parse_module(&combined) {
+        let module = match parse_module_from_virtual_fs(entry_path, &files) {
             Ok(m) => m,
             Err(diag) => {
                 return serde_json::json!({
@@ -375,5 +270,26 @@ export fn add_clamped(a: i64, b: i64) -> i64
         assert!(bytes.starts_with(b"\0asm"), "Expected valid Wasm magic header");
         assert!(meta.ok);
         assert!(meta.exported_functions.contains(&"add_clamped".to_string()));
+    }
+
+    #[test]
+    fn duplicate_fn_reports_both_files_and_lines() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "main.ifm".to_string(),
+            "use \"std/math.ifm\";\nuse \"render.ifm\";\nexport fn entry() -> i64 { clamp_i64(5, 0, 10) }\n".to_string(),
+        );
+        files.insert(
+            "render.ifm".to_string(),
+            "\n\nfn clamp_i64(v: i64, lo: i64, hi: i64) -> i64 {\n  v\n}\n".to_string(),
+        );
+        let err = compile_project_in_memory("main.ifm", &files).unwrap_err();
+        assert_eq!(err.code, "E024_DUPLICATE_FN_NAME");
+        assert_eq!(err.span.line, 3);
+        assert!(
+            err.message.contains("std/math.ifm:") && err.message.contains("render.ifm:3"),
+            "Unexpected diagnostic message: {}",
+            err.message
+        );
     }
 }

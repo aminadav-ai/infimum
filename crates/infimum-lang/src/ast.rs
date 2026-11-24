@@ -235,6 +235,10 @@ pub struct FnDef {
     pub requires: Vec<Expr>,
     pub ensures: Vec<Expr>,
     pub body: Expr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<crate::diag::Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
