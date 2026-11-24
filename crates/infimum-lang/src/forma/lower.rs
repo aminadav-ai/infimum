@@ -1288,6 +1288,8 @@ pub fn lower_forma_def(forma: &FormaDef) -> FnDef {
     FnDef {
         name: forma.name.clone(),
         exported: forma.exported,
+        source_file: None,
+        span: None,
         params: forma.params.clone(),
         effects,
         ret_type: forma.ret_type.clone(),
@@ -1752,6 +1754,8 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
     let clamp_fn = FnDef {
         name: HELPER_CLAMP.to_string(),
         exported: false,
+        source_file: None,
+        span: None,
         params: vec![
             Param {
                 name: "v".to_string(),
@@ -1785,6 +1789,8 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
     let set_clip_fn = FnDef {
         name: HELPER_SET_CLIP.to_string(),
         exported: false,
+        source_file: None,
+        span: None,
         params: vec![
             Param {
                 name: "cid".to_string(),
@@ -1840,6 +1846,8 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
     let push_rect_fn = FnDef {
         name: HELPER_PUSH_RECT.to_string(),
         exported: false,
+        source_file: None,
+        span: None,
         params: vec![
             Param { name: "x".to_string(), ty: Type::I64 },
             Param { name: "y".to_string(), ty: Type::I64 },
@@ -1954,6 +1962,8 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
     let measure_text_fn = FnDef {
         name: HELPER_MEASURE_TEXT.to_string(),
         exported: false,
+        source_file: None,
+        span: None,
         params: vec![
             Param { name: "s".to_string(), ty: Type::Str },
             Param { name: "size".to_string(), ty: Type::I64 },
@@ -2131,6 +2141,8 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
     let draw_text_fn = FnDef {
         name: HELPER_DRAW_TEXT.to_string(),
         exported: false,
+        source_file: None,
+        span: None,
         params: vec![
             Param { name: "rx".to_string(), ty: Type::I64 },
             Param { name: "ry".to_string(), ty: Type::I64 },

@@ -161,6 +161,8 @@ where
         requires: canon_requires,
         ensures: canon_ensures,
         body: canon_body,
+        source_file: None,
+        span: None,
     };
 
     let canonical_source = format_canonical_fn(&canon_ast);

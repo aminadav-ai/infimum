@@ -949,13 +949,45 @@ fn collect_named_calls(expr: &Expr, self_name: &str, out: &mut BTreeSet<String>)
 pub(crate) fn topo_sort_functions(fns: &[FnDef]) -> Result<Vec<usize>, InfimumDiagnostic> {
     let mut name_to_idx: BTreeMap<String, usize> = BTreeMap::new();
     for (i, f) in fns.iter().enumerate() {
-        if name_to_idx.insert(f.name.clone(), i).is_some() {
+        if let Some(prev_idx) = name_to_idx.insert(f.name.clone(), i) {
+            let prev = &fns[prev_idx];
+            let fmt_loc = |def: &FnDef| -> Option<String> {
+                match (&def.source_file, def.span) {
+                    (Some(file), Some(sp)) if sp.line > 0 => Some(format!("{file}:{}", sp.line)),
+                    (Some(file), _) => Some(file.clone()),
+                    (None, Some(sp)) if sp.line > 0 => Some(format!("line {}", sp.line)),
+                    _ => None,
+                }
+            };
+            let msg = match (fmt_loc(prev), fmt_loc(f)) {
+                (Some(a), Some(b)) => format!(
+                    "Duplicate function '{}': defined in {} and {}",
+                    f.name, a, b
+                ),
+                (Some(a), None) => format!(
+                    "Duplicate function '{}': already defined in {}",
+                    f.name, a
+                ),
+                (None, Some(b)) => format!(
+                    "Duplicate function '{}': redefined in {}",
+                    f.name, b
+                ),
+                (None, None) => format!("Duplicate function name '{}' in the same module", f.name),
+            };
+            let span = f.span.unwrap_or_else(Span::zero);
+            let hint = if prev.source_file.as_deref().is_some_and(|s| s.starts_with("std/"))
+                || f.source_file.as_deref().is_some_and(|s| s.starts_with("std/"))
+            {
+                "Rename your local function or remove it to use the standard library version"
+            } else {
+                "Give each function a distinct name or move one into a separate `mod`"
+            };
             return Err(InfimumDiagnostic::new(
                 "E024_DUPLICATE_FN_NAME",
                 "resolve",
-                format!("Duplicate function name '{}' in the same module", f.name),
-                Span::zero(),
-                "Give each function in a batch a distinct alias or ingest versions separately",
+                msg,
+                span,
+                hint,
             ));
         }
     }

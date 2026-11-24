@@ -284,6 +284,8 @@ struct RawFnDef {
     requires: Vec<RawExpr>,
     ensures: Vec<RawExpr>,
     body: RawExpr,
+    source_file: Option<String>,
+    span: Span,
 }
 
 struct RawFile {
@@ -330,6 +332,46 @@ fn resolve_embedded_std(spec: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+fn tag_raw_items_source(items: &mut [RawItem], label: &str) {
+    for item in items {
+        if let RawItem::Mod(rm) = item {
+            for f in &mut rm.functions {
+                if f.source_file.is_none() {
+                    f.source_file = Some(label.to_string());
+                }
+            }
+            tag_raw_items_source(&mut rm.items, label);
+        }
+    }
+}
+
+fn tag_raw_file_source(raw: &mut RawFile, label: &str) {
+    for f in &mut raw.functions {
+        if f.source_file.is_none() {
+            f.source_file = Some(label.to_string());
+        }
+    }
+    tag_raw_items_source(&mut raw.items, label);
+}
+
+fn diag_with_file(diag: InfimumDiagnostic, file_label: &str) -> InfimumDiagnostic {
+    if diag.message.starts_with(file_label) {
+        diag
+    } else {
+        let mut d = InfimumDiagnostic::new(
+            diag.code.clone(),
+            diag.phase.clone(),
+            format!("{file_label}: {}", diag.message),
+            diag.span,
+            diag.repair_hint.clone(),
+        );
+        if !diag.counterexample.is_empty() {
+            d = d.with_counterexample(diag.counterexample.clone());
+        }
+        d
+    }
+}
+
 fn load_std_recursive(
     spec: &str,
     use_span: Span,
@@ -361,7 +403,9 @@ fn load_std_recursive(
     if visited.contains(&canon) {
         return Ok(());
     }
-    let raw = parse_raw_file(src)?;
+    let display_label = format!("std/{}", virtual_key.trim_start_matches("__std__/"));
+    let mut raw = parse_raw_file(src).map_err(|d| diag_with_file(d, &display_label))?;
+    tag_raw_file_source(&mut raw, &display_label);
     visiting.push(canon.clone());
     for u in &raw.uses {
         load_std_recursive(
@@ -434,9 +478,13 @@ pub fn parse_module_from_path(entry_path: &Path) -> Result<Module, InfimumDiagno
     let mut all_items: Vec<RawItem> = Vec::new();
     let mut all_formas: Vec<crate::forma::FormaDef<RawExpr>> = Vec::new();
     let mut all_fns: Vec<RawFnDef> = Vec::new();
+    let entry_dir = fs::canonicalize(entry_path)
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
 
     load_file_recursive(
         entry_path,
+        entry_dir.as_deref(),
         Span::zero(),
         &mut visiting,
         &mut visited,
@@ -448,8 +496,171 @@ pub fn parse_module_from_path(entry_path: &Path) -> Result<Module, InfimumDiagno
     resolve_and_lower(all_items, all_formas, all_fns)
 }
 
+fn normalize_virtual_rel(base_dir: &str, rel: &str) -> String {
+    let raw = if base_dir.is_empty() || rel.starts_with("std/") {
+        rel.to_string()
+    } else {
+        format!("{base_dir}/{rel}")
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in raw.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
+
+fn virtual_parent_dir(path: &str) -> &str {
+    match path.rsplit_once('/') {
+        Some((dir, _)) => dir,
+        None => "",
+    }
+}
+
+/// Load and parse a multi-file Infimum module from an in-memory virtual filesystem
+/// (used by Online Infimum Code / `wasm32`) while preserving per-file names and spans.
+pub fn parse_module_from_virtual_fs(
+    entry_path: &str,
+    files: &BTreeMap<String, String>,
+) -> Result<Module, InfimumDiagnostic> {
+    let mut visiting: Vec<PathBuf> = Vec::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut all_items: Vec<RawItem> = Vec::new();
+    let mut all_formas: Vec<crate::forma::FormaDef<RawExpr>> = Vec::new();
+    let mut all_fns: Vec<RawFnDef> = Vec::new();
+
+    load_virtual_recursive(
+        entry_path,
+        Span::zero(),
+        files,
+        &mut visiting,
+        &mut visited,
+        &mut all_items,
+        &mut all_formas,
+        &mut all_fns,
+    )?;
+
+    resolve_and_lower(all_items, all_formas, all_fns)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_virtual_recursive(
+    cur_path: &str,
+    use_span: Span,
+    files: &BTreeMap<String, String>,
+    visiting: &mut Vec<PathBuf>,
+    visited: &mut HashSet<PathBuf>,
+    all_items: &mut Vec<RawItem>,
+    all_formas: &mut Vec<crate::forma::FormaDef<RawExpr>>,
+    all_fns: &mut Vec<RawFnDef>,
+) -> Result<(), InfimumDiagnostic> {
+    if cur_path.starts_with("std/") {
+        return load_std_recursive(
+            cur_path, use_span, visiting, visited, all_items, all_formas, all_fns,
+        );
+    }
+    let key = normalize_virtual_rel("", cur_path);
+    if !files.contains_key(&key) {
+        if let Some(std_tail) = key.split("std/").nth(1) {
+            let spec = format!("std/{std_tail}");
+            if resolve_embedded_std(&spec).is_some() {
+                return load_std_recursive(
+                    &spec, use_span, visiting, visited, all_items, all_formas, all_fns,
+                );
+            }
+        }
+    }
+    let Some(src) = files.get(&key) else {
+        return Err(InfimumDiagnostic::new(
+            "E010_IMPORT_NOT_FOUND",
+            "parse",
+            format!("Cannot resolve `use \"{cur_path}\"` in virtual project"),
+            use_span,
+            "Check that the imported .ifm file exists in the project or std/",
+        ));
+    };
+
+    let canon = PathBuf::from(&key);
+    if let Some(cycle_start) = visiting.iter().position(|p| p == &canon) {
+        let mut chain: Vec<String> = visiting[cycle_start..]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        chain.push(key.clone());
+        return Err(InfimumDiagnostic::new(
+            "E019_IMPORT_CYCLE",
+            "parse",
+            format!("Circular 'use' import detected: {}", chain.join(" -> ")),
+            use_span,
+            "Break the import cycle by moving shared declarations into a common leaf .ifm file",
+        ));
+    }
+    if visited.contains(&canon) {
+        return Ok(());
+    }
+
+    let mut raw = parse_raw_file(src).map_err(|d| diag_with_file(d, &key))?;
+    tag_raw_file_source(&mut raw, &key);
+    let base_dir = virtual_parent_dir(&key);
+
+    visiting.push(canon.clone());
+    for u in &raw.uses {
+        if u.path.starts_with("std/") {
+            load_std_recursive(
+                &u.path, u.span, visiting, visited, all_items, all_formas, all_fns,
+            )?;
+        } else if let Some(std_tail) = u.path.split("/std/").nth(1) {
+            let spec = format!("std/{std_tail}");
+            load_std_recursive(
+                &spec, u.span, visiting, visited, all_items, all_formas, all_fns,
+            )?;
+        } else {
+            let dep_key = normalize_virtual_rel(base_dir, &u.path);
+            load_virtual_recursive(
+                &dep_key, u.span, files, visiting, visited, all_items, all_formas, all_fns,
+            )?;
+        }
+    }
+    for mf in &raw.mod_files {
+        let dep_key = normalize_virtual_rel(base_dir, &mf.path);
+        let mut mod_items = Vec::new();
+        let mut mod_formas = Vec::new();
+        let mut mod_fns = Vec::new();
+        load_virtual_recursive(
+            &dep_key,
+            mf.span,
+            files,
+            visiting,
+            visited,
+            &mut mod_items,
+            &mut mod_formas,
+            &mut mod_fns,
+        )?;
+        all_items.push(RawItem::Mod(RawMod {
+            name: mf.name.clone(),
+            items: mod_items,
+            formas: mod_formas,
+            functions: mod_fns,
+        }));
+    }
+    visiting.pop();
+    visited.insert(canon);
+
+    all_items.extend(raw.items);
+    all_formas.extend(raw.formas);
+    all_fns.extend(raw.functions);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn load_file_recursive(
     path: &Path,
+    entry_dir: Option<&Path>,
     use_span: Span,
     visiting: &mut Vec<PathBuf>,
     visited: &mut HashSet<PathBuf>,
@@ -496,7 +707,14 @@ fn load_file_recursive(
         )
     })?;
 
-    let raw = parse_raw_file(&src)?;
+    let display_label = entry_dir
+        .and_then(|d| canon.strip_prefix(d).ok())
+        .map(|p| p.display().to_string())
+        .or_else(|| path.file_name().map(|f| f.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| canon.display().to_string());
+
+    let mut raw = parse_raw_file(&src).map_err(|d| diag_with_file(d, &display_label))?;
+    tag_raw_file_source(&mut raw, &display_label);
     let base_dir = canon.parent().unwrap_or_else(|| Path::new("."));
 
     visiting.push(canon.clone());
@@ -515,6 +733,7 @@ fn load_file_recursive(
             let dep_path = base_dir.join(&u.path);
             load_file_recursive(
                 &dep_path,
+                entry_dir,
                 u.span,
                 visiting,
                 visited,
@@ -531,6 +750,7 @@ fn load_file_recursive(
         let mut mod_fns = Vec::new();
         load_file_recursive(
             &dep_path,
+            entry_dir,
             mf.span,
             visiting,
             visited,
@@ -1008,7 +1228,7 @@ impl Parser {
             &TokenKind::Fn,
             "Start each Infimum node definition with 'fn <name>(...) -> <type> { ... }' or 'export fn ...'",
         )?;
-        let (name, _) = self.expect_ident("Provide a function alias name after 'fn'")?;
+        let (name, name_span) = self.expect_ident("Provide a function alias name after 'fn'")?;
         self.expect(&TokenKind::LParen, "Expected '(' to start parameter list")?;
 
         let mut params = Vec::new();
@@ -1122,6 +1342,8 @@ impl Parser {
             requires,
             ensures,
             body,
+            source_file: None,
+            span: name_span,
         })
     }
 
@@ -1173,6 +1395,8 @@ impl Parser {
             requires: vec![],
             ensures: vec![],
             body,
+            source_file: None,
+            span,
         })
     }
 
@@ -3552,6 +3776,8 @@ impl ModuleResolver {
             requires,
             ensures,
             body,
+            source_file: raw.source_file,
+            span: Some(raw.span),
         })
     }
 
@@ -5540,6 +5766,8 @@ fn resolve_and_lower(
                 requires: vec![],
                 ensures: vec![],
                 body: Expr::IntLit(1),
+                source_file: None,
+                span: None,
             });
         }
         if !existing.contains("get_cmd_byte_offset") {
@@ -5556,6 +5784,8 @@ fn resolve_and_lower(
                     rhs: Box::new(Expr::IntLit(262144)),
                 }],
                 body: Expr::IntLit(262144),
+                source_file: None,
+                span: None,
             });
         }
         if !existing.contains("get_clips_byte_offset") {
@@ -5572,6 +5802,8 @@ fn resolve_and_lower(
                     rhs: Box::new(Expr::IntLit(256)),
                 }],
                 body: Expr::IntLit(256),
+                source_file: None,
+                span: None,
             });
         }
         if !existing.contains("get_font_metrics_byte_offset") {
@@ -5588,6 +5820,8 @@ fn resolve_and_lower(
                     rhs: Box::new(Expr::IntLit(1024)),
                 }],
                 body: Expr::IntLit(1024),
+                source_file: None,
+                span: None,
             });
         }
         if !existing.contains("get_input_byte_offset") {
@@ -5604,6 +5838,8 @@ fn resolve_and_lower(
                     rhs: Box::new(Expr::IntLit(768)),
                 }],
                 body: Expr::IntLit(768),
+                source_file: None,
+                span: None,
             });
         }
         if !existing.contains("get_mesh3d_byte_offset") {
@@ -5622,6 +5858,8 @@ fn resolve_and_lower(
                         rhs: Box::new(Expr::IntLit(byte_off)),
                     }],
                     body: Expr::IntLit(byte_off),
+                    source_file: None,
+                    span: None,
                 });
             }
         }
@@ -5639,6 +5877,8 @@ fn resolve_and_lower(
                     inv: None,
                     fixed_ty: false,
                 },
+                source_file: None,
+                span: None,
             });
         }
         if !existing.contains("get_cursor_kind") {
@@ -5655,6 +5895,8 @@ fn resolve_and_lower(
                     inv: None,
                     fixed_ty: false,
                 },
+                source_file: None,
+                span: None,
             });
         }
     }
