@@ -6,9 +6,9 @@ use crate::studio_abi::*;
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
@@ -156,6 +156,26 @@ pub(super) fn calc_cost_milli_ils_via_infimum(
     )
     .unwrap_or(0)
     .max(0) as i64
+}
+
+/// Format a single `curl --config -` header directive, rejecting control chars (`\r`, `\n`, `\0`)
+/// and escaping `\` and `"` so API keys never touch `/tmp`, argv, or inject extra curl directives.
+pub(super) fn format_curl_header_line(name: &str, value: &str) -> Result<String, String> {
+    if value.bytes().any(|b| matches!(b, b'\r' | b'\n' | b'\0')) {
+        return Err(format!("Недопустимый управляющий символ в заголовке '{name}'."));
+    }
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!("header = \"{name}: {escaped}\"\n"))
+}
+
+fn write_private_temp_file(path: &Path, content: &str) {
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    if let Ok(mut f) = opts.open(path) {
+        let _ = f.write_all(content.as_bytes());
+    }
 }
 
 pub(super) fn openai_provider_base_url(provider: &str) -> &'static str {
@@ -618,18 +638,26 @@ where
 
         let pid_self = std::process::id();
         let req_path = PathBuf::from(format!("/tmp/infimum_web_oai_req_{pid_self}.json"));
-        let hdr_path = PathBuf::from(format!("/tmp/infimum_web_oai_hdr_{pid_self}.cfg"));
-        let _ = fs::write(&req_path, body.to_string());
-        let mut hdrs = format!(
-            "header = \"Content-Type: application/json\"\nheader = \"Authorization: Bearer {api_key}\"\n"
-        );
+        write_private_temp_file(&req_path, &body.to_string());
+        let mut hdrs = String::from("header = \"Content-Type: application/json\"\n");
+        let auth_line = match format_curl_header_line("Authorization", &format!("Bearer {api_key}")) {
+            Ok(line) => line,
+            Err(e) => {
+                let _ = fs::remove_file(&req_path);
+                return AgentResult {
+                    reply: e,
+                    elapsed_tenths: 1,
+                    cost_milli_ils: 0,
+                    total_tokens: 0,
+                    timeline: Some(timeline_finalize(1)),
+                };
+            }
+        };
+        hdrs.push_str(&auth_line);
         if provider == "openrouter" {
             hdrs.push_str("header = \"HTTP-Referer: https://infimum-lang.org\"\n");
             hdrs.push_str("header = \"X-Title: Infimum Code\"\n");
         }
-        let _ = fs::write(&hdr_path, hdrs);
-        #[cfg(unix)]
-        let _ = fs::set_permissions(&hdr_path, fs::Permissions::from_mode(0o600));
 
         let mut parsed_resp: Option<Value> = None;
         let mut last_err_msg = String::new();
@@ -655,19 +683,23 @@ where
                     "20",
                     "--max-time",
                     "240",
-                    "-K",
-                    &hdr_path.display().to_string(),
+                    "--config",
+                    "-",
                     "-d",
                     &format!("@{}", req_path.display()),
                     &url,
                 ])
+                .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn();
 
             let curl_out = match spawn_res {
-                Ok(child) => {
+                Ok(mut child) => {
                     ASYNC_GEMINI_PID.store(child.id(), Ordering::SeqCst);
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(hdrs.as_bytes());
+                    }
                     let out = child.wait_with_output();
                     ASYNC_GEMINI_PID.store(0, Ordering::SeqCst);
                     out
@@ -701,7 +733,6 @@ where
             }
         }
         let _ = fs::remove_file(&req_path);
-        let _ = fs::remove_file(&hdr_path);
 
         if ASYNC_CANCELLED.load(Ordering::SeqCst) {
             break;
@@ -1289,12 +1320,19 @@ where
 
     let pid = std::process::id();
     let req_path = PathBuf::from(format!("/tmp/infimum_web_agent_{pid}.json"));
-    let hdr_path = PathBuf::from(format!("/tmp/infimum_web_agent_{pid}.cfg"));
-    let _ = fs::write(
-        &hdr_path,
-        format!("header = \"Content-Type: application/json\"\nheader = \"x-goog-api-key: {api_key}\"\n"),
-    );
-    let _ = fs::set_permissions(&hdr_path, fs::Permissions::from_mode(0o600));
+    let mut hdr_cfg = String::from("header = \"Content-Type: application/json\"\n");
+    match format_curl_header_line("x-goog-api-key", api_key) {
+        Ok(line) => hdr_cfg.push_str(&line),
+        Err(e) => {
+            return AgentResult {
+                reply: e,
+                elapsed_tenths: 1,
+                cost_milli_ils: 0,
+                total_tokens: 0,
+                timeline: Some(timeline_finalize(1)),
+            };
+        }
+    }
     let url = format!("https://{GEMINI_HOST}/v1beta/models/{model}:streamGenerateContent?alt=sse");
 
     let mut include_thoughts = true;
@@ -1349,11 +1387,11 @@ where
             b
         };
 
-        let _ = fs::write(&req_path, build_req_body(include_thoughts).to_string());
+        write_private_temp_file(&req_path, &build_req_body(include_thoughts).to_string());
 
         let mut turn_res = call_gemini_sse_with_retry(
             &url,
-            &hdr_path,
+            &hdr_cfg,
             &req_path,
             model,
             step + 1,
@@ -1367,10 +1405,10 @@ where
                 let low = e.to_lowercase();
                 if low.contains("thinkingconfig") || low.contains("includethoughts") || low.contains("thinking") {
                     include_thoughts = false;
-                    let _ = fs::write(&req_path, build_req_body(false).to_string());
+                    write_private_temp_file(&req_path, &build_req_body(false).to_string());
                     turn_res = call_gemini_sse_with_retry(
                         &url,
-                        &hdr_path,
+                        &hdr_cfg,
                         &req_path,
                         model,
                         step + 1,
@@ -1500,7 +1538,6 @@ where
     }
 
     let _ = fs::remove_file(&req_path);
-    let _ = fs::remove_file(&hdr_path);
 
     let recent_log = || -> String {
         if action_log.is_empty() {
@@ -1916,7 +1953,7 @@ pub(super) fn is_transient_api_error(msg: &str) -> bool {
 
 pub(super) fn call_gemini_sse_with_retry<F>(
     url: &str,
-    hdr_path: &Path,
+    hdr_cfg: &str,
     req_path: &Path,
     model: &str,
     step_num: usize,
@@ -1931,7 +1968,7 @@ where
         if ASYNC_CANCELLED.load(Ordering::SeqCst) {
             return Err("Отменено пользователем.".to_string());
         }
-        match call_gemini_sse_once(url, hdr_path, req_path, model, step_num, max_steps, set_status) {
+        match call_gemini_sse_once(url, hdr_cfg, req_path, model, step_num, max_steps, set_status) {
             Ok(turn) => return Ok(turn),
             Err((msg, retryable)) => {
                 if !retryable || attempt + 1 >= MAX_ATTEMPTS || ASYNC_CANCELLED.load(Ordering::SeqCst) {
@@ -1954,7 +1991,7 @@ where
 
 pub(super) fn call_gemini_sse_once<F>(
     url: &str,
-    hdr_path: &Path,
+    hdr_cfg: &str,
     req_path: &Path,
     model: &str,
     step_num: usize,
@@ -1980,18 +2017,22 @@ where
             "900",
             "-H",
             "Expect:",
-            "-K",
-            &hdr_path.display().to_string(),
+            "--config",
+            "-",
             "--data-binary",
             &format!("@{}", req_path.display()),
             url,
         ])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| (format!("Не удалось запустить curl для Gemini API: {e}"), false))?;
 
     ASYNC_GEMINI_PID.store(child.id(), Ordering::SeqCst);
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(hdr_cfg.as_bytes());
+    }
 
     let stderr_handle = child.stderr.take().map(|mut err_pipe| {
         std::thread::spawn(move || {
