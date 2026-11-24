@@ -26,18 +26,19 @@
 ## Quick Start
 
 ```bash
-cargo build --release
+# From the monorepo root:
+cargo build --release --workspace
 
-# Launch any .ifw capsule (e.g. examples from infimum-code)
-./target/release/infimum-web ../infimum-lang/examples/showcase/color-lines/color_lines.ifw
-./target/release/infimum-web ../infimum-lang/examples/showcase/lion-herd/lion_herd.ifw
-./target/release/infimum-web ../infimum-lang/examples/showcase/slipgate/slipgate.ifw
+# Launch any .ifw showcase capsule
+./target/release/infimum-web crates/infimum-lang/examples/showcase/color-lines/color_lines.ifw
+./target/release/infimum-web crates/infimum-lang/examples/showcase/lion-herd/lion_herd.ifw
+./target/release/infimum-web crates/infimum-lang/examples/showcase/slipgate/slipgate.ifw
 ```
 
 Headless passport + frame smoke check (no display required):
 
 ```bash
-./target/release/infimum-web --headless-check ../infimum-lang/examples/showcase/color-lines/color_lines.ifw
+./target/release/infimum-web --headless-check crates/infimum-lang/examples/showcase/color-lines/color_lines.ifw
 ```
 
 ## License
