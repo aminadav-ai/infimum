@@ -1209,7 +1209,15 @@ pub(super) fn studio_root_candidates() -> Vec<PathBuf> {
         }
     }
     if let Ok(exe) = env::current_exe() {
-        // daemon/target/{release,debug}/infimum-agentd -> infimum-code/
+        // Monorepo workspace: <monorepo>/target/{release,debug}/infimum-agentd -> <monorepo>/apps/infimum-code
+        if let Some(r) = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+        {
+            roots.push(r.join("apps/infimum-code"));
+        }
+        // Standalone daemon: infimum-code/daemon/target/{release,debug}/infimum-agentd -> infimum-code/
         if let Some(r) = exe
             .parent()
             .and_then(|p| p.parent())
@@ -1218,7 +1226,7 @@ pub(super) fn studio_root_candidates() -> Vec<PathBuf> {
         {
             roots.push(r.to_path_buf());
         }
-        // <prefix>/bin/infimum-agentd -> <prefix>/
+        // Installed layout: <prefix>/bin/infimum-agentd -> <prefix>/
         if let Some(r) = exe.parent().and_then(|p| p.parent()) {
             roots.push(r.to_path_buf());
         }
