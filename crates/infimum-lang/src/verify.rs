@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v2";
+pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v3";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationReport {
@@ -1146,13 +1146,26 @@ pub fn sha256_hex(data: &[u8]) -> String {
 }
 
 /// Digest of a callee's verification contract (`params`, `ret_type`, `effects`, `requires`, `ensures`).
+///
+/// Soundness: when a callee is pure (`effects.is_empty()`) and has no explicit `ens`
+/// (`ensures.is_empty()`), the verifier inlines its body into callers (`Expr::Call`),
+/// so its content-addressed `callee.hash` (which transitively covers its body and any
+/// nested pure helpers) MUST be included in the digest. Otherwise, editing the helper's
+/// body would produce a stale cache hit and accept an unsound caller.
 pub fn callee_contract_digest(callee: &CanonicalNode) -> String {
+    let inlined_body_hash: Option<&str> =
+        if callee.ast.ensures.is_empty() && callee.ast.effects.is_empty() {
+            Some(callee.hash.as_str())
+        } else {
+            None
+        };
     let payload = serde_json::to_string(&(
         &callee.ast.params,
         &callee.ast.ret_type,
         &callee.ast.effects,
         &callee.ast.requires,
         &callee.ast.ensures,
+        inlined_body_hash,
     ))
     .unwrap_or_default();
     sha256_hex(payload.as_bytes())

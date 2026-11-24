@@ -210,3 +210,50 @@ fn test_proof_cache_never_caches_failures_and_cli_no_cache_flag() {
 
     let _ = fs::remove_dir_all(&ws);
 }
+
+#[test]
+fn pure_helper_without_ens_body_change_invalidates_caller_proof_cache() {
+    let ws = temp_workspace("pure_helper_inlined_body_soundness");
+    let store = GraphStore::open(&ws).expect("open store");
+
+    // 1. Sound version: pure helper without `ens` is inlined into `caller`
+    let good_src = r#"
+        fn helper(x: i64) -> i64 {
+            x + 1
+        }
+        fn caller(x: i64) -> i64
+          ens result > x
+        {
+            helper(x)
+        }
+    "#;
+    let good_mod = parse_module(good_src).unwrap();
+    let rep1 = store.verify_module(&good_mod).expect("good version should verify");
+    let caller1 = rep1.iter().find(|r| r.alias == "caller").unwrap();
+    assert!(!caller1.cached, "first run must invoke Z3");
+
+    // 2. Unchanged re-verify must hit cache
+    let rep2 = store.verify_module(&good_mod).expect("warm verify should succeed");
+    let caller2 = rep2.iter().find(|r| r.alias == "caller").unwrap();
+    assert!(caller2.cached, "unchanged pure helper + caller must hit cache");
+
+    // 3. Mutate pure helper body from `x + 1` to `x - 1` (no `ens`, same signature!)
+    // Soundness: caller's proof key MUST change so Z3 rejects the broken caller instead of returning a stale cache hit!
+    let bad_src = r#"
+        fn helper(x: i64) -> i64 {
+            x - 1
+        }
+        fn caller(x: i64) -> i64
+          ens result > x
+        {
+            helper(x)
+        }
+    "#;
+    let bad_mod = parse_module(bad_src).unwrap();
+    let err = store
+        .verify_module(&bad_mod)
+        .expect_err("mutating inlined pure helper body must invalidate caller cache and fail Z3");
+    assert_eq!(err.code, "E050_CONTRACT_VIOLATION");
+
+    let _ = fs::remove_dir_all(&ws);
+}
