@@ -637,18 +637,34 @@ fn extract_mesh3d_scene(mem: &[u8], mesh3d_byte_offset: Option<usize>) -> Option
 }
 
 #[cfg(test)]
+#[path = "../../../apps/infimum-code/daemon/src/studio_abi.rs"]
+mod studio_abi;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
 
+    fn studio_capsule_path() -> &'static Path {
+        Path::new("../../apps/infimum-code/capsule/infimum_code.ifw")
+    }
+
+    fn studio_test_policy() -> CapabilityPolicy {
+        let mut policy = CapabilityPolicy::default();
+        policy.allow_clipboard = true;
+        policy.allowed_net_domains.insert("127.0.0.1".to_string());
+        policy
+            .allowed_net_domains
+            .insert("infimum-lang.org".to_string());
+        policy
+    }
+
     #[test]
     fn boots_and_steps_studio_core_capsule_if_present() {
-        let p = Path::new("../infimum-code/web/studio_core.wasm");
-        if !p.exists() {
-            return;
-        }
+        let p = studio_capsule_path();
+        assert!(p.exists(), "Expected precompiled Infimum Code capsule at {}", p.display());
         let bytes = std::fs::read(p).unwrap();
-        let mut rt = CapsuleRuntime::load(&bytes, CapabilityPolicy::default(), 1280, 720).unwrap();
+        let mut rt = CapsuleRuntime::load(&bytes, studio_test_policy(), 1280, 720).unwrap();
         assert!(!rt.legacy_ascii_glyphs);
         let frame = rt
             .step_frame(FrameInput {
@@ -665,18 +681,11 @@ mod tests {
 
     #[test]
     fn studio_capsule_selects_and_copies_chat_message_substring() {
-        let p = Path::new("capsules/studio/infimum_code.ifw");
-        if !p.exists() {
-            return;
-        }
+        let p = studio_capsule_path();
+        assert!(p.exists(), "Expected precompiled Infimum Code capsule at {}", p.display());
         let bytes = std::fs::read(p).unwrap();
-        let mut policy = CapabilityPolicy::default();
-        policy.allowed_fs_roots.push(std::env::temp_dir());
-        policy
-            .allowed_net_domains
-            .insert("generativelanguage.googleapis.com".to_string());
-        let mut rt = CapsuleRuntime::load(&bytes, policy, 1280, 720).unwrap();
-        assert_eq!(rt.copy_mailbox_word, 2_052_000);
+        let mut rt = CapsuleRuntime::load(&bytes, studio_test_policy(), 1280, 720).unwrap();
+        assert_eq!(rt.copy_mailbox_word, studio_abi::STUDIO_MEM_COPY_MAILBOX_WORD);
         assert_eq!(rt.copy_max_chars, LARGE_COPY_MAX_CHARS);
 
         // Scan vertically to locate the welcome assistant reply text (cursor_kind == 2 = I-beam)
@@ -745,15 +754,10 @@ mod tests {
 
     #[test]
     fn studio_capsule_composer_scroll_image_and_chevron() {
-        let p = Path::new("capsules/studio/infimum_code.ifw");
-        if !p.exists() {
-            return;
-        }
+        let p = studio_capsule_path();
+        assert!(p.exists(), "Expected precompiled Infimum Code capsule at {}", p.display());
         let bytes = std::fs::read(p).unwrap();
-        let mut policy = CapabilityPolicy::default();
-        policy.allowed_fs_roots.push(std::env::temp_dir());
-        policy.allowed_net_domains.insert("generativelanguage.googleapis.com".to_string());
-        let mut rt = CapsuleRuntime::load(&bytes, policy, 1280, 720).unwrap();
+        let mut rt = CapsuleRuntime::load(&bytes, studio_test_policy(), 1280, 720).unwrap();
 
         // 1. Paste a large 30-line (>3000 char) text into composer
         let big_text: String = (1..=30)
@@ -776,9 +780,9 @@ mod tests {
             let mem = rt.memory.data(&rt.store);
             i32::from_le_bytes(mem[word * 4..word * 4 + 4].try_into().unwrap())
         };
-        let input_len = read_w(&rt, 500);
+        let input_len = read_w(&rt, studio_abi::STUDIO_MEM_INPUT_BUF_WORD);
         assert!(input_len > 2500, "Expected >2500 pasted chars, got {input_len}");
-        let scroll_bottom = read_w(&rt, 47);
+        let scroll_bottom = read_w(&rt, studio_abi::STUDIO_MEM_IN_SCROLL_Y_WORD);
         assert!(scroll_bottom > 100, "Expected composer to auto-scroll to bottom, got {scroll_bottom}");
 
         // Scroll UP inside composer using mouse wheel
@@ -791,7 +795,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let scroll_after_up = read_w(&rt, 47);
+        let scroll_after_up = read_w(&rt, studio_abi::STUDIO_MEM_IN_SCROLL_Y_WORD);
         assert!(
             scroll_after_up < scroll_bottom,
             "Expected wheel up inside composer to decrease scroll_y ({scroll_after_up} < {scroll_bottom})"
@@ -828,15 +832,10 @@ mod tests {
 
     #[test]
     fn studio_capsule_renders_markdown_table_grid_and_selection() {
-        let p = Path::new("capsules/studio/infimum_code.ifw");
-        if !p.exists() {
-            return;
-        }
+        let p = studio_capsule_path();
+        assert!(p.exists(), "Expected precompiled Infimum Code capsule at {}", p.display());
         let bytes = std::fs::read(p).unwrap();
-        let mut policy = CapabilityPolicy::default();
-        policy.allowed_fs_roots.push(std::env::temp_dir());
-        policy.allowed_net_domains.insert("generativelanguage.googleapis.com".to_string());
-        let mut rt = CapsuleRuntime::load(&bytes, policy, 1280, 720).unwrap();
+        let mut rt = CapsuleRuntime::load(&bytes, studio_test_policy(), 1280, 720).unwrap();
 
         let table_md = "Ключевые моменты:\n\n\
             | Под-язык | Назначение |\n\
@@ -848,7 +847,7 @@ mod tests {
         // Overwrite message 0 (assistant welcome message) in msg_pool and invalidate cached height
         {
             let mem = rt.memory.data_mut(&mut rt.store);
-            let meta0 = 750_000usize * 4;
+            let meta0 = studio_abi::STUDIO_MEM_MSG_META_WORD * 4;
             let text_ptr = i32::from_le_bytes(mem[meta0 + 16..meta0 + 20].try_into().unwrap()) as usize;
             let chars: Vec<u32> = table_md.chars().map(|c| c as u32).collect();
             let base = text_ptr * 4;
