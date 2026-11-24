@@ -1,11 +1,11 @@
-//! In-memory multi-file Infimum compiler & lightweight verifier API for `wasm32` (Online Infimum Code).
+//! In-memory multi-file Infimum compiler & Z3 SMT verifier API for `wasm32` (Online Infimum Code).
 //!
 //! Compiles `.ifm` projects (including `use "std/..."` and relative `use "..."` imports) directly
-//! to `.ifw` WebAssembly bytes in memory without Z3 or filesystem access.
+//! to `.ifw` WebAssembly bytes in memory with mandatory Z3 SMT verification (fail-closed: no
+//! compilation or verification is permitted without Z3).
 
 use crate::canon::{canonicalize_fn, CanonicalNode};
 use crate::diag::{InfimumDiagnostic, Span};
-use crate::light_verify::{verify_module_light, LightVerifyReport};
 use crate::parser::parse_module_from_virtual_fs;
 use crate::store::topo_sort_functions;
 use crate::strata_wasm::{compute_module_layout_end_word, emit_strata_wasm_bytes_with_layout_end};
@@ -73,32 +73,31 @@ pub struct InMemoryCompileResult {
     pub error: Option<String>,
 }
 
-/// Parse, typecheck, light-verify, and compile an in-memory `.ifm` project directly to `.ifw` bytes.
+/// Parse, typecheck, verify with native `z3`, embed a real `SecurityPassport`, and compile
+/// an in-memory `.ifm` project directly to `.ifw` bytes (native only; requires `z3` on PATH or `Z3_BIN`).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn compile_project_in_memory(
     entry_path: &str,
     files: &BTreeMap<String, String>,
 ) -> Result<(Vec<u8>, InMemoryCompileResult), InfimumDiagnostic> {
-    compile_project_in_memory_with_z3::<fn(&str) -> Result<String, InfimumDiagnostic>>(
-        entry_path, files, None,
-    )
+    let z3 = std::path::PathBuf::from(
+        std::env::var("Z3_BIN").unwrap_or_else(|_| "z3".to_string()),
+    );
+    let mut runner = |script: &str| crate::verify::run_z3(&z3, script);
+    compile_project_in_memory_with_z3(entry_path, files, &mut runner)
 }
 
-/// Parse, typecheck, verify (using full Z3 SMT when `z3_runner` is `Some`, or `light_verify` when `None`),
+/// Parse, typecheck, verify with mandatory Z3 SMT (`z3_runner`),
 /// embed a real `SecurityPassport`, and compile an in-memory `.ifm` project directly to `.ifw` bytes.
 pub fn compile_project_in_memory_with_z3<R>(
     entry_path: &str,
     files: &BTreeMap<String, String>,
-    mut z3_runner: Option<&mut R>,
+    z3_runner: &mut R,
 ) -> Result<(Vec<u8>, InMemoryCompileResult), InfimumDiagnostic>
 where
     R: FnMut(&str) -> Result<String, InfimumDiagnostic>,
 {
     let module = parse_module_from_virtual_fs(entry_path, files)?;
-    let light_report: Option<LightVerifyReport> = if z3_runner.is_none() {
-        Some(verify_module_light(&module)?)
-    } else {
-        None
-    };
 
     let order = topo_sort_functions(&module.functions)?;
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
@@ -150,10 +149,8 @@ where
             })
         };
         node.direct_secret_sinks = typecheck_node(&raw_fn.name, &node, &loader)?;
-        if let Some(runner) = z3_runner.as_deref_mut() {
-            let vrep = crate::verify::verify_node_with_runner(raw_fn, &node, &loader, runner)?;
-            z3_proven += vrep.obligations_checked;
-        }
+        let vrep = crate::verify::verify_node_with_runner(raw_fn, &node, &loader, z3_runner)?;
+        z3_proven += vrep.obligations_checked;
         aliases.insert(raw_fn.name.clone(), node.hash.clone());
         nodes_by_hash.insert(node.hash.clone(), node.clone());
         ordered_nodes.push(node);
@@ -202,17 +199,13 @@ where
         &passport_bytes,
         layout_end_word,
     )?;
-    let (proven, inconclusive, verifier) = match light_report {
-        Some(lr) => (lr.proven, lr.inconclusive, "light".to_string()),
-        None => (z3_proven, Vec::new(), "z3".to_string()),
-    };
     let meta = InMemoryCompileResult {
         ok: true,
         exported_functions: export_pairs.into_iter().map(|(n, _)| n).collect(),
         compiled_nodes: ordered_nodes.len(),
-        proven,
-        inconclusive,
-        verifier,
+        proven: z3_proven,
+        inconclusive: Vec::new(),
+        verifier: "z3".to_string(),
         error: None,
     };
     Ok((wasm_bytes, meta))
@@ -274,7 +267,7 @@ mod js_bindings {
             }
         };
         let mut runner = make_js_z3_runner(z3_eval);
-        match compile_project_in_memory_with_z3(entry_path, &files, Some(&mut runner)) {
+        match compile_project_in_memory_with_z3(entry_path, &files, &mut runner) {
             Ok((_, meta)) => {
                 serde_json::to_string(&meta).unwrap_or_else(|_| r#"{"ok":true}"#.to_string())
             }
@@ -296,42 +289,9 @@ mod js_bindings {
         let files: BTreeMap<String, String> = serde_json::from_str(files_json)
             .map_err(|e| JsValue::from_str(&format!("Invalid files JSON: {e}")))?;
         let mut runner = make_js_z3_runner(z3_eval);
-        match compile_project_in_memory_with_z3(entry_path, &files, Some(&mut runner)) {
+        match compile_project_in_memory_with_z3(entry_path, &files, &mut runner) {
             Ok((bytes, _)) => Ok(js_sys::Uint8Array::from(bytes.as_slice())),
             Err(diag) => Err(JsValue::from_str(&format!("error {diag}"))),
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn infimum_verify_project_json(entry_path: &str, files_json: &str) -> String {
-        console_error_panic_hook::set_once();
-        let files: BTreeMap<String, String> = match serde_json::from_str(files_json) {
-            Ok(f) => f,
-            Err(e) => {
-                return serde_json::json!({ "ok": false, "error": format!("Invalid files JSON: {e}") }).to_string();
-            }
-        };
-        match compile_project_in_memory(entry_path, &files) {
-            Ok((_, meta)) => serde_json::to_string(&meta).unwrap_or_else(|_| r#"{"ok":true}"#.to_string()),
-            Err(diag) => serde_json::json!({
-                "ok": false,
-                "error": format!("error [{}] ({}:{}): {}\n  hint: {}", diag.code, diag.span.line, diag.span.col, diag.message, diag.repair_hint),
-            })
-            .to_string(),
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn infimum_compile_project(entry_path: &str, files_json: &str) -> Result<js_sys::Uint8Array, JsValue> {
-        console_error_panic_hook::set_once();
-        let files: BTreeMap<String, String> = serde_json::from_str(files_json)
-            .map_err(|e| JsValue::from_str(&format!("Invalid files JSON: {e}")))?;
-        match compile_project_in_memory(entry_path, &files) {
-            Ok((bytes, _)) => Ok(js_sys::Uint8Array::from(bytes.as_slice())),
-            Err(diag) => Err(JsValue::from_str(&format!(
-                "error [{}] ({}:{}): {}\n  hint: {}",
-                diag.code, diag.span.line, diag.span.col, diag.message, diag.repair_hint
-            ))),
         }
     }
 
@@ -367,9 +327,15 @@ mod js_bindings {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn test_z3_runner(script: &str) -> Result<String, InfimumDiagnostic> {
+        let z3 = PathBuf::from(std::env::var("Z3_BIN").unwrap_or_else(|_| "z3".to_string()));
+        crate::verify::run_z3(&z3, script)
+    }
 
     #[test]
     fn compiles_in_memory_project_with_std_import_to_valid_wasm() {
@@ -389,9 +355,13 @@ export fn add_clamped(a: i64, b: i64) -> i64
 "#
             .to_string(),
         );
-        let (bytes, meta) = compile_project_in_memory("main.ifm", &files).unwrap();
+        let mut runner = test_z3_runner;
+        let (bytes, meta) =
+            compile_project_in_memory_with_z3("main.ifm", &files, &mut runner).unwrap();
         assert!(bytes.starts_with(b"\0asm"), "Expected valid Wasm magic header");
         assert!(meta.ok);
+        assert_eq!(meta.verifier, "z3");
+        assert!(meta.proven > 0, "Expected Z3 obligations proven");
         assert!(meta.exported_functions.contains(&"add_clamped".to_string()));
         let text = String::from_utf8_lossy(&bytes);
         assert!(
@@ -411,7 +381,8 @@ export fn add_clamped(a: i64, b: i64) -> i64
             "render.ifm".to_string(),
             "\n\nfn clamp_i64(v: i64, lo: i64, hi: i64) -> i64 {\n  v\n}\n".to_string(),
         );
-        let err = compile_project_in_memory("main.ifm", &files).unwrap_err();
+        let mut runner = test_z3_runner;
+        let err = compile_project_in_memory_with_z3("main.ifm", &files, &mut runner).unwrap_err();
         assert_eq!(err.code, "E024_DUPLICATE_FN_NAME");
         assert_eq!(err.span.line, 3);
         assert!(

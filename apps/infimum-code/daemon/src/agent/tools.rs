@@ -2000,7 +2000,7 @@ pub(super) fn execute_native_tool(
                         "src/abi.rs", "src/ast.rs", "src/canon.rs", "src/codegen.rs", "src/diag.rs",
                         "src/eval.rs", "src/forma/ast.rs", "src/forma/lower.rs", "src/forma/mod.rs",
                         "src/forma/parser.rs", "src/forma/verify_ui.rs", "src/lexer.rs", "src/lib.rs",
-                        "src/light_verify.rs", "src/main.rs", "src/mcp.rs", "src/parser.rs",
+                        "src/main.rs", "src/mcp.rs", "src/parser.rs",
                         "src/showcase.rs", "src/store.rs", "src/strata_elf.rs", "src/strata_wasm.rs",
                         "src/typecheck.rs", "src/verify.rs", "src/wasm.rs", "src/wasm_api.rs",
                         "tests/proof_cache_tests.rs", "tests/sprint1_tests.rs", "tests/sprint2_z3_tests.rs",

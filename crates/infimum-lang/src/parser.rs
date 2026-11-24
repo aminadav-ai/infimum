@@ -6845,8 +6845,10 @@ export fn step_fall(v0: fixed, dt: fixed) -> fixed
 export fn init_physics() -[Mem]-> i64 {
   Physics.wind = -0.25;
   for i in 0..4 {
-    Physics.bodies[i].y = fixed(10 + i);
-    Physics.bodies[i].vy = 1.5;
+    if i >= 0 {
+      Physics.bodies[i].y = fixed(10 + i);
+      Physics.bodies[i].vy = 1.5;
+    }
   }
   fixed_to_int(Physics.bodies[2].y + Physics.bodies[2].vy * 2)
 }
