@@ -180,29 +180,76 @@ pub fn write_ifm_string(mem: &mut [u8], word_ptr: i64, s: &str, max_chars: usize
     written as i64
 }
 
-pub fn policy_allows_url(policy: &CapabilityPolicy, url: &str) -> bool {
-    let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-    else {
-        return false;
-    };
-    let Some(host_port_raw) = rest.split('/').next() else {
-        return false;
-    };
-    let host_port = host_port_raw.trim().to_ascii_lowercase();
-    if host_port.is_empty() {
-        return false;
+fn has_crlf_or_nul(s: &str) -> bool {
+    s.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+}
+
+fn is_valid_http_method(method: &str) -> bool {
+    !method.is_empty()
+        && method.len() <= 16
+        && method.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+fn escape_curl_config_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(ch),
+        }
     }
+    out
+}
+
+fn parse_url_authority(url: &str) -> Option<(&str, &str, Option<&str>)> {
+    if url
+        .bytes()
+        .any(|b| b.is_ascii_control() || b.is_ascii_whitespace() || b == b'\\')
+    {
+        return None;
+    }
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..auth_end];
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let (host, port_opt) = match authority.split_once(':') {
+        Some((h, p)) => {
+            if h.is_empty()
+                || p.is_empty()
+                || !p.bytes().all(|b| b.is_ascii_digit())
+                || p.parse::<u16>().is_err()
+            {
+                return None;
+            }
+            (h, Some(p))
+        }
+        None => (authority, None),
+    };
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
+        return None;
+    }
+    Some((authority, host, port_opt))
+}
+
+pub fn policy_allows_url(policy: &CapabilityPolicy, url: &str) -> bool {
+    let Some((authority, host_raw, _port_opt)) = parse_url_authority(url) else {
+        return false;
+    };
+    let host_port = authority.to_ascii_lowercase();
     if policy.allowed_net_domains.contains(&host_port) {
         return true;
     }
-    if let Some(host) = host_port.split(':').next() {
-        if !host.is_empty() && policy.allowed_net_domains.contains(host) {
-            return true;
-        }
-    }
-    false
+    let host = host_raw.to_ascii_lowercase();
+    policy.allowed_net_domains.contains(&host)
 }
 
 /// Perform a minimal HTTP/1.1 request over `TcpStream` (for `http://`) or `curl` (for `https://`).
@@ -214,22 +261,37 @@ fn perform_http_request(
     content_type: &str,
     body: &str,
 ) -> Result<(i64, String), ()> {
+    if !is_valid_http_method(method)
+        || has_crlf_or_nul(auth_header)
+        || has_crlf_or_nul(content_type)
+    {
+        return Err(());
+    }
+    let (authority, _, _) = parse_url_authority(url).ok_or(())?;
+
     if let Some(rest) = url.strip_prefix("http://") {
-        let (host_port, path) = match rest.find('/') {
-            Some(pos) => (&rest[..pos], &rest[pos..]),
-            None => (rest, "/"),
-        };
-        let addr = if host_port.contains(':') {
-            host_port.to_string()
+        let after_auth = &rest[authority.len()..];
+        let after_auth_no_frag = after_auth.split('#').next().unwrap_or("");
+        let path_owned: String;
+        let path = if after_auth_no_frag.is_empty() {
+            "/"
+        } else if after_auth_no_frag.starts_with('/') {
+            after_auth_no_frag
         } else {
-            format!("{host_port}:80")
+            path_owned = format!("/{after_auth_no_frag}");
+            &path_owned
+        };
+        let addr = if authority.contains(':') {
+            authority.to_string()
+        } else {
+            format!("{authority}:80")
         };
         let mut stream = TcpStream::connect(&addr).map_err(|_| ())?;
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
         let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
 
         let mut req = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\nContent-Length: {}\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nContent-Length: {}\r\n",
             body.len()
         );
         if !content_type.is_empty() {
@@ -258,36 +320,79 @@ fn perform_http_request(
         return Ok((status, resp_body.to_string()));
     }
 
+    // Pass sensitive headers via `--config -` (stdin) so Authorization tokens never appear in argv / `ps aux`.
+    let mut cfg_text = format!(
+        "url = \"{}\"\n",
+        escape_curl_config_str(url)
+    );
+    if !content_type.is_empty() {
+        cfg_text.push_str(&format!(
+            "header = \"Content-Type: {}\"\n",
+            escape_curl_config_str(content_type)
+        ));
+    }
+    if !auth_header.is_empty() {
+        cfg_text.push_str(&format!(
+            "header = \"Authorization: {}\"\n",
+            escape_curl_config_str(auth_header)
+        ));
+    }
+
+    let mut body_tmp: Option<std::path::PathBuf> = None;
     let mut cmd = Command::new("curl");
     cmd.args([
         "-sS",
+        "--proto",
+        "=http,https",
         "-X",
         method,
         "--max-time",
         "20",
         "-w",
         "\n%{http_code}",
+        "--config",
+        "-",
     ]);
-    if !content_type.is_empty() {
-        cmd.args(["-H", &format!("Content-Type: {content_type}")]);
-    }
-    if !auth_header.is_empty() {
-        cmd.args(["-H", &format!("Authorization: {auth_header}")]);
-    }
     if !body.is_empty() {
-        cmd.args(["--data-binary", "@-"]);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp_path = std::env::temp_dir().join(format!(
+            "infimum_req_{}_{}.tmp",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::write(&tmp_path, body.as_bytes()).map_err(|_| ())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        }
+        cmd.args(["--data-binary", &format!("@{}", tmp_path.display())]);
+        body_tmp = Some(tmp_path);
     }
-    cmd.arg(url);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child = cmd.spawn().map_err(|_| ())?;
-    if !body.is_empty() {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(body.as_bytes());
+    let spawn_res = cmd.spawn();
+    let mut child = match spawn_res {
+        Ok(c) => c,
+        Err(_) => {
+            if let Some(p) = body_tmp {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(());
         }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(cfg_text.as_bytes());
     }
-    let out = child.wait_with_output().map_err(|_| ())?;
+    let out_res = child.wait_with_output();
+    if let Some(p) = body_tmp {
+        let _ = std::fs::remove_file(p);
+    }
+    let out = out_res.map_err(|_| ())?;
     let s = String::from_utf8_lossy(&out.stdout);
     let (resp_body, code_s) = s.rsplit_once('\n').unwrap_or((&s, "200"));
     let status = code_s.trim().parse::<i64>().unwrap_or(200);
@@ -296,19 +401,30 @@ fn perform_http_request(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_http_bytes(url: &str, auth_header: &str) -> Result<Vec<u8>, ()> {
+    if has_crlf_or_nul(auth_header) {
+        return Err(());
+    }
+    let (authority, _, _) = parse_url_authority(url).ok_or(())?;
     if let Some(rest) = url.strip_prefix("http://") {
-        let (host_port, path) = match rest.find('/') {
-            Some(pos) => (&rest[..pos], &rest[pos..]),
-            None => (rest, "/"),
-        };
-        let addr = if host_port.contains(':') {
-            host_port.to_string()
+        let after_auth = &rest[authority.len()..];
+        let after_auth_no_frag = after_auth.split('#').next().unwrap_or("");
+        let path_owned: String;
+        let path = if after_auth_no_frag.is_empty() {
+            "/"
+        } else if after_auth_no_frag.starts_with('/') {
+            after_auth_no_frag
         } else {
-            format!("{host_port}:80")
+            path_owned = format!("/{after_auth_no_frag}");
+            &path_owned
+        };
+        let addr = if authority.contains(':') {
+            authority.to_string()
+        } else {
+            format!("{authority}:80")
         };
         let mut stream = TcpStream::connect(&addr).map_err(|_| ())?;
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(15)));
-        let mut req = format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n");
+        let mut req = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n");
         if !auth_header.is_empty() {
             req.push_str(&format!("Authorization: {auth_header}\r\n"));
         }
@@ -519,7 +635,7 @@ pub fn dispatch_host_call(
             }
             let max_chars = (a2.max(128) as usize).min(32_768);
             let out = Command::new("curl")
-                .args(["-sL", "--max-time", "12", &url])
+                .args(["-sS", "--proto", "=http,https", "--max-time", "12", "--", &url])
                 .output();
             let Ok(o) = out else {
                 return E_IO_FAILED;
@@ -560,6 +676,59 @@ mod tests {
         assert!(policy_allows_url(&policy, "http://127.0.0.1:43210/health"));
         assert!(!policy_allows_url(&policy, "http://127.0.0.1:8080/secret"));
         assert!(!policy_allows_url(&policy, "https://evil.example.com/"));
+    }
+
+    #[test]
+    fn blocks_userinfo_ssrf_and_crlf_injection() {
+        let mut policy = CapabilityPolicy::default();
+        policy
+            .allowed_net_domains
+            .insert("api.openai.com".to_string());
+        assert!(policy_allows_url(&policy, "https://api.openai.com/v1/models"));
+        assert!(policy_allows_url(&policy, "https://api.openai.com:443/v1/models"));
+        assert!(policy_allows_url(&policy, "https://api.openai.com?foo=bar"));
+        // SSRF via userinfo `@`, backslash, non-numeric port, whitespace, CRLF
+        assert!(!policy_allows_url(
+            &policy,
+            "https://api.openai.com:443@evil.com/steal"
+        ));
+        assert!(!policy_allows_url(
+            &policy,
+            "https://api.openai.com@evil.com/steal"
+        ));
+        assert!(!policy_allows_url(
+            &policy,
+            "https://api.openai.com\\@evil.com/steal"
+        ));
+        assert!(!policy_allows_url(
+            &policy,
+            "https://api.openai.com:443:80/v1"
+        ));
+        assert!(!policy_allows_url(
+            &policy,
+            "https://api.openai.com/v1\r\nX-Injected: 1"
+        ));
+        assert!(!policy_allows_url(
+            &policy,
+            "https://api.openai.com/v1 HTTP/1.1"
+        ));
+        // CRLF in headers/method must fail perform_http_request immediately
+        assert!(perform_http_request(
+            "GET\r\nX: 1",
+            "http://127.0.0.1:1/",
+            "",
+            "",
+            ""
+        )
+        .is_err());
+        assert!(perform_http_request(
+            "GET",
+            "http://127.0.0.1:1/",
+            "Bearer ok\r\nX-Evil: 1",
+            "",
+            ""
+        )
+        .is_err());
     }
 
     #[test]
