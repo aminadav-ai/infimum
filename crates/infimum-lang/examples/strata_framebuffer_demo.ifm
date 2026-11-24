@@ -1,0 +1,34 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Demo: Infimum.Strata Direct Zero-rustc Framebuffer & Linear Memory Kernel
+// Compiles directly to W3C WebAssembly (.wasm) and Linux x86_64 ELF64 in <5ms!
+
+use "std/math.ifm";
+
+layout FrameBuf {
+  pixels: words[16384],
+}
+
+export fn render_gradient(width: i64, height: i64, tick: i64) -[Mem]-> i64
+  req width > 0 && width <= 128 && height > 0 && height <= 128
+{
+  let mut checksum = 0;
+  for y in 0..height max 128 {
+    for x in 0..width max 128 {
+      let r = clamp_byte((x * 4 + tick) & 255);
+      let g = clamp_byte((y * 4 + tick) & 255);
+      let b = 180;
+      let rgba = (255 << 24) | (b << 16) | (g << 8) | r;
+      FrameBuf.pixels[y * width + x] = rgba;
+      checksum += (r + g) & 15;
+    }
+  }
+  checksum
+}
+
+test "render_gradient computes deterministic checksum" {
+  let cs = render_gradient(4, 4, 0);
+  assert(cs > 0);
+  assert(render_gradient(4, 4, 0) == cs);
+}

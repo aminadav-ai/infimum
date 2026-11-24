@@ -1,0 +1,83 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM LION HERD — Shared Typed ABI & Memory Layout (Z3-Verified)
+
+use "std/prelude.ifm";
+use "std/mesh3d.ifm";
+
+const MAT_ROCK: i64 = 7;
+const MAT_TIMBER: i64 = 8;
+
+const SHEEP_COUNT: i64 = 14;
+const MAX_SNAPS: i64 = 240;
+
+enum CursorKind {
+  Default = 0,
+  Pointer = 1,
+}
+
+struct Sheep {
+  x: word,
+  y: word,
+  vx: word,
+  vy: word,
+  penned: word inv 0..=1,
+  hop: word,
+  tint: word,
+  yaw: word,
+}
+
+struct SnapHeader {
+  tick: word,
+  lion_x: word,
+  lion_y: word,
+  lion_vx: word,
+  lion_vy: word,
+  stamina: word,
+  roar_timer: word,
+  penned_count: word,
+  score: word,
+  rng_state: word,
+  win_tick: word,
+  lion_yaw: word,
+}
+
+struct SnapSheep {
+  x: word,
+  y: word,
+  penned: word inv 0..=1,
+  yaw: word,
+}
+
+// Auto-placed non-overlapping linear memory layout (compiler safely places at word 705536+)
+layout HerdMem {
+  tick: word,
+  lion_x: word,
+  lion_y: word,
+  lion_vx: word,
+  lion_vy: word,
+  stamina: word,
+  roar_timer: word,
+  penned_count: word,
+  score: word,
+  rng_state: word,
+  win_tick: word,
+  snap_head: word,
+  snap_count: word,
+  lion_hop: word,
+  lion_yaw: word,
+  prev_r_key: word,
+  prev_z_key: word,
+  prev_sp_key: word,
+  pen_flash_timer: word,
+
+  // 14 typed Sheep structs (14 * 8 = 112 words)
+  sheep: Sheep[14],
+
+  // 240 Time-Travel snapshot headers (240 * 12 = 2880 words)
+  snap_hdrs: SnapHeader[240],
+
+  // 240 * 14 = 3360 Time-Travel sheep entries (3360 * 4 = 13440 words)
+  snap_sheep: SnapSheep[3360],
+}

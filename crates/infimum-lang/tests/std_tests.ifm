@@ -1,0 +1,344 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Standard Library Regression Test Suite (`infimum test tests/std_tests.ifm`).
+// Covers std/math, std/mem, std/color, std/gfx, std/buf, std/json, std/text_edit, and std/markdown.
+
+use "std/prelude.ifm";
+use "std/buf.ifm";
+use "std/json.ifm";
+use "std/text_edit.ifm";
+use "std/markdown.ifm";
+
+layout StdTestMem {
+  buf_a: words[256],
+  buf_b: words[256],
+  key_buf: words[64],
+  edit_buf: words[256],
+  arena_cur: word,
+  arena_buf: words[128],
+  pool_flags: words[8],
+}
+
+test "std/math clamp, isqrt, sin_1024, and fixed ops" {
+  assert(clamp_i64(-5, 0, 10) == 0);
+  assert(clamp_i64(42, 0, 10) == 10);
+  assert(clamp_byte(300) == 255);
+  assert(isqrt(144) == 12);
+  assert(sin_1024(0) == 0);
+  assert(sin_1024(1024) == 1024);
+  assert(cos_1024(0) == 1024);
+  assert(fixed_clamp(5.5, 0.0, 3.0) == 3.0);
+}
+
+test "std/buf push, int formatting, JSON escaping, and search" {
+  buf_clear(StdTestMem::buf_a);
+  buf_push_int(StdTestMem::buf_a, 200, -4096);
+  assert(buf_len(StdTestMem::buf_a, 200) == 5);
+  assert(mem_load(StdTestMem::buf_a + 1) == '-');
+  assert(mem_load(StdTestMem::buf_a + 2) == '4');
+  assert(buf_find_cp(StdTestMem::buf_a, 0, 5, '9') == 3);
+  assert(buf_find_cp(StdTestMem::buf_a, 0, 5, 'z') == -1);
+
+  // Escape `a"b\n` -> `a\"b\n` (6 chars)
+  buf_clear(StdTestMem::buf_a);
+  buf_push_cp(StdTestMem::buf_a, 64, 'a');
+  buf_push_cp(StdTestMem::buf_a, 64, '"');
+  buf_push_cp(StdTestMem::buf_a, 64, 'b');
+  buf_push_cp(StdTestMem::buf_a, 64, '\n');
+  buf_clear(StdTestMem::buf_b);
+  buf_push_json_escaped(StdTestMem::buf_b, 64, StdTestMem::buf_a, 0, 4);
+  assert(buf_len(StdTestMem::buf_b, 64) == 6);
+  assert(mem_load(StdTestMem::buf_b + 2) == '\\');
+  assert(mem_load(StdTestMem::buf_b + 3) == '"');
+}
+
+test "std/json find_key, parse_int, and decode_string" {
+  // {"n":-7,"msg":"hi\n!"}
+  let j = StdTestMem::buf_a;
+  buf_clear(j);
+  buf_push_cp(j, 128, '{'); buf_push_cp(j, 128, '"'); buf_push_cp(j, 128, 'n'); buf_push_cp(j, 128, '"');
+  buf_push_cp(j, 128, ':'); buf_push_cp(j, 128, '-'); buf_push_cp(j, 128, '7'); buf_push_cp(j, 128, ',');
+  buf_push_cp(j, 128, '"'); buf_push_cp(j, 128, 'm'); buf_push_cp(j, 128, 's'); buf_push_cp(j, 128, 'g');
+  buf_push_cp(j, 128, '"'); buf_push_cp(j, 128, ':'); buf_push_cp(j, 128, '"'); buf_push_cp(j, 128, 'h');
+  buf_push_cp(j, 128, 'i'); buf_push_cp(j, 128, '\\'); buf_push_cp(j, 128, 'n'); buf_push_cp(j, 128, '!');
+  buf_push_cp(j, 128, '"'); buf_push_cp(j, 128, '}');
+  let n = buf_len(j, 128);
+
+  buf_clear(StdTestMem::key_buf);
+  buf_push_cp(StdTestMem::key_buf, 32, 'n');
+  let v_n = json_find_key(j, 0, n, StdTestMem::key_buf, 32);
+  assert(v_n >= 0);
+  assert(json_parse_int(j, v_n, n) == -7);
+
+  buf_clear(StdTestMem::key_buf);
+  buf_push_cp(StdTestMem::key_buf, 32, 'm');
+  buf_push_cp(StdTestMem::key_buf, 32, 's');
+  buf_push_cp(StdTestMem::key_buf, 32, 'g');
+  let v_m = json_find_key(j, 0, n, StdTestMem::key_buf, 32);
+  assert(v_m >= 0);
+  let dlen = json_decode_string(j, v_m, n, StdTestMem::buf_b, 128);
+  assert(dlen == 4);
+  assert(mem_load(StdTestMem::buf_b + 3) == '\n');
+}
+
+test "std/text_edit insert, backspace, word bounds, and wrapping" {
+  let b = StdTestMem::edit_buf;
+  buf_clear(b);
+  let mut p = 0;
+  p = tbuf_insert_char(b, 200, p, 'H');
+  p = tbuf_insert_char(b, 200, p, 'i');
+  p = tbuf_insert_char(b, 200, p, ' ');
+  p = tbuf_insert_char(b, 200, p, 'A');
+  p = tbuf_insert_char(b, 200, p, 'x');
+  p = tbuf_insert_char(b, 200, p, '!');
+  assert(tbuf_len(b, 200) == 6);
+  assert(tbuf_word_lo(b, 200, 4) == 3);
+  assert(tbuf_word_hi(b, 200, 4) == 5);
+  p = tbuf_backspace(b, 200, p, p);
+  assert(tbuf_len(b, 200) == 5);
+  let h = tbuf_measure_wrapped_h(b, 200, 300, 16, 22, 0);
+  assert(h == 22);
+}
+
+test "std/color pack, unpack, alpha, lerp, and brightness" {
+  let c = pack_rgba(40, 120, 200, 255);
+  assert(rgba_r(c) == 40);
+  assert(rgba_g(c) == 120);
+  assert(rgba_b(c) == 200);
+  assert(rgba_a(c) == 255);
+
+  let half = with_alpha(c, 128);
+  assert(rgba_r(half) == 40 && rgba_a(half) == 128);
+
+  let mid = lerp_rgba(pack_rgba(0, 0, 0, 255), pack_rgba(100, 200, 50, 255), 500);
+  assert(rgba_r(mid) == 50 && rgba_g(mid) == 100 && rgba_b(mid) == 25);
+
+  let dark = darken_rgba(pack_rgba(100, 100, 100, 255), 50);
+  assert(rgba_r(dark) == 50);
+  let light = lighten_rgba(pack_rgba(100, 100, 100, 255), 50);
+  assert(rgba_r(light) > 100);
+}
+
+test "std/gfx frame lifecycle, forma pointer mailbox, and ui_image_slot" {
+  forma_begin_frame(1280, 720, 100, 200, 1, -24);
+  assert(mem_load(STD_PRIM_COUNT_WORD) == 0);
+  assert(forma_wheel_dy() == -24);
+  assert(!forma_hovered());
+
+  forma_set_pointer(-1, -1, 0, 12);
+  assert(mem_load(STD_FORMA_MAILBOX_WORD) == -1);
+  assert(forma_wheel_dy() == 12);
+
+  gfx_set_cursor(1);
+  assert(mem_load(STD_CURSOR_KIND_WORD) == 1);
+
+  ui_rect(10, 20, 100, 40, 8, 1, 0, pack_rgba(20, 24, 32, 255), 0, 0);
+  ui_image(10, 70, 64, 64, 6, 0);
+  ui_image_slot(80, 70, 64, 64, 6, 5, 0);
+  assert(mem_load(STD_PRIM_COUNT_WORD) == 3);
+  // 3rd prim (index 2) meta has kind=4, radius=6, slot=5
+  let p2_meta = mem_load(STD_GPU_PRIMS_WORD + 2 * 8 + 4);
+  assert((p2_meta & 15) == 4);
+  assert(((p2_meta >> 12) & 15) == 5);
+}
+
+test "std/markdown measure and draw headings, list, and hr" {
+  let b = StdTestMem::buf_a;
+  buf_clear(b);
+  // "# Hi\n---\n- ok"
+  buf_push_cp(b, 200, '#'); buf_push_cp(b, 200, ' '); buf_push_cp(b, 200, 'H'); buf_push_cp(b, 200, 'i');
+  buf_push_cp(b, 200, '\n');
+  buf_push_cp(b, 200, '-'); buf_push_cp(b, 200, '-'); buf_push_cp(b, 200, '-');
+  buf_push_cp(b, 200, '\n');
+  buf_push_cp(b, 200, '-'); buf_push_cp(b, 200, ' '); buf_push_cp(b, 200, 'o'); buf_push_cp(b, 200, 'k');
+
+  gfx_begin_frame(800, 600);
+  let mh = md_measure_h(b, 200, 400, 15, 22, THEME_DARK);
+  let dh = md_draw(b, 200, 20, 20, 400, 15, 22, THEME_DARK, 0, 0, 600);
+  assert(mh > 0);
+  assert(mh == dh);
+  assert(mem_load(STD_PRIM_COUNT_WORD) > 0);
+}
+
+test "std/mem FrameScratch, Arena, Pool, and host_ret" {
+  // 1. FrameScratch
+  scratch_reset();
+  assert(scratch_used() == 0);
+  assert(scratch_remaining() == SYS_SCRATCH_CAP_WORDS);
+  assert(scratch_alloc(0) == -1);
+  assert(scratch_calloc(5000) == -1);
+  let s1 = scratch_alloc(16);
+  assert(s1 == SYS_SCRATCH_BASE_WORD);
+  mem_store(s1 + 16, 999);
+  let s2 = scratch_calloc(8);
+  assert(s2 == SYS_SCRATCH_BASE_WORD + 16);
+  assert(mem_load(s2) == 0);
+  assert(scratch_used() == 24);
+  scratch_reset();
+  assert(scratch_used() == 0);
+
+  // 2. Arena + arena_push_strbuf
+  arena_reset(StdTestMem::arena_cur);
+  assert(arena_used(StdTestMem::arena_cur, 128) == 0);
+  assert(arena_remaining(StdTestMem::arena_cur, 128) == 128);
+  let a1 = arena_alloc(StdTestMem::arena_buf, 128, StdTestMem::arena_cur, 10);
+  assert(a1 == StdTestMem::arena_buf);
+  assert(arena_alloc(StdTestMem::arena_buf, 128, StdTestMem::arena_cur, 200) == -1);
+
+  let src = StdTestMem::buf_a;
+  buf_clear(src);
+  buf_push_cp(src, 32, 'O');
+  buf_push_cp(src, 32, 'K');
+  let copy_ptr = arena_push_strbuf(StdTestMem::arena_buf, 128, StdTestMem::arena_cur, src, 32);
+  assert(copy_ptr == StdTestMem::arena_buf + 10);
+  assert(mem_load(copy_ptr) == 2);
+  assert(mem_load(copy_ptr + 1) == 'O' && mem_load(copy_ptr + 2) == 'K');
+
+  // 3. Pool
+  pool_init(StdTestMem::pool_flags, 8);
+  assert(pool_count(StdTestMem::pool_flags, 8) == 0);
+  let p0 = pool_alloc(StdTestMem::pool_flags, 8);
+  let p1 = pool_alloc(StdTestMem::pool_flags, 8);
+  assert(p0 == 0 && p1 == 1);
+  assert(pool_is_alive(StdTestMem::pool_flags, 0, 8));
+  assert(pool_count(StdTestMem::pool_flags, 8) == 2);
+  pool_free(StdTestMem::pool_flags, 0, 8);
+  assert(!pool_is_alive(StdTestMem::pool_flags, 0, 8));
+  assert(pool_alloc(StdTestMem::pool_flags, 8) == 0);
+
+  // 4. host_ret
+  mem_store(SYS_HOST_RET_WORD, 200);
+  assert(host_ret() == 200);
+}
+
+test "std/gfx forma_set_input, forma_focus_id, forma_set_focus, and forma_cursor" {
+  forma_begin_frame(800, 600, 100, 120, 0, 0);
+  forma_set_input(1, 65, 0, 42);
+  assert(mem_load(SYS_FORMA_MDOWN_WORD) == 1);
+  assert(mem_load(SYS_FORMA_KEY_CHAR_WORD) == 65);
+  assert(mem_load(SYS_FORMA_TICK_WORD) == 42);
+
+  // Active drag releases automatically when m_down == 0
+  mem_store(SYS_FORMA_DRAG_ID_WORD, 7);
+  forma_set_input(0, 0, 0, 43);
+  assert(mem_load(SYS_FORMA_DRAG_ID_WORD) == 0);
+
+  // Focus switch resets caret and horizontal scroll
+  mem_store(SYS_FORMA_CARET_POS_WORD, 9);
+  mem_store(SYS_FORMA_TEXT_SCROLL_WORD, 40);
+  forma_set_focus(12);
+  assert(forma_focus_id() == 12);
+  assert(mem_load(SYS_FORMA_CARET_POS_WORD) == 0);
+  assert(mem_load(SYS_FORMA_TEXT_SCROLL_WORD) == 0);
+
+  // Cursor kind decoding: 0 -> Default, >0 -> Pointer(1), <0 -> Text(2)
+  mem_store(SYS_FORMA_HOVERED_WORD, 0);
+  assert(forma_cursor() == 0);
+  mem_store(SYS_FORMA_HOVERED_WORD, 5);
+  assert(forma_cursor() == 1 && forma_hovered());
+  mem_store(SYS_FORMA_HOVERED_WORD, -5);
+  assert(forma_cursor() == 2 && !forma_hovered());
+}
+
+test "std/gfx forma_paste_text, forma_copy_text, and selection replacement" {
+  gfx_begin_frame(800, 600);
+  let field_buf = scratch_alloc(64);
+  let paste_buf = scratch_alloc(64);
+  let copy_buf = scratch_alloc(64);
+  buf_clear(field_buf);
+  buf_push_cp(field_buf, 32, 'H');
+  buf_push_cp(field_buf, 32, 'i');
+  buf_push_cp(field_buf, 32, ' ');
+  buf_push_cp(field_buf, 32, 'W');
+  buf_push_cp(field_buf, 32, 'o');
+  buf_push_cp(field_buf, 32, 'r');
+  buf_push_cp(field_buf, 32, 'l');
+  buf_push_cp(field_buf, 32, 'd');
+
+  // Focus field_buf (unmasked) with selection [3..8) ("World")
+  forma_set_focus(77);
+  mem_store(SYS_FORMA_TEXT_BUF_WORD, field_buf);
+  mem_store(SYS_FORMA_TEXT_MAX_WORD, 32);
+  mem_store(SYS_FORMA_TEXT_MASK_WORD, 0);
+  mem_store(SYS_FORMA_SEL_ANCHOR_WORD, 3);
+  mem_store(SYS_FORMA_CARET_POS_WORD, 8);
+  assert(forma_sel_range_len() == 5);
+
+  // Copy selected range "World"
+  let copied = forma_copy_text(copy_buf, 32);
+  assert(copied == 5);
+  assert(mem_load(copy_buf) == 5);
+  assert(mem_load(copy_buf + 1) == 'W' && mem_load(copy_buf + 5) == 'd');
+
+  // Paste "Forma" replacing "World" -> "Hi Forma"
+  buf_clear(paste_buf);
+  buf_push_cp(paste_buf, 32, 'F');
+  buf_push_cp(paste_buf, 32, 'o');
+  buf_push_cp(paste_buf, 32, 'r');
+  buf_push_cp(paste_buf, 32, 'm');
+  buf_push_cp(paste_buf, 32, 'a');
+  let pasted = forma_paste_text(paste_buf, 5);
+  assert(pasted == 5);
+  assert(mem_load(field_buf) == 8);
+  assert(mem_load(field_buf + 4) == 'F' && mem_load(field_buf + 8) == 'a');
+  assert(forma_sel_range_len() == 0);
+  assert(mem_load(SYS_FORMA_TEXT_CHANGED_WORD) == 1);
+
+  // Masked field refuses copy
+  mem_store(SYS_FORMA_TEXT_MASK_WORD, 1);
+  mem_store(SYS_FORMA_SEL_ANCHOR_WORD, 0);
+  mem_store(SYS_FORMA_CARET_POS_WORD, 8);
+  assert(forma_copy_text(copy_buf, 32) == 0);
+}
+
+test "std/json unicode \\uXXXX decoding and std/input KeySpecial" {
+  gfx_begin_frame(800, 600);
+  let src = scratch_alloc(32);
+  let dst = scratch_alloc(32);
+  buf_clear(src);
+  buf_push_cp(src, 32, '"');
+  buf_push_cp(src, 32, '\\');
+  buf_push_cp(src, 32, 'u');
+  buf_push_cp(src, 32, '0');
+  buf_push_cp(src, 32, '4');
+  buf_push_cp(src, 32, '1');
+  buf_push_cp(src, 32, '0');
+  buf_push_cp(src, 32, '"');
+  let dn = json_decode_string(src, 0, 8, dst, 32);
+  assert(dn == 1);
+  assert(mem_load(dst + 1) == 1040);
+  assert(KeySpecial::Enter == 2 && KeySpecial::CtrlA == 20 && KEY_Z == 8192);
+}
+
+test "std/markdown full GFM table layout and md_hit" {
+  gfx_begin_frame(800, 600);
+  let b = scratch_alloc(64);
+  mem_store(b, 17);
+  mem_store(b + 1, '|'); mem_store(b + 2, 'A'); mem_store(b + 3, '|'); mem_store(b + 4, 'B'); mem_store(b + 5, '|'); mem_store(b + 6, '\n');
+  mem_store(b + 7, '|'); mem_store(b + 8, '-'); mem_store(b + 9, '|'); mem_store(b + 10, '-'); mem_store(b + 11, '|'); mem_store(b + 12, '\n');
+  mem_store(b + 13, '|'); mem_store(b + 14, '1'); mem_store(b + 15, '|'); mem_store(b + 16, '2'); mem_store(b + 17, '|');
+  let h = md_measure_h(b, 64, 400, 14, 20, 0);
+  assert(h > 40);
+  let hit_top = md_hit(b, 64, 10, -5, 0, 0, 400, 14, 20, 0);
+  assert(hit_top == 0);
+  let hit_mid = md_hit(b, 64, 16, 10, 0, 0, 400, 14, 20, 0);
+  assert(hit_mid >= 1 && hit_mid <= 5);
+}
+
+test "std/buf str_len, str_char, buf_set_str, buf_eq_str, buf_has_str, starts/ends_with, slice_eq_str" {
+  gfx_begin_frame(800, 600);
+  assert(str_len("deepseek") == 8);
+  assert(str_char("deepseek", 0) == 'd' && str_char("deepseek", 7) == 'k');
+  assert(str_char("deepseek", 99) == 0);
+
+  let b = scratch_alloc(64);
+  buf_set_str(b, 60, "openrouter/deepseek-v4:free");
+  assert(buf_eq_str(b, "openrouter/deepseek-v4:free"));
+  assert(!buf_eq_str(b, "openrouter/deepseek-v4"));
+  assert(buf_starts_with(b, "openrouter/"));
+  assert(buf_ends_with(b, ":free"));
+  assert(buf_has_str(b, "deepseek"));
+  assert(!buf_has_str(b, "openai"));
+  assert(slice_eq_str(b + 1 + 11, 8, "deepseek"));
+}

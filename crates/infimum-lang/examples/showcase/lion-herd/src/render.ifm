@@ -1,0 +1,372 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM LION HERD — True Native Vulkan 3D Mesh + 1K Photo-PBR Savanna Renderer
+// Powered by `std/mesh3d.ifm`: close-up follow camera, 24-part sculpted animated 3D Lion
+// with layered mane & tail, 14 large fluffy 14-part 3D Woolly Sheep, 1K Poly Haven PBR
+// savanna grass/ground/bark/rock/wood textures, acacia trees & lantern-lit corral.
+
+use "abi.ifm";
+use "logic.ifm";
+
+// --- Synchronized Close-Up Follow Camera & Exact Inverse Ray-Plane Picker ---
+// Arena [0..1024]x[0..1024] -> World [-5120..5120]x[-5120..5120], Y = 0 up.
+// Camera tracks 32% of Lion's position so the board stays close, large & readable!
+// FOV = 54 deg (tan(27 deg) = 0.5095 -> fl_y = vh * 0.981).
+// Pitch = -114 (-40.08 deg -> cos_p = 0.7656, sin_p = 0.6436).
+const CAM_FL_SCALE: fixed = 0.981;
+const CAM_COS_P: fixed = 0.7656;
+const CAM_SIN_P: fixed = 0.6436;
+
+fn herd_cam_x() -[Mem]-> i64 {
+  clamp_i64(((HerdMem.lion_x - 512) * 32) / 10, -1900, 1900)
+}
+
+fn herd_cam_y() -> i64 { 6300 }
+
+fn herd_cam_z() -[Mem]-> i64 {
+  7400 + clamp_i64(((HerdMem.lion_y - 512) * 30) / 10, -1600, 1600)
+}
+
+fn arena_wx(ax: i64) -> i64 { (ax - 512) * 10 }
+fn arena_wz(ay: i64) -> i64 { (ay - 512) * 10 }
+
+// Exact inverse ray-plane intersection from screen (mx, my) onto ground plane Y = 0
+fn screen_to_arena_wz(my: i64, _vw: i64, vh: i64) -[Mem]-> i64 {
+  let fl = fixed_clamp(fixed(vh) * CAM_FL_SCALE, 320.0, 4096.0);
+  let ndy = fixed(vh / 2 - my);
+  // Camera looks along fwd = (0, -sin_p, -cos_p), up = (0, cos_p, -sin_p)
+  let ry = fixed_to_int(ndy * CAM_COS_P - fl * CAM_SIN_P);
+  let rz = fixed_to_int(-(ndy * CAM_SIN_P + fl * CAM_COS_P));
+  if ry >= -8 {
+    -5120
+  } else {
+    let denom = 0 - ry;
+    clamp_i64(herd_cam_z() + (herd_cam_y() * rz) / denom, -5120, 5120)
+  }
+}
+
+fn screen_to_arena_x(mx: i64, my: i64, vw: i64, vh: i64) -[Mem]-> i64 {
+  let wz = screen_to_arena_wz(my, vw, vh);
+  let fl = clamp_i64(fixed_to_int(fixed(vh) * CAM_FL_SCALE), 320, 4096);
+  let dy = fixed(0 - herd_cam_y());
+  let dz = fixed(herd_cam_z() - wz);
+  let vz = clamp_i64(fixed_to_int(dz * CAM_COS_P - dy * CAM_SIN_P), 400, 40000);
+  let wx = herd_cam_x() + ((mx - vw / 2) * vz) / fl;
+  clamp_i64(wx / 10 + 512, 36, 988)
+}
+
+fn screen_to_arena_y(my: i64, vw: i64, vh: i64) -[Mem]-> i64 {
+  let wz = screen_to_arena_wz(my, vw, vh);
+  clamp_i64(wz / 10 + 512, 36, 988)
+}
+
+// Convert logic yaw (0=+X, 256=+Z, 512=-X, 768=-Z) to mesh3d_limb yaw (0..4095, 0=+Z, 1024=+X)
+fn to_mesh_yaw(logic_yaw: i64) -> i64 {
+  (1024 - logic_yaw * 4 + 8192) & 4095
+}
+
+// --- 3D Sculpted Acacia Tree (1K Bark Trunk + Spreading Branches + Layered Canopy) ---
+
+fn draw_acacia_3d(tx: i64, tz: i64, scale_pct: i64) -[Mem]-> unit {
+  let sc = clamp_i64(scale_pct, 75, 135);
+  let h = (1450 * sc) / 100;
+  let r_tr = (130 * sc) / 100;
+  let bark_c = pack_rgba(168, 134, 98, 255);
+  let leaf_d = pack_rgba(74, 118, 48, 255);
+  let leaf_l = pack_rgba(104, 148, 62, 255);
+
+  // Tapered bark trunk (base + upper trunk)
+  mesh3d_box(0, tx - r_tr - 35, 0, tz - r_tr - 35, tx + r_tr + 35, h / 3, tz + r_tr + 35, MAT_PILLAR, bark_c, 225, 0, 900);
+  mesh3d_box(0, tx - r_tr, h / 3, tz - r_tr, tx + r_tr, h, tz + r_tr, MAT_PILLAR, bark_c, 235, 0, 900);
+  // Forked boughs supporting the flat savanna acacia crown
+  let bw = (520 * sc) / 100;
+  mesh3d_box(0, tx - bw, h - 140, tz - 80, tx + bw, h + 40, tz + 80, MAT_PILLAR, bark_c, 225, 0, 900);
+  mesh3d_box(0, tx - 80, h - 140, tz - bw, tx + 80, h + 40, tz + bw, MAT_PILLAR, bark_c, 225, 0, 900);
+  // Layered flat umbrella foliage canopy
+  let cr = (880 * sc) / 100;
+  mesh3d_box(0, tx - cr, h, tz - cr, tx + cr, h + 240, tz + cr, MAT_TILE, leaf_d, 235, 0, 1100);
+  let cr2 = (660 * sc) / 100;
+  mesh3d_box(0, tx - cr2, h + 230, tz - cr2, tx + cr2, h + 410, tz + cr2, MAT_TILE, leaf_l, 250, 0, 1100);
+}
+
+// --- 3D Savanna Boulder Cluster ---
+
+fn draw_boulder_3d(bx: i64, bz: i64, rad: i64, h: i64) -[Mem]-> unit {
+  let rock_c = pack_rgba(176, 152, 128, 255);
+  let rock_d = pack_rgba(148, 128, 108, 255);
+  mesh3d_box(0, bx - rad, 0, bz - rad, bx + rad, h, bz + rad, MAT_ROCK, rock_c, 230, 0, 950);
+  mesh3d_box(0, bx - (rad * 7) / 10, h - 30, bz - (rad * 6) / 10, bx + (rad * 6) / 10, h + h / 2, bz + (rad * 7) / 10, MAT_ROCK, rock_d, 240, 0, 950);
+}
+
+// --- Detailed 14-Part Fluffy 3D Woolly Sheep (1.5x Larger, Animated Legs, Fluffy Fleece, Ears & Face) ---
+
+fn draw_sheep_mesh_3d(idx: i64) -[Mem]-> unit {
+  let i = clamp_i64(idx, 0, 13);
+  let sx = arena_wx(HerdMem.sheep[i].x);
+  let sz = arena_wz(HerdMem.sheep[i].y);
+  let penned = HerdMem.sheep[i].penned;
+  let hop = HerdMem.sheep[i].hop;
+  let tint = HerdMem.sheep[i].tint;
+  let yaw = to_mesh_yaw(HerdMem.sheep[i].yaw);
+
+  let bounce = if hop < 8 { hop * 18 } else { (15 - hop) * 18 };
+  let stride = fixed_to_int(fixed_sin(hop * 256) * 110.0);
+  let wool_c = if tint == 0 {
+    pack_rgba(252, 248, 238, 255)
+  } else if tint == 1 {
+    pack_rgba(244, 238, 224, 255)
+  } else {
+    pack_rgba(255, 252, 245, 255)
+  };
+  let wool_hi = pack_rgba(255, 254, 250, 255);
+  let wool_sh = pack_rgba(226, 218, 204, 255);
+  let face_c = pack_rgba(44, 38, 36, 255);
+  let ear_c = pack_rgba(58, 48, 44, 255);
+  let eye_c = pack_rgba(255, 250, 236, 255);
+
+  // 4 animated slender dark legs + hooves
+  mesh3d_limb(sx, 0, sz, yaw, -175, 0, 120 + stride, -95, 270, 200 + stride, MAT_SOLID, face_c, 220, 0);
+  mesh3d_limb(sx, 0, sz, yaw, 95, 0, 120 - stride, 175, 270, 200 - stride, MAT_SOLID, face_c, 220, 0);
+  mesh3d_limb(sx, 0, sz, yaw, -175, 0, -240 - stride, -95, 270, -160 - stride, MAT_SOLID, face_c, 220, 0);
+  mesh3d_limb(sx, 0, sz, yaw, 95, 0, -240 + stride, 175, 270, -160 + stride, MAT_SOLID, face_c, 220, 0);
+
+  // Layered fluffy cloud-like fleece body (core + upper puff + left/right wool puffs + pom-pom tail)
+  let by = bounce;
+  mesh3d_limb(sx, by, sz, yaw, -225, 220, -295, 225, 575, 255, MAT_SOLID, wool_c, 248, 0);
+  mesh3d_limb(sx, by, sz, yaw, -185, 540, -240, 185, 650, 210, MAT_SOLID, wool_hi, 255, 0);
+  mesh3d_limb(sx, by, sz, yaw, -275, 270, -210, -205, 515, 195, MAT_SOLID, wool_sh, 240, 0);
+  mesh3d_limb(sx, by, sz, yaw, 205, 270, -210, 275, 515, 195, MAT_SOLID, wool_sh, 240, 0);
+  // Fluffy bobtail pom-pom
+  mesh3d_limb(sx, by, sz, yaw, -85, 360, -370, 85, 495, -270, MAT_SOLID, wool_hi, 245, 0);
+
+  // Expressive dark sheep head + fluffy white wool crown + 2 perky ears + eyes
+  mesh3d_limb(sx, by, sz, yaw, -115, 330, 235, 115, 540, 445, MAT_SOLID, face_c, 235, 0);
+  mesh3d_limb(sx, by, sz, yaw, -105, 515, 230, 105, 610, 385, MAT_SOLID, wool_hi, 255, 0);
+  // Outward ears
+  mesh3d_limb(sx, by, sz, yaw, -230, 430, 270, -105, 505, 345, MAT_SOLID, ear_c, 235, 0);
+  mesh3d_limb(sx, by, sz, yaw, 105, 430, 270, 230, 505, 345, MAT_SOLID, ear_c, 235, 0);
+  // Bright eyes on sides of snout
+  mesh3d_limb(sx, by, sz, yaw, -125, 430, 355, -90, 475, 405, MAT_SOLID, eye_c, 255, 0);
+  mesh3d_limb(sx, by, sz, yaw, 90, 430, 355, 125, 475, 405, MAT_SOLID, eye_c, 255, 0);
+
+  // Subtle green glow marker above safely penned sheep
+  if penned == 1 && HerdMem.pen_flash_timer > 0 {
+    mesh3d_limb(sx, by + 680, sz, yaw, -45, 0, -45, 45, 90, 45, MAT_GLOW, pack_rgba(126, 255, 168, 255), 255, 1);
+  }
+}
+
+// --- Detailed 24-Part Sculpted 3D Lion Shepherd (Layered Mane, Running Legs, Fangs & Tail) ---
+
+fn draw_lion_mesh_3d() -[Mem]-> unit {
+  let lx = arena_wx(HerdMem.lion_x);
+  let lz = arena_wz(HerdMem.lion_y);
+  let hop = HerdMem.lion_hop;
+  let roar = HerdMem.roar_timer;
+  let yaw = to_mesh_yaw(HerdMem.lion_yaw);
+
+  let bounce = if hop < 8 { hop * 20 } else { (15 - hop) * 20 };
+  let stride = fixed_to_int(fixed_sin(hop * 256) * 175.0);
+  let tail_wag = fixed_to_int(fixed_sin(HerdMem.tick * 128) * 140.0);
+
+  let fur_gold = pack_rgba(232, 174, 72, 255);
+  let fur_light = pack_rgba(246, 206, 124, 255);
+  let fur_dark = pack_rgba(196, 138, 48, 255);
+  let mane_outer = pack_rgba(124, 60, 22, 255);
+  let mane_inner = pack_rgba(158, 82, 28, 255);
+  let paw_c = pack_rgba(156, 104, 42, 255);
+  let nose_c = pack_rgba(48, 28, 22, 255);
+  let eye_c = if roar > 0 { pack_rgba(255, 238, 92, 255) } else { pack_rgba(255, 196, 56, 255) };
+
+  // 1. Golden 3D Roar Shockwave Ring + Dynamic Golden Point Light!
+  if roar > 0 {
+    let rad = 580 + (24 - roar) * 105;
+    let glow_c = pack_rgba(255, 214, 76, 255);
+    for seg in 0..8 {
+      let syaw = (seg * 512) & 4095;
+      mesh3d_limb(lx, 55, lz, syaw, -210, 0, rad - 45, 210, 95, rad + 45, MAT_GLOW, glow_c, 255, 1);
+    }
+    mesh3d_add_light(lx, 850, lz, 6200, 255, 198, 72, 220 + roar * 8);
+  }
+
+  // 2. Four Muscular Animated Running Legs + Paws
+  // Front-Left & Front-Right legs
+  mesh3d_limb(lx, 0, lz, yaw, -255, 90, 180 + stride, -115, 490, 330 + stride, MAT_SOLID, fur_gold, 238, 0);
+  mesh3d_limb(lx, 0, lz, yaw, -275, 0, 175 + stride, -105, 110, 365 + stride, MAT_SOLID, paw_c, 230, 0);
+  mesh3d_limb(lx, 0, lz, yaw, 115, 0, 180 - stride, 255, 490, 330 - stride, MAT_SOLID, fur_gold, 238, 0);
+  mesh3d_limb(lx, 0, lz, yaw, 105, 0, 175 - stride, 275, 110, 365 - stride, MAT_SOLID, paw_c, 230, 0);
+  // Hind-Left & Hind-Right haunches + paws
+  mesh3d_limb(lx, 0, lz, yaw, -245, 90, -420 - stride, -105, 510, -240 - stride, MAT_SOLID, fur_dark, 232, 0);
+  mesh3d_limb(lx, 0, lz, yaw, -260, 0, -425 - stride, -95, 110, -225 - stride, MAT_SOLID, paw_c, 225, 0);
+  mesh3d_limb(lx, 0, lz, yaw, 105, 90, -420 + stride, 245, 510, -240 + stride, MAT_SOLID, fur_dark, 232, 0);
+  mesh3d_limb(lx, 0, lz, yaw, 95, 0, -425 + stride, 260, 110, -225 + stride, MAT_SOLID, paw_c, 225, 0);
+
+  // 3. Sculpted Muscular Torso (Broad Chest + Lithe Waist + Muscular Rump)
+  let by = bounce;
+  mesh3d_limb(lx, by, lz, yaw, -265, 380, -35, 265, 810, 365, MAT_SOLID, fur_gold, 248, 0);
+  mesh3d_limb(lx, by, lz, yaw, -220, 415, -365, 220, 770, 20, MAT_SOLID, fur_gold, 244, 0);
+  mesh3d_limb(lx, by, lz, yaw, -245, 420, -475, 245, 795, -295, MAT_SOLID, fur_dark, 240, 0);
+  // Pale belly under-chest
+  mesh3d_limb(lx, by, lz, yaw, -175, 345, -280, 175, 440, 290, MAT_SOLID, fur_light, 242, 0);
+
+  // 4. Luxurious 3-Tiered 3D Royal Mane (Chest ruff + Outer crown + Side ruffs!)
+  mesh3d_limb(lx, by, lz, yaw, -365, 440, 205, 365, 1085, 505, MAT_SOLID, mane_outer, 242, 0);
+  mesh3d_limb(lx, by, lz, yaw, -315, 515, 285, 315, 1145, 565, MAT_SOLID, mane_inner, 248, 0);
+  mesh3d_limb(lx, by, lz, yaw, -240, 315, 265, 240, 560, 515, MAT_SOLID, mane_outer, 238, 0);
+
+  // 5. Sculpted Lion Head, Snout, Ears, Glowing Eyes & Roaring Jaw with Fangs!
+  let head_lift = if roar > 0 { 65 } else { 0 };
+  mesh3d_limb(lx, by + head_lift, lz, yaw, -195, 640, 465, 195, 995, 745, MAT_SOLID, fur_gold, 250, 0);
+  // Rounded ears peeking out of the mane
+  mesh3d_limb(lx, by + head_lift, lz, yaw, -235, 950, 510, -135, 1075, 610, MAT_SOLID, fur_dark, 245, 0);
+  mesh3d_limb(lx, by + head_lift, lz, yaw, 135, 950, 510, 235, 1075, 610, MAT_SOLID, fur_dark, 245, 0);
+  // Protruding pale muzzle + dark nose
+  mesh3d_limb(lx, by + head_lift, lz, yaw, -135, 650, 710, 135, 835, 895, MAT_SOLID, fur_light, 252, 0);
+  mesh3d_limb(lx, by + head_lift, lz, yaw, -65, 765, 870, 65, 845, 935, MAT_SOLID, nose_c, 245, 0);
+  // Glowing amber eyes
+  mesh3d_limb(lx, by + head_lift, lz, yaw, -145, 845, 715, -65, 915, 768, MAT_GLOW, eye_c, 255, 1);
+  mesh3d_limb(lx, by + head_lift, lz, yaw, 65, 845, 715, 145, 915, 768, MAT_GLOW, eye_c, 255, 1);
+  // Roaring open mouth & gleaming white fangs!
+  if roar > 0 {
+    mesh3d_limb(lx, by + head_lift, lz, yaw, -110, 530, 725, 110, 660, 885, MAT_SOLID, pack_rgba(148, 28, 32, 255), 245, 0);
+    mesh3d_limb(lx, by + head_lift, lz, yaw, -85, 595, 835, -45, 670, 875, MAT_SOLID, pack_rgba(255, 252, 244, 255), 255, 0);
+    mesh3d_limb(lx, by + head_lift, lz, yaw, 45, 595, 835, 85, 670, 875, MAT_SOLID, pack_rgba(255, 252, 244, 255), 255, 0);
+  }
+
+  // 6. Articulated Swishing Tail + Dark Bushy Tuft
+  mesh3d_limb(lx, by, lz, yaw, -45 + tail_wag / 2, 620, -680, 45 + tail_wag / 2, 715, -450, MAT_SOLID, fur_gold, 238, 0);
+  mesh3d_limb(lx, by, lz, yaw, -50 + tail_wag, 690, -860, 50 + tail_wag, 810, -650, MAT_SOLID, fur_dark, 238, 0);
+  mesh3d_limb(lx, by, lz, yaw, -88 + tail_wag, 760, -985, 88 + tail_wag, 920, -825, MAT_SOLID, mane_outer, 242, 0);
+}
+
+// --- Full Frame Renderer (Pass 1: Vulkan 1K Photo-PBR 3D Savanna, Pass 2: Crisp 2D HUD) ---
+
+fn render_herd_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
+  req vw >= 560 && vh >= 460
+{
+  set_clip_rect(0, 0, 0, vw, vh);
+
+  // 1. Begin Native Vulkan 3D Mesh Pass (Close Follow Camera, FOV=54, Sky Mode 2 = Golden Savanna!)
+  mesh3d_begin(herd_cam_x(), herd_cam_y(), herd_cam_z(), 0, -114, 54, 2, FOG_NONE);
+
+  // 2. Elevated 3D Savanna Plateau (1K Photo-PBR `sparse_grass` top + `aerial_ground_rock` cliff skirt)
+  let grass_c = pack_rgba(218, 224, 172, 255);
+  let cliff_c = pack_rgba(186, 152, 118, 255);
+  mesh3d_quad(0, -5200, 0, -5200, 0, 0, 5200, 0, -5200, 5120, 0, 5200, 0, 5200, 5120, 5120, -5200, 0, 5200, 0, 5120, 0, 127, 0, MAT_TILE, grass_c, 245, 0);
+  // Thick rocky mesa cliff walls below the plateau
+  mesh3d_box(0, -5220, -950, -5220, 5220, -10, 5220, MAT_ROCK, cliff_c, 235, 0, 1800);
+
+  // 3. Corral Dirt Floor (Arena X: 700..960 -> World 1880..4480, Arena Y: 112..368 -> World -4000..-1440)
+  let dirt_c = pack_rgba(216, 186, 146, 255);
+  mesh3d_quad(0, 1880, 14, -4000, 0, 0, 4480, 14, -4000, 2048, 0, 4480, 14, -1440, 2048, 2048, 1880, 14, -1440, 0, 2048, 0, 127, 0, MAT_BRICK, dirt_c, 245, 0);
+
+  // 4. 3D Wooden Sheep Corral Fence (`medieval_wood` 1K photo-PBR) + Warm Gate Lanterns!
+  let wood_c = pack_rgba(186, 150, 112, 255);
+  let post_c = pack_rgba(154, 118, 86, 255);
+  // North Fence Rails (Z = -4000)
+  mesh3d_box(0, 1840, 240, -4050, 4520, 355, -3950, MAT_TIMBER, wood_c, 240, 0, 1100);
+  mesh3d_box(0, 1840, 520, -4050, 4520, 635, -3950, MAT_TIMBER, wood_c, 240, 0, 1100);
+  // South Fence Rails (Z = -1440)
+  mesh3d_box(0, 1840, 240, -1490, 4520, 355, -1390, MAT_TIMBER, wood_c, 240, 0, 1100);
+  mesh3d_box(0, 1840, 520, -1490, 4520, 635, -1390, MAT_TIMBER, wood_c, 240, 0, 1100);
+  // East Fence Rails (X = 4480)
+  mesh3d_box(0, 4430, 240, -4040, 4530, 355, -1400, MAT_TIMBER, wood_c, 240, 0, 1100);
+  mesh3d_box(0, 4430, 520, -4040, 4530, 635, -1400, MAT_TIMBER, wood_c, 240, 0, 1100);
+  // West Fence Gate Wings (leaving wide central gate Z = -3460..-1980!)
+  mesh3d_box(0, 1830, 240, -4040, 1930, 355, -3460, MAT_TIMBER, wood_c, 240, 0, 1100);
+  mesh3d_box(0, 1830, 520, -4040, 1930, 635, -3460, MAT_TIMBER, wood_c, 240, 0, 1100);
+  mesh3d_box(0, 1830, 240, -1980, 1930, 355, -1400, MAT_TIMBER, wood_c, 240, 0, 1100);
+  mesh3d_box(0, 1830, 520, -1980, 1930, 635, -1400, MAT_TIMBER, wood_c, 240, 0, 1100);
+  // Corner & Gate Posts
+  mesh3d_box(0, 1790, 0, -4090, 1970, 820, -3910, MAT_TIMBER, post_c, 235, 0, 900);
+  mesh3d_box(0, 4390, 0, -4090, 4570, 820, -3910, MAT_TIMBER, post_c, 235, 0, 900);
+  mesh3d_box(0, 4390, 0, -1530, 4570, 820, -1350, MAT_TIMBER, post_c, 235, 0, 900);
+  mesh3d_box(0, 1790, 0, -1530, 1970, 820, -1350, MAT_TIMBER, post_c, 235, 0, 900);
+  // Tall Gatehouse Posts with Glowing Warm Lanterns + Dynamic Point Lights!
+  let gate_glow = if HerdMem.pen_flash_timer > 0 {
+    pack_rgba(128, 255, 168, 255)
+  } else {
+    pack_rgba(255, 214, 96, 255)
+  };
+  mesh3d_box(0, 1770, 0, -3560, 1990, 1080, -3340, MAT_TIMBER, post_c, 240, 0, 900);
+  mesh3d_box(0, 1810, 1080, -3520, 1950, 1280, -3380, MAT_GLOW, gate_glow, 255, 1, 300);
+  mesh3d_box(0, 1770, 0, -2100, 1990, 1080, -1880, MAT_TIMBER, post_c, 240, 0, 900);
+  mesh3d_box(0, 1810, 1080, -2060, 1950, 1280, -1920, MAT_GLOW, gate_glow, 255, 1, 300);
+  mesh3d_add_light(1880, 1300, -3450, 5600, 255, 206, 112, 230);
+  mesh3d_add_light(1880, 1300, -1990, 5600, 255, 206, 112, 230);
+
+  // 5. 4 Sculpted 3D Acacia Trees & Savanna Boulder Clusters framing the plateau
+  draw_acacia_3d(-4450, -4350, 118);
+  draw_acacia_3d(-4550, 4150, 95);
+  draw_acacia_3d(4450, 4250, 108);
+  draw_acacia_3d(-450, -4550, 105);
+  draw_boulder_3d(-3450, -4450, 420, 340);
+  draw_boulder_3d(3850, 3650, 380, 290);
+  draw_boulder_3d(-3950, 2850, 320, 240);
+
+  // 6. 14 Large Fluffy 3D Woolly Sheep
+  for i in 0..14 {
+    draw_sheep_mesh_3d(i);
+  }
+
+  // 7. Detailed 24-Part Sculpted 3D Lion Shepherd!
+  draw_lion_mesh_3d();
+
+  // --- PASS 2: Crisp 2D SDF HUD Overlay ---
+  ui_rect(16, 14, 420, 52, 10, 1, 6, pack_rgba(24, 18, 12, 224), pack_rgba(218, 168, 78, 215), 0);
+  ui_text(30, 22, "INFIMUM LION HERD  •  VULKAN PBR 3D", 14, 1, pack_rgba(255, 232, 168, 255), 0);
+  ui_text(30, 42, "WASD / MOUSE MOVE • SPACE ROAR • Z REWIND • R RESET", 11, 0, pack_rgba(216, 198, 168, 235), 0);
+
+  // Top-right Herd Counter & Score pill
+  let rx = vw - 252;
+  ui_rect(rx, 14, 236, 52, 10, 1, 6, pack_rgba(24, 18, 12, 224), pack_rgba(218, 168, 78, 215), 0);
+  ui_text(rx + 16, 22, "PENNED", 11, 1, pack_rgba(196, 178, 148, 255), 0);
+  ui_fmt(rx + 16, 38, "{HerdMem.penned_count} / 14", 18, 1, pack_rgba(124, 246, 164, 255), 0);
+  ui_text(rx + 114, 22, "SCORE", 11, 1, pack_rgba(196, 178, 148, 255), 0);
+  ui_int(rx + 114, 38, HerdMem.score, 18, 1, pack_rgba(255, 222, 112, 255), 0);
+
+  // Bottom Stamina / Roar Bar + Controls
+  let hud_y = vh - 58;
+  ui_rect(16, hud_y, vw - 32, 46, 10, 1, 6, pack_rgba(24, 18, 12, 226), pack_rgba(186, 142, 74, 215), 0);
+  ui_text(32, hud_y + 15, "ROAR STAMINA", 12, 1, pack_rgba(232, 206, 152, 255), 0);
+  let bar_x = 148;
+  let bar_w = 200;
+  ui_rect(bar_x, hud_y + 14, bar_w, 18, 6, 1, 0, pack_rgba(44, 32, 22, 255), pack_rgba(148, 112, 64, 220), 0);
+  let fill_w = clamp_i64((HerdMem.stamina * (bar_w - 4)) / 100, 0, bar_w - 4);
+  let bar_col = if HerdMem.stamina >= 28 { pack_rgba(248, 186, 52, 255) } else { pack_rgba(168, 92, 46, 255) };
+  if fill_w > 0 {
+    ui_rect(bar_x + 2, hud_y + 16, fill_w, 14, 5, 0, 0, bar_col, 0, 0);
+  }
+
+  // Rewind [Z] button
+  let rew_x = vw - 266;
+  let btn_y = hud_y + 7;
+  let hov_z = point_in_rect(mx, my, rew_x, btn_y, 114, 32);
+  if hov_z { gfx_set_cursor(CursorKind::Pointer); }
+  ui_rect(rew_x, btn_y, 114, 32, 8, 1, 2, if hov_z { pack_rgba(68, 50, 32, 255) } else { pack_rgba(44, 32, 22, 255) }, pack_rgba(196, 148, 82, 235), 0);
+  ui_text(rew_x + 16, btn_y + 9, "Rewind [Z]", 12, 1, pack_rgba(248, 228, 190, 255), 0);
+  if hov_z && m_clicked == 1 && HerdMem.snap_count > 10 {
+    rewind_snapshots(24);
+  }
+
+  // Restart [R] button
+  let rst_x = vw - 140;
+  let hov_r = point_in_rect(mx, my, rst_x, btn_y, 114, 32);
+  if hov_r { gfx_set_cursor(CursorKind::Pointer); }
+  ui_rect(rst_x, btn_y, 114, 32, 8, 1, 2, if hov_r { pack_rgba(68, 50, 32, 255) } else { pack_rgba(44, 32, 22, 255) }, pack_rgba(196, 148, 82, 235), 0);
+  ui_text(rst_x + 14, btn_y + 9, "Restart [R]", 12, 1, pack_rgba(248, 228, 190, 255), 0);
+  if hov_r && m_clicked == 1 {
+    reset_herd(HerdMem.rng_state + HerdMem.tick + 7919);
+    sfx_play(SFX_CLICK, 110, 75);
+  }
+
+  // Victory banner
+  if HerdMem.win_tick > 0 {
+    let bx = vw / 2 - 220;
+    let by = vh / 2 - 86;
+    ui_rect(bx, by, 440, 172, 14, 2, 18, pack_rgba(26, 20, 14, 242), pack_rgba(255, 208, 72, 255), 0);
+    ui_fmt_centered(vw / 2, by + 24, "ALL 14 SHEEP CORRALLED!", 20, 1, pack_rgba(255, 230, 128, 255), 0);
+    ui_fmt_centered(vw / 2, by + 64, "FINAL SCORE: {HerdMem.score}", 18, 1, pack_rgba(124, 248, 168, 255), 0);
+    ui_fmt_centered(vw / 2, by + 112, "Press [R] to herd a new flock", 14, 0, pack_rgba(206, 192, 166, 255), 0);
+  }
+}

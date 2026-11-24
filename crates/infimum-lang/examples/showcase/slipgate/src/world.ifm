@@ -1,0 +1,224 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM SLIPGATE — E1M1: THE SLIPGATE CITADEL (Large 6-Zone Multi-Room Gothic Dungeon)
+// Zone 1: Canyon Courtyard (overhead wooden plank bridge, fluted columns, canyon cliffs, stone stairs)
+// Zone 2: Great Rafter Hall (diagonal riveted roof rafters, timber paneling, terracotta flagstones)
+// Zone 3: West Flanking Gallery (armory alcoves, flanking route to the north crypt)
+// Zone 4: East Runic Crypt (guarded Gold Key pedestal unlocking the Sanctum Gate)
+// Zone 5: Molten Lava Bridge & Crypt (glowing lava trenches with wide stone bridge)
+// Zone 6: SlipGate Sanctum (Iron Gate -> Elder Shambler boss & glowing SlipGate portal)
+
+use "abi.ifm";
+
+fn add_sector(x0: i64, z0: i64, x1: i64, z1: i64, fy: i64, mat: i64, col: i64) -[Mem]-> unit {
+  let n = FpsMem.sector_cnt;
+  if n >= 0 && n < 40 {
+    FpsMem.sectors[n].x0 = x0;
+    FpsMem.sectors[n].z0 = z0;
+    FpsMem.sectors[n].x1 = x1;
+    FpsMem.sectors[n].z1 = z1;
+    FpsMem.sectors[n].fy = fy;
+    FpsMem.sectors[n].mat = mat;
+    FpsMem.sectors[n].col = col;
+    FpsMem.sectors[n].pad = 0;
+    FpsMem.sector_cnt = n + 1;
+  }
+}
+
+fn add_wall_box(x0: i64, z0: i64, x1: i64, z1: i64, y0: i64, y1: i64, mat: i64, col: i64) -[Mem]-> unit {
+  let n = FpsMem.wall_cnt;
+  if n >= 0 && n < 112 {
+    FpsMem.walls[n].x0 = x0;
+    FpsMem.walls[n].z0 = z0;
+    FpsMem.walls[n].x1 = x1;
+    FpsMem.walls[n].z1 = z1;
+    FpsMem.walls[n].y0 = y0;
+    FpsMem.walls[n].y1 = y1;
+    FpsMem.walls[n].mat = mat;
+    FpsMem.walls[n].col = col;
+    FpsMem.wall_cnt = n + 1;
+  }
+}
+
+fn spawn_enemy(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
+  req idx >= 0 && idx < 16
+{
+  let hp = if kind == 3 { 210 } else if kind == 2 { 115 } else { 70 };
+  FpsMem.enemies[idx].x = x;
+  FpsMem.enemies[idx].y = y;
+  FpsMem.enemies[idx].z = z;
+  FpsMem.enemies[idx].kind = kind;
+  FpsMem.enemies[idx].hp = hp;
+  FpsMem.enemies[idx].state = 0;
+  FpsMem.enemies[idx].cd = 28 + idx * 5;
+  FpsMem.enemies[idx].flash = 0;
+  FpsMem.enemies[idx].anim = idx * 11;
+  FpsMem.enemies[idx].pad = 0;
+  FpsMem.enemies[idx].spawn_x = x;
+  FpsMem.enemies[idx].spawn_z = z;
+}
+
+fn spawn_item(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
+  req idx >= 0 && idx < 16
+{
+  FpsMem.items[idx].x = x;
+  FpsMem.items[idx].y = y;
+  FpsMem.items[idx].z = z;
+  FpsMem.items[idx].kind = kind;
+  FpsMem.items[idx].active = 1;
+  FpsMem.items[idx].pad = 0;
+}
+
+fn build_citadel_world() -[Mem]-> unit {
+  FpsMem.sector_cnt = 0;
+  FpsMem.wall_cnt = 0;
+
+  let floor_terra = pack_rgba(176, 152, 134, 255);
+  let floor_step = pack_rgba(186, 174, 156, 255);
+  let rock_col = pack_rgba(188, 152, 126, 255);
+  let brick_col = pack_rgba(182, 162, 140, 255);
+  let dark_brick = pack_rgba(154, 138, 122, 255);
+  let pillar_col = pack_rgba(196, 178, 158, 255);
+  let wood_col = pack_rgba(174, 146, 114, 255);
+  let iron_col = pack_rgba(152, 156, 168, 255);
+
+  // --- 1. WALKABLE SECTORS (No overlapping y=0 sectors -> zero Z-fighting!) ---
+  // Single continuous dungeon floor (-10500..10500 x -20500..8500)
+  add_sector(-10500, -20500, 10500, 8500, 0, MAT_TILE, floor_terra);
+
+  // Zone 1 Canyon Entrance Steps (rising gently toward the Great Hall)
+  add_sector(-2200, 2000, 2200, 2700, 110, MAT_BRICK, floor_step);
+  // Zone 1 Mossy Stone Ledge on the left (like screenshot #1!)
+  add_sector(-4400, 3600, -2900, 6800, 280, MAT_ROCK, pack_rgba(156, 168, 128, 255));
+
+  // Zone 4 East Crypt Gold Key Dais
+  add_sector(7400, -5400, 9600, -3200, 180, MAT_BRICK, floor_step);
+
+  // Zone 5 Elevated Stone Bridge across the Lava Trench
+  add_sector(-1900, -14400, 1900, -6800, 120, MAT_BRICK, floor_step);
+
+  // Zone 6 North SlipGate Sanctum Dais & Steps
+  add_sector(-3200, -15800, 3200, -15000, 120, MAT_BRICK, floor_step);
+  add_sector(-4200, -20300, 4200, -15800, 240, MAT_TILE, floor_step);
+
+  // --- 2. OUTER CITADEL PERIMETER WALLS (indices 0..3) ---
+  add_wall_box(-10900, -20900, -10500, 8900, 0, 4400, MAT_BRICK, brick_col);
+  add_wall_box(10500, -20900, 10900, 8900, 0, 4400, MAT_BRICK, brick_col);
+  add_wall_box(-10900, -20900, 10900, -20500, 0, 4400, MAT_BRICK, brick_col);
+  add_wall_box(-10900, 8500, 10900, 8900, 0, 4400, MAT_ROCK, rock_col);
+
+  // --- 3. ZONE 1: CANYON COURTYARD (Z = 2000..8500, X = -4600..4600) ---
+  // Left & Right Canyon Cliff Walls enclosing the starting gorge
+  add_wall_box(-10500, 2000, -4600, 8500, 0, 4600, MAT_ROCK, rock_col);
+  add_wall_box(4600, 2000, 10500, 8500, 0, 4600, MAT_ROCK, rock_col);
+  // 3 Massive Fluted Temple Columns along the right canyon edge (like screenshot #1!)
+  add_wall_box(3400, 6200, 4550, 7350, 0, 4800, MAT_PILLAR, pillar_col);
+  add_wall_box(3400, 4300, 4550, 5450, 0, 4800, MAT_PILLAR, pillar_col);
+  add_wall_box(3400, 2400, 4550, 3550, 0, 4800, MAT_PILLAR, pillar_col);
+  // Gatehouse walls framing the wide entry into the Great Hall (doorway X = -2000..2000)
+  add_wall_box(-5600, 1500, -2000, 2100, 0, 4200, MAT_BRICK, brick_col);
+  add_wall_box(2000, 1500, 5600, 2100, 0, 4200, MAT_BRICK, brick_col);
+  // Lintel beam over the Canyon -> Great Hall archway
+  add_wall_box(-2200, 1500, 2200, 2100, 2500, 4200, MAT_BRICK, dark_brick);
+
+  // --- 4. ZONE 2: GREAT RAFTER HALL (Z = -6500..1500, X = -5600..5600) ---
+  // West Hall Partition (leaves 2 wide archways at Z=-1400..800 and Z=-5600..-3400)
+  add_wall_box(-5800, 800, -5200, 1500, 0, 4000, MAT_BRICK, brick_col);
+  add_wall_box(-5800, -3400, -5200, -1400, 0, 4000, MAT_BRICK, brick_col);
+  add_wall_box(-5800, -6800, -5200, -5600, 0, 4000, MAT_BRICK, brick_col);
+  // East Hall Partition (leaves 2 wide archways into East Runic Crypt)
+  add_wall_box(5200, 800, 5800, 1500, 0, 4000, MAT_BRICK, brick_col);
+  add_wall_box(5200, -3400, 5800, -1400, 0, 4000, MAT_BRICK, brick_col);
+  add_wall_box(5200, -6800, 5800, -5600, 0, 4000, MAT_BRICK, brick_col);
+
+  // Wooden Wall Paneling Upper Trim (clean flush mount, zero Z-fighting!)
+  add_wall_box(-5190, -3380, -5060, -1420, 1450, 2650, MAT_TIMBER, wood_col);
+  add_wall_box(5060, -3380, 5190, -1420, 1450, 2650, MAT_TIMBER, wood_col);
+  // Timber Support Pillars along the Great Hall sides
+  add_wall_box(-4950, -100, -4550, 300, 0, 2900, MAT_TIMBER, wood_col);
+  add_wall_box(-4950, -4400, -4550, -4000, 0, 2900, MAT_TIMBER, wood_col);
+  add_wall_box(4550, -100, 4950, 300, 0, 2900, MAT_TIMBER, wood_col);
+  add_wall_box(4550, -4400, 4950, -4000, 0, 2900, MAT_TIMBER, wood_col);
+
+  // North Wall of Great Hall leading to Lava Bridge (flush with X=-5200..5200 -> zero corner Z-fighting!)
+  add_wall_box(-5195, -7000, -2100, -6400, 0, 4000, MAT_BRICK, dark_brick);
+  add_wall_box(2100, -7000, 5195, -6400, 0, 4000, MAT_BRICK, dark_brick);
+  add_wall_box(-2100, -7000, 2100, -6400, 2700, 4000, MAT_BRICK, dark_brick);
+
+  // --- 5. ZONE 3 (WEST GALLERY) & ZONE 4 (EAST RUNIC CRYPT) ---
+  // North walls closing off West/East wings at Z = -14200, with side passages into Lava Crypt!
+  add_wall_box(-10500, -14800, -5400, -14200, 0, 4000, MAT_BRICK, brick_col);
+  add_wall_box(5400, -14800, 10500, -14200, 0, 4000, MAT_BRICK, brick_col);
+  // West Gallery decorative pillars & cover
+  add_wall_box(-8400, -2800, -7800, -2200, 0, 3600, MAT_PILLAR, pillar_col);
+  add_wall_box(-8400, -8200, -7800, -7600, 0, 3600, MAT_PILLAR, pillar_col);
+  add_wall_box(-8400, -11600, -7800, -11000, 0, 3600, MAT_PILLAR, pillar_col);
+  // East Crypt decorative pillars around Gold Key Dais
+  add_wall_box(7600, -2200, 8200, -1600, 0, 3600, MAT_PILLAR, pillar_col);
+  add_wall_box(7600, -6800, 8200, -6200, 0, 3600, MAT_PILLAR, pillar_col);
+  add_wall_box(7600, -11400, 8200, -10800, 0, 3600, MAT_PILLAR, pillar_col);
+  // Partitions separating Lava Crypt from West/East Galleries (leaving wide passages at Z = -13200..-10800)
+  add_wall_box(-5800, -10800, -5200, -7000, 0, 4000, MAT_BRICK, dark_brick);
+  add_wall_box(5200, -10800, 5800, -7000, 0, 4000, MAT_BRICK, dark_brick);
+
+  // --- 6. ZONE 5 (LAVA BRIDGE) & ZONE 6 (SLIPGATE SANCTUM GATEHOUSE) ---
+  // Sanctum Gatehouse Wall at Z = -14800..-14200 (central Iron Gate X = -1900..1900!)
+  add_wall_box(-5800, -14800, -1900, -14200, 0, 4200, MAT_BRICK, dark_brick);
+  add_wall_box(1900, -14800, 5800, -14200, 0, 4200, MAT_BRICK, dark_brick);
+  add_wall_box(-2100, -14800, 2100, -14200, 2600, 4200, MAT_BRICK, dark_brick);
+  // Close off North Sanctum side walls at X = -5800 and X = 5800
+  add_wall_box(-10500, -20500, -5400, -14800, 0, 4400, MAT_ROCK, rock_col);
+  add_wall_box(5400, -20500, 10500, -14800, 0, 4400, MAT_ROCK, rock_col);
+  // Four Sanctum Columns flanking the SlipGate Boss Arena
+  add_wall_box(-3800, -17200, -3200, -16600, 240, 4200, MAT_PILLAR, pillar_col);
+  add_wall_box(3200, -17200, 3800, -16600, 240, 4200, MAT_PILLAR, pillar_col);
+  add_wall_box(-3800, -19400, -3200, -18800, 240, 4200, MAT_PILLAR, pillar_col);
+  add_wall_box(3200, -19400, 3800, -18800, 240, 4200, MAT_PILLAR, pillar_col);
+  // SlipGate Portal Archway at North End (Z = -19700)
+  add_wall_box(-1200, -19900, -780, -19400, 240, 2700, MAT_PILLAR, pillar_col);
+  add_wall_box(780, -19900, 1200, -19400, 240, 2700, MAT_PILLAR, pillar_col);
+  add_wall_box(-1250, -19900, 1250, -19400, 2400, 2820, MAT_METAL, iron_col);
+
+  // --- 7. POPULATE 16 ENEMIES ACROSS ALL 6 ZONES ---
+  // Zone 1 Canyon guards
+  spawn_enemy(0, -1200, 0, 3600, 1);
+  spawn_enemy(1, 1400, 0, 3200, 1);
+  // Zone 2 Great Rafter Hall (Shambler + Knights + Grunts!)
+  spawn_enemy(2, -2400, 0, -1200, 1);
+  spawn_enemy(3, 2400, 0, -1200, 1);
+  spawn_enemy(4, 0, 0, -3400, 3);       // Hall Shambler (like screenshot #2!)
+  spawn_enemy(5, -2600, 0, -4800, 2);
+  spawn_enemy(6, 2600, 0, -4800, 2);
+  // Zone 3 West Flanking Gallery
+  spawn_enemy(7, -8000, 0, -600, 1);
+  spawn_enemy(8, -8000, 0, -5600, 2);
+  spawn_enemy(9, -8000, 0, -12000, 2);
+  // Zone 4 East Runic Crypt (Guarding the Gold Key!)
+  spawn_enemy(10, 8000, 0, -600, 1);
+  spawn_enemy(11, 8200, 180, -4400, 2);
+  spawn_enemy(12, 8200, 0, -9600, 2);
+  // Zone 5 Lava Bridge
+  spawn_enemy(13, 0, 120, -11200, 2);
+  // Zone 6 SlipGate Sanctum (Final Boss + Escort!)
+  spawn_enemy(14, -2200, 240, -17200, 2);
+  spawn_enemy(15, 0, 240, -18200, 3);   // Elder Shambler Boss!
+
+  // --- 8. POPULATE 16 PICKUPS (1=Medkit, 2=Shells, 3=Armor, 4=GOLD KEY) ---
+  spawn_item(0, -3400, 280, 5200, 2);   // Canyon ledge shells
+  spawn_item(1, 2400, 0, 5400, 1);      // Canyon medkit
+  spawn_item(2, -3800, 0, -600, 2);     // Great Hall west shells
+  spawn_item(3, 3800, 0, -600, 3);      // Great Hall east armor
+  spawn_item(4, 0, 0, -5400, 1);        // Great Hall north medkit
+  spawn_item(5, -9200, 0, -4000, 3);    // West Gallery heavy armor
+  spawn_item(6, -9200, 0, -9800, 2);    // West Gallery shells
+  spawn_item(7, -7200, 0, -12800, 1);   // West Gallery medkit
+  spawn_item(8, 8500, 180, -4300, 4);   // *** GOLD RUNIC KEY in East Crypt! ***
+  spawn_item(9, 9200, 0, -1800, 2);     // East Crypt shells
+  spawn_item(10, 9200, 0, -8200, 1);    // East Crypt medkit
+  spawn_item(11, 7400, 0, -12800, 3);   // East Crypt armor
+  spawn_item(12, 0, 120, -8600, 2);     // Lava Bridge shells
+  spawn_item(13, 0, 120, -13200, 1);    // Pre-Gate medkit
+  spawn_item(14, -2600, 240, -16200, 2);// Sanctum shells
+  spawn_item(15, 2600, 240, -16200, 3); // Sanctum armor
+}

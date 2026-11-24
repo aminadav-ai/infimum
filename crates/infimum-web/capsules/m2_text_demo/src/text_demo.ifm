@@ -1,0 +1,433 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM WEB M2 — Pure-Infimum GPU Text Engine, Word-Wrap, Tables & Clipboard
+// Modern Infimum: std/prelude + std/text_edit, auto-placed layout with inv,
+// Infimum.Forma header & context menu, match on enum KeySpecial, built-in tests.
+
+use "std/prelude.ifm";
+use "std/text_edit.ifm";
+
+const INPUT_CAP: i64 = 1020;
+const MSG_STRIDE: i64 = 512;
+
+enum UiAction {
+  ToggleTheme = 1,
+  Copy = 10,
+  Cut = 11,
+  Paste = 12,
+  SelectAll = 13,
+}
+
+layout DemoState {
+  tick: word,
+  theme: word inv 0..=1,
+  scroll_y: word inv 0..=4000,
+  max_scroll_y: word inv 0..=4000,
+  cursor_pos: word inv 0..=1020,
+  sel_anchor: word inv 0..=1020,
+  mouse_selecting: word inv 0..=1,
+  pasted_img_w: word inv 0..=4096,
+  pasted_img_h: word inv 0..=4096,
+  msg_count: word inv 0..=16,
+  ctx_open: word inv 0..=1,
+  ctx_x: word,
+  ctx_y: word,
+  host_action: word inv 0..=3,
+  input_buf: words[1024],
+  msgs: words[8192],
+  copy_mailbox: words[1024],
+  paste_mailbox: words[1024],
+}
+
+fn input_len() -[Mem]-> i64
+  ens result >= 0 && result <= INPUT_CAP
+{
+  clamp_i64(tbuf_len(DemoState::input_buf, INPUT_CAP), 0, INPUT_CAP)
+}
+
+fn input_delete_selection() -[Mem]-> bool {
+  let c = DemoState.cursor_pos;
+  let a = DemoState.sel_anchor;
+  if c != a {
+    let pos = tbuf_delete_range(DemoState::input_buf, INPUT_CAP, min_i64(c, a), max_i64(c, a));
+    let safe_p = clamp_i64(pos, 0, INPUT_CAP);
+    DemoState.cursor_pos = safe_p;
+    DemoState.sel_anchor = safe_p;
+    true
+  } else {
+    false
+  }
+}
+
+fn input_insert_char(cp: i64) -[Mem]-> unit {
+  let _ = input_delete_selection();
+  let next = tbuf_insert_char(DemoState::input_buf, INPUT_CAP, DemoState.cursor_pos, cp);
+  let safe_p = clamp_i64(next, 0, INPUT_CAP);
+  DemoState.cursor_pos = safe_p;
+  DemoState.sel_anchor = safe_p;
+}
+
+fn input_submit_to_feed() -[Mem]-> unit {
+  let len = input_len();
+  if len > 0 {
+    let cnt = DemoState.msg_count;
+    let slot = if cnt < 16 { cnt } else { 15 };
+    let dst = DemoState::msgs + slot * MSG_STRIDE;
+    let copy_n = clamp_i64(len, 0, 500);
+    mem_store(dst, copy_n);
+    for i in 0..copy_n max 500 {
+      mem_store(dst + 1 + i, mem_load(DemoState::input_buf + 1 + i));
+    }
+    if cnt < 16 {
+      DemoState.msg_count = cnt + 1;
+    }
+    mem_store(DemoState::input_buf, 0);
+    DemoState.cursor_pos = 0;
+    DemoState.sel_anchor = 0;
+  }
+}
+
+// --- Host Clipboard Hooks (exported to `infimum-web`) ---
+
+export fn ifw_on_paste_text(ptr: i64, len: i64) -[Mem]-> i64 {
+  let n = clamp_i64(len, 0, 512);
+  for i in 0..n max 512 {
+    let cp = mem_load(ptr + 1 + i);
+    if cp >= 32 { input_insert_char(cp); }
+  }
+  n
+}
+
+export fn ifw_on_paste_image(w: i64, h: i64) -[Mem]-> i64 {
+  DemoState.pasted_img_w = clamp_i64(w, 0, 4096);
+  DemoState.pasted_img_h = clamp_i64(h, 0, 4096);
+  1
+}
+
+export fn ifw_get_copy_mailbox_word() -> i64 {
+  DemoState::copy_mailbox
+}
+
+export fn ifw_get_paste_mailbox_word() -> i64 {
+  DemoState::paste_mailbox
+}
+
+export fn ifw_get_copy_text() -[Mem]-> i64 {
+  let len = input_len();
+  let c = clamp_i64(DemoState.cursor_pos, 0, len);
+  let a = clamp_i64(DemoState.sel_anchor, 0, len);
+  let lo = if c == a { 0 } else { min_i64(c, a) };
+  let hi = if c == a { len } else { max_i64(c, a) };
+  let n = clamp_i64(hi - lo, 0, INPUT_CAP);
+  mem_store(DemoState::copy_mailbox, n);
+  for i in 0..n max 1020 {
+    mem_store(DemoState::copy_mailbox + 1 + i, mem_load(DemoState::input_buf + 1 + lo + i));
+  }
+  n
+}
+
+export fn ifw_pop_host_action() -[Mem]-> i64 {
+  let act = DemoState.host_action;
+  DemoState.host_action = 0;
+  act
+}
+
+// --- Infimum.Forma 2.0 Top Header & Right-Click Context Menu ---
+
+forma TopHeader(vw: i64, th: i64)
+  req vw >= 560 && vw <= 4096
+  -[Mem]-> i64
+{
+  Row(x: 0, y: 0, w: vw, h: 48, pad_x: 18, gap: 12, bg: theme_surf(th), border: 1, border_col: theme_border(th), align: center) {
+    Text("Infimum Web M2 — Нативный текстовый GPU-движок (0% Chromium)", grow: 1, h: 24, size: 17, style: 1, color: theme_text(th), overflow: ellipsis)
+    Button(w: 100, h: 28, bg: theme_surf2(th), hover_bg: theme_border(th), border: 1, border_col: theme_border(th), radius: 7, on_click: UiAction::ToggleTheme, align: center) {
+      Text(if th == 0 { "Светлая" } else { "Тёмная" }, w: 84, h: 18, size: 13, style: 1, color: theme_text(th), align: center)
+    }
+  }
+}
+
+forma CtxItem(label: str, shortcut: str, act: i64, th: i64) -[Mem]-> i64 {
+  Button(w: 192, h: 32, bg: theme_surf(th), hover_bg: theme_surf2(th), radius: 6, on_click: act, pad_x: 10, align: center) {
+    Row(w: 172, h: 20, align: center) {
+      Text(label, w: 118, h: 18, size: 14, style: 0, color: theme_text(th))
+      Text(shortcut, w: 54, h: 16, size: 12, style: 2, color: theme_muted(th), align: end)
+    }
+  }
+}
+
+forma ContextMenu(cx: i64, cy: i64, th: i64)
+  req cx >= 0 && cy >= 0
+  -[Mem]-> i64
+{
+  Col(x: cx, y: cy, w: 200, h: 144, pad: 4, gap: 2, bg: theme_surf(th), border: 1, border_col: theme_border(th), radius: 10) {
+    CtxItem("Копировать", "Ctrl+C", UiAction::Copy, th)
+    CtxItem("Вырезать", "Ctrl+X", UiAction::Cut, th)
+    CtxItem("Вставить", "Ctrl+V", UiAction::Paste, th)
+    CtxItem("Выделить всё", "Ctrl+A", UiAction::SelectAll, th)
+  }
+}
+
+// --- Capsule Entrypoints ---
+
+export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu]-> i64 {
+  DemoState.tick = 0;
+  DemoState.theme = THEME_DARK;
+  DemoState.scroll_y = 0;
+  DemoState.max_scroll_y = 0;
+  DemoState.mouse_selecting = 0;
+  DemoState.pasted_img_w = 0;
+  DemoState.pasted_img_h = 0;
+  DemoState.msg_count = 0;
+  DemoState.ctx_open = 0;
+  DemoState.host_action = 0;
+
+  do Mem.store_str(STD_STR_SCRATCH_WORD, "Привет, Infimum Web M2! Попробуйте выделить текст или вставить скриншот (Ctrl+V).");
+  let sptr = mem_load(STD_STR_SCRATCH_WORD);
+  let sn = clamp_i64(mem_load(sptr), 0, 500);
+  mem_store(DemoState::input_buf, sn);
+  for i in 0..sn max 500 {
+    mem_store(DemoState::input_buf + 1 + i, mem_load(sptr + 1 + i));
+  }
+  DemoState.cursor_pos = sn;
+  DemoState.sel_anchor = sn;
+  1
+}
+
+fn handle_key(key_char: i64, key_special: i64) -[Mem]-> unit {
+  if key_char >= 32 {
+    input_insert_char(key_char);
+  }
+  let len = input_len();
+  match key_special {
+    KeySpecial::Backspace => {
+      let next = tbuf_backspace(DemoState::input_buf, INPUT_CAP, DemoState.cursor_pos, DemoState.sel_anchor);
+      let safe_p = clamp_i64(next, 0, INPUT_CAP);
+      DemoState.cursor_pos = safe_p;
+      DemoState.sel_anchor = safe_p;
+    },
+    KeySpecial::Delete => {
+      if !input_delete_selection() && DemoState.cursor_pos < len {
+        let next = tbuf_delete_range(DemoState::input_buf, INPUT_CAP, DemoState.cursor_pos, DemoState.cursor_pos + 1);
+        let safe_p = clamp_i64(next, 0, INPUT_CAP);
+        DemoState.cursor_pos = safe_p;
+        DemoState.sel_anchor = safe_p;
+      }
+    },
+    KeySpecial::Enter => { input_submit_to_feed(); },
+    KeySpecial::ArrowLeft => {
+      let next = clamp_i64(DemoState.cursor_pos - 1, 0, len);
+      DemoState.cursor_pos = next;
+      DemoState.sel_anchor = next;
+    },
+    KeySpecial::ArrowRight => {
+      let next = clamp_i64(DemoState.cursor_pos + 1, 0, len);
+      DemoState.cursor_pos = next;
+      DemoState.sel_anchor = next;
+    },
+    KeySpecial::Home => { DemoState.cursor_pos = 0; DemoState.sel_anchor = 0; },
+    KeySpecial::End => { DemoState.cursor_pos = len; DemoState.sel_anchor = len; },
+    KeySpecial::CtrlA => { DemoState.sel_anchor = 0; DemoState.cursor_pos = len; },
+    KeySpecial::CtrlX => { let _ = input_delete_selection(); },
+    KeySpecial::ShiftLeft => { DemoState.cursor_pos = clamp_i64(DemoState.cursor_pos - 1, 0, len); },
+    KeySpecial::ShiftRight => { DemoState.cursor_pos = clamp_i64(DemoState.cursor_pos + 1, 0, len); },
+    KeySpecial::ShiftHome => { DemoState.cursor_pos = 0; },
+    KeySpecial::ShiftEnd => { DemoState.cursor_pos = len; },
+    _ => {},
+  }
+}
+
+export fn step_ui(
+  vw: i64, vh: i64,
+  mx: i64, my: i64,
+  m_down: i64, m_clicked: i64,
+  wheel_dy: i64, key_char: i64, key_special: i64
+) -[Mem, Gpu]-> i64 {
+  let w = clamp_i64(vw, 560, 4096);
+  let h = clamp_i64(vh, 420, 2160);
+  DemoState.tick += 1;
+  forma_begin_frame(w, h, mx, my, m_clicked, wheel_dy);
+
+  handle_key(key_char, key_special);
+  let mut th = DemoState.theme;
+
+  // 1. Background + Forma Top Header
+  ui_rect(0, 0, w, h, 0, 0, 0, theme_bg(th), 0, 0);
+  if TopHeader(w, th) == UiAction::ToggleTheme {
+    th = if th == THEME_DARK { THEME_LIGHT } else { THEME_DARK };
+    DemoState.theme = th;
+  }
+
+  // 2. Scrollable Feed Area
+  let feed_y = 56;
+  let feed_h = clamp_i64(h - 164, 160, 2000);
+  let col_w = clamp_i64(w - 64, 480, 860);
+  let col_x = (w - col_w) / 2;
+  set_clip_rect(1, col_x - 8, feed_y, col_x + col_w + 16, feed_y + feed_h);
+
+  let next_scr = clamp_i64(DemoState.scroll_y + wheel_dy, 0, DemoState.max_scroll_y);
+  DemoState.scroll_y = next_scr;
+  let mut cy = feed_y + 12 - next_scr;
+
+  // Intro section
+  ui_text(col_x, cy, "1. Перенос строк (Word-Wrap) и кириллица в 1 Draw Call", 19, 1, theme_accent(), 1);
+  cy += 28;
+  do Mem.store_str(STD_STR_SCRATCH_WORD, "Этот текст, таблица ниже, блок кода и поле ввода внизу рендерятся напрямую из WebAssembly-капсулы на языке Infimum через Vulkan/wgpu в один вызов GPU.");
+  let intro_ptr = mem_load(STD_STR_SCRATCH_WORD);
+  let h1 = tbuf_draw_wrapped(intro_ptr, 500, col_x, cy, col_w, 16, 24, 0, theme_text(th), 0, 0, 0, -1, 0, 1, feed_y - 32, feed_y + feed_h + 32);
+  cy += h1 + 16;
+
+  // Comparison Table
+  ui_text(col_x, cy, "2. Нативная таблица сравнения", 18, 1, theme_success(), 1);
+  cy += 28;
+  let c1 = col_x + (col_w * 38) / 100;
+  let c2 = col_x + (col_w * 58) / 100;
+  let c3 = col_x + (col_w * 78) / 100;
+  ui_rect(col_x, cy, col_w, 34, 6, 1, 0, theme_surf2(th), theme_border(th), 1);
+  ui_text(col_x + 10, cy + 9, "Платформа", 14, 1, theme_text(th), 1);
+  ui_text(c1 + 10, cy + 9, "Бинарник", 14, 1, theme_text(th), 1);
+  ui_text(c2 + 10, cy + 9, "Draw Calls", 14, 1, theme_text(th), 1);
+  ui_text(c3 + 10, cy + 9, "Z3 / Паспорт", 14, 1, theme_text(th), 1);
+  cy += 34;
+
+  ui_rect(col_x, cy, col_w, 34, 0, 1, 0, theme_surf(th), theme_border(th), 1);
+  ui_text(col_x + 10, cy + 9, "Infimum Web M2 (Rust + .ifw)", 14, 1, theme_success(), 1);
+  ui_text(c1 + 10, cy + 9, "~9 МБ", 14, 2, theme_text(th), 1);
+  ui_text(c2 + 10, cy + 9, "1 GPU вызов", 14, 2, theme_success(), 1);
+  ui_text(c3 + 10, cy + 9, "✓ Доказано", 14, 1, theme_success(), 1);
+  cy += 34;
+
+  ui_rect(col_x, cy, col_w, 34, 0, 1, 0, theme_surf(th), theme_border(th), 1);
+  ui_text(col_x + 10, cy + 9, "Electron / Chromium IDE", 14, 0, theme_muted(th), 1);
+  ui_text(c1 + 10, cy + 9, "~420 МБ", 14, 2, theme_muted(th), 1);
+  ui_text(c2 + 10, cy + 9, "DOM + Blink", 14, 2, theme_muted(th), 1);
+  ui_text(c3 + 10, cy + 9, "Нет", 14, 0, theme_muted(th), 1);
+  cy += 50;
+
+  // Monospace code card
+  ui_rect(col_x, cy, col_w, 66, 8, 1, 0, theme_surf(th), theme_border(th), 1);
+  ui_text(col_x + 14, cy + 12, "fn buf_can_insert(len: i64, cap: i64) -> bool  // Z3-verified", 14, 2, theme_accent(), 1);
+  ui_text(col_x + 14, cy + 36, "  req len >= 0 && cap >= 0  { len < cap }", 14, 2, theme_text(th), 1);
+  cy += 82;
+
+  // Pasted Screenshot Preview (`kind == 4`)
+  let img_w = DemoState.pasted_img_w;
+  let img_h = DemoState.pasted_img_h;
+  if img_w > 0 && img_h > 0 {
+    let disp_w = clamp_i64(img_w, 120, 420);
+    let disp_h = clamp_i64((disp_w * img_h) / img_w, 80, 260);
+    ui_rect(col_x, cy, disp_w + 20, disp_h + 38, 10, 1, 4, theme_surf(th), theme_accent(), 1);
+    ui_text(col_x + 12, cy + 8, "Вставленный скриншот (Ctrl+V, kind=4):", 13, 1, theme_success(), 1);
+    ui_image(col_x + 10, cy + 28, disp_w, disp_h, 6, 1);
+    cy += disp_h + 52;
+  }
+
+  // Submitted Messages
+  let mcnt = DemoState.msg_count;
+  for mi in 0..mcnt max 16 {
+    let mptr = DemoState::msgs + mi * MSG_STRIDE;
+    let mh = tbuf_measure_wrapped_h(mptr, 500, col_w - 28, 15, 22, 0);
+    let card_h = clamp_i64(mh + 24, 48, 260);
+    ui_rect(col_x, cy, col_w, card_h, 10, 1, 0, theme_surf(th), theme_border(th), 1);
+    let _ = tbuf_draw_wrapped(mptr, 500, col_x + 14, cy + 12, col_w - 28, 15, 22, 0, theme_text(th), 0, 0, 0, -1, 0, 1, feed_y - 32, feed_y + feed_h + 32);
+    cy += card_h + 10;
+  }
+
+  let total_h = (cy + next_scr) - feed_y + 24;
+  let new_max = clamp_i64(total_h - feed_h, 0, 4000);
+  DemoState.max_scroll_y = new_max;
+  if new_max > 0 {
+    ui_scrollbar_v(col_x + col_w + 6, feed_y, feed_h, next_scr, new_max, feed_h, th, false, 0);
+  }
+
+  // 3. Bottom Editable Composer Card
+  let box_y = h - 94;
+  ui_rect(col_x, box_y, col_w, 78, 12, 1, 6, theme_surf(th), theme_accent(), 0);
+  set_clip_rect(2, col_x + 12, box_y + 8, col_x + col_w - 64, box_y + 44);
+
+  let text_x = col_x + 16;
+  let text_y = box_y + 14;
+  if point_in_rect(mx, my, col_x + 8, box_y + 6, col_w - 70, 42) {
+    gfx_set_cursor(2);
+    if m_clicked == 1 {
+      let idx = clamp_i64(tbuf_hit_wrapped(DemoState::input_buf, INPUT_CAP, mx, text_y + 4, text_x, text_y, 4000, 16, 22, 0), 0, INPUT_CAP);
+      DemoState.cursor_pos = idx;
+      DemoState.sel_anchor = idx;
+      DemoState.mouse_selecting = 1;
+    }
+  }
+  if m_down == 1 && DemoState.mouse_selecting == 1 {
+    DemoState.cursor_pos = clamp_i64(tbuf_hit_wrapped(DemoState::input_buf, INPUT_CAP, mx, text_y + 4, text_x, text_y, 4000, 16, 22, 0), 0, INPUT_CAP);
+  } else if m_down == 0 {
+    DemoState.mouse_selecting = 0;
+  }
+
+  let ilen = input_len();
+  let cur_i = clamp_i64(DemoState.cursor_pos, 0, ilen);
+  let anc_i = clamp_i64(DemoState.sel_anchor, 0, ilen);
+  let caret_show = if (DemoState.tick / 28) % 2 == 0 { cur_i } else { -1 };
+  if ilen == 0 {
+    ui_text(text_x, text_y, "Введите сообщение по-русски или нажмите Ctrl+V...", 16, 0, theme_muted(th), 2);
+    if caret_show == 0 { ui_rect(text_x, text_y, 2, 18, 1, 0, 0, theme_accent(), 0, 2); }
+  } else {
+    let _ = tbuf_draw_wrapped(
+      DemoState::input_buf, INPUT_CAP, text_x, text_y, 4000, 16, 22, 0, theme_text(th),
+      min_i64(cur_i, anc_i), max_i64(cur_i, anc_i), pack_rgba(59, 130, 246, 110),
+      caret_show, theme_accent(), 2, box_y, box_y + 48
+    );
+  }
+
+  ui_text(col_x + 16, box_y + 50, "Ctrl+C / Ctrl+V (текст и скриншот) • Выделение мышкой / Shift+Стрелки • Enter — отправить", 12, 0, theme_muted(th), 0);
+
+  let sb_bx = col_x + col_w - 46;
+  let sb_by = box_y + 12;
+  if point_in_rect(mx, my, sb_bx, sb_by, 34, 34) {
+    gfx_set_cursor(1);
+    if m_clicked == 1 { input_submit_to_feed(); }
+  }
+  ui_rect(sb_bx, sb_by, 34, 34, 17, 0, 0, theme_accent(), 0, 0);
+  ui_text(sb_bx + 9, sb_by + 8, "→", 18, 1, pack_rgba(255, 255, 255, 255), 0);
+
+  // 4. Right-Click Context Menu (Infimum.Forma)
+  if key_special == KeySpecial::RightClick {
+    DemoState.ctx_open = 1;
+    DemoState.ctx_x = clamp_i64(mx, 8, w - 210);
+    DemoState.ctx_y = clamp_i64(my, 8, h - 156);
+  } else if key_special == KeySpecial::Escape {
+    DemoState.ctx_open = 0;
+  }
+
+  if DemoState.ctx_open == 1 {
+    let cx = clamp_i64(DemoState.ctx_x, 0, w);
+    let cy_m = clamp_i64(DemoState.ctx_y, 0, h);
+    let act = ContextMenu(cx, cy_m, th);
+    match act {
+      UiAction::Copy => { DemoState.host_action = 1; DemoState.ctx_open = 0; },
+      UiAction::Cut => { DemoState.host_action = 3; DemoState.ctx_open = 0; },
+      UiAction::Paste => { DemoState.host_action = 2; DemoState.ctx_open = 0; },
+      UiAction::SelectAll => { DemoState.sel_anchor = 0; DemoState.cursor_pos = input_len(); DemoState.ctx_open = 0; },
+      _ => {
+        if m_clicked == 1 && !point_in_rect(mx, my, cx, cy_m, 200, 144) {
+          DemoState.ctx_open = 0;
+        }
+      },
+    }
+  }
+
+  if forma_hovered() { gfx_set_cursor(1); }
+  gfx_end_frame()
+}
+
+test "input editing, submit, and clipboard copy work" {
+  let _ = init_app(1, 1024, 768);
+  handle_key(0, KeySpecial::CtrlA);
+  handle_key('A', 0);
+  handle_key('x', 0);
+  handle_key('!', 0);
+  handle_key(0, KeySpecial::Backspace);
+  assert(input_len() == 2);
+  assert(ifw_get_copy_text() == 2);
+  handle_key(0, KeySpecial::Enter);
+  assert(input_len() == 0);
+  assert(DemoState.msg_count == 1);
+}

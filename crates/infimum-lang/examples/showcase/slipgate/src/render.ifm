@@ -1,0 +1,411 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM SLIPGATE — True Native Vulkan 3D Mesh + 256x256 PBR Normal Maps + 24 Dynamic Point Lights
+// Renders E1M1: The SlipGate Citadel (6 connected zones, plank bridge, diagonal roof rafters,
+// iron sanctum gate, 16 articulated 3D monsters, 16 rotating pickups & Gold Key, 3D super-shotgun).
+
+use "abi.ifm";
+use "world.ifm";
+use "logic.ifm";
+
+// --- Articulated 3D Polygon Monsters (Grunt=1, Knight=2, Boss Shambler=3) ---
+
+fn draw_enemy_mesh_3d(idx: i64) -[Mem]-> unit {
+  let i = clamp_i64(idx, 0, 15);
+  let st = FpsMem.enemies[i].state;
+  if st != 2 {
+    let ex = FpsMem.enemies[i].x;
+    let ey = FpsMem.enemies[i].y;
+    let ez = FpsMem.enemies[i].z;
+    let kind = FpsMem.enemies[i].kind;
+    let fl = FpsMem.enemies[i].flash;
+    let anim = FpsMem.enemies[i].anim;
+    let walk = fixed_to_int(fixed_sin(anim * 48) * 145.0);
+    let bob = abs_i64(walk) / 4;
+
+    let dx = FpsMem.cam_x - ex;
+    let dz = FpsMem.cam_z - ez;
+    let ax = abs_i64(dx);
+    let az = abs_i64(dz);
+    let yaw = if az >= ax {
+      if dz >= 0 { 0 } else { 2048 }
+    } else {
+      if dx >= 0 { 1024 } else { 3072 }
+    };
+
+    if kind == 3 {
+      // --- BOSS SHAMBLER (Towering Yeti-like horned beast with crimson claws & fanged maw) ---
+      let fur = if fl > 0 { pack_rgba(255, 225, 215, 255) } else { pack_rgba(210, 194, 178, 255) };
+      let dark = if fl > 0 { pack_rgba(255, 195, 185, 255) } else { pack_rgba(136, 108, 96, 255) };
+      let blood = pack_rgba(176, 26, 24, 255);
+      let horn = pack_rgba(232, 218, 184, 255);
+      mesh3d_limb(ex, ey, ez, yaw, -340, 0, -150 + walk, -95, 640, 150 + walk, MAT_SOLID, dark, 225, 0);
+      mesh3d_limb(ex, ey, ez, yaw, 95, 0, -150 - walk, 340, 640, 150 - walk, MAT_SOLID, dark, 225, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -460, 580, -260, 460, 1480, 260, MAT_SOLID, fur, 245, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -690, 820, -150 - walk, -440, 1420, 170 - walk, MAT_SOLID, fur, 235, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 440, 820, -150 + walk, 690, 1420, 170 + walk, MAT_SOLID, fur, 235, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -680, 680, 130 - walk, -450, 960, 360 - walk, MAT_SOLID, blood, 250, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 450, 680, 130 + walk, 680, 960, 360 + walk, MAT_SOLID, blood, 250, 0);
+      // Fanged maw + curved horns + blazing eyes
+      mesh3d_limb(ex, ey + bob, ez, yaw, -240, 1400, -190, 240, 1820, 230, MAT_SOLID, fur, 245, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -150, 1450, 200, 150, 1640, 265, MAT_SOLID, blood, 240, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -330, 1720, -40, -200, 2040, 80, MAT_SOLID, horn, 250, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 200, 1720, -40, 330, 2040, 80, MAT_SOLID, horn, 250, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -140, 1660, 210, -45, 1740, 250, MAT_GLOW, pack_rgba(255, 236, 92, 255), 255, 1);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 45, 1660, 210, 140, 1740, 250, MAT_GLOW, pack_rgba(255, 236, 92, 255), 255, 1);
+    } else if kind == 2 {
+      // --- GOTHIC KNIGHT (Steel armor, crimson plume, glowing visor & raised 3D broadsword) ---
+      let steel = if fl > 0 { pack_rgba(255, 215, 200, 255) } else { pack_rgba(164, 172, 190, 255) };
+      let dark_st = if fl > 0 { pack_rgba(255, 185, 175, 255) } else { pack_rgba(94, 100, 118, 255) };
+      let gold = pack_rgba(226, 184, 86, 255);
+      mesh3d_limb(ex, ey, ez, yaw, -210, 0, -90 + walk, -55, 500, 90 + walk, MAT_METAL, dark_st, 225, 0);
+      mesh3d_limb(ex, ey, ez, yaw, 55, 0, -90 - walk, 210, 500, 90 - walk, MAT_METAL, dark_st, 225, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -260, 480, -155, 260, 1080, 155, MAT_METAL, steel, 245, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -390, 840, -135, -240, 1090, 135, MAT_METAL, gold, 245, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 240, 840, -135, 390, 1090, 135, MAT_METAL, gold, 245, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -380, 540, -80 - walk, -250, 860, 110 - walk, MAT_METAL, dark_st, 230, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 250, 620, 20 + walk, 380, 880, 260 + walk, MAT_METAL, steel, 235, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 290, 840, 210 + walk, 340, 1580, 270 + walk, MAT_METAL, pack_rgba(224, 232, 248, 255), 255, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -150, 1080, -140, 150, 1360, 145, MAT_METAL, steel, 245, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -45, 1340, -120, 45, 1520, 110, MAT_SOLID, pack_rgba(202, 38, 44, 255), 240, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -110, 1185, 135, 110, 1255, 165, MAT_GLOW, pack_rgba(255, 186, 56, 255), 255, 1);
+    } else {
+      // --- CRIMSON CITADEL GRUNT (Armored trooper with 3D rifle & glowing visor) ---
+      let armor = if fl > 0 { pack_rgba(255, 215, 200, 255) } else { pack_rgba(188, 56, 48, 255) };
+      let boots = if fl > 0 { pack_rgba(255, 190, 180, 255) } else { pack_rgba(112, 98, 72, 255) };
+      mesh3d_limb(ex, ey, ez, yaw, -185, 0, -85 + walk, -45, 450, 85 + walk, MAT_SOLID, boots, 220, 0);
+      mesh3d_limb(ex, ey, ez, yaw, 45, 0, -85 - walk, 185, 450, 85 - walk, MAT_SOLID, boots, 220, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -225, 440, -140, 225, 980, 140, MAT_SOLID, armor, 240, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -330, 540, -60, -210, 920, 120, MAT_SOLID, armor, 230, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 210, 580, 0, 330, 920, 220, MAT_SOLID, armor, 230, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, 190, 680, 140, 275, 790, 640, MAT_METAL, pack_rgba(98, 104, 118, 255), 240, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -135, 980, -130, 135, 1240, 135, MAT_METAL, pack_rgba(128, 108, 96, 255), 240, 0);
+      mesh3d_limb(ex, ey + bob, ez, yaw, -95, 1080, 125, 95, 1145, 155, MAT_GLOW, pack_rgba(255, 220, 88, 255), 255, 1);
+    }
+  }
+}
+
+// --- Glowing 3D Wall Torches + Dynamic Point Lights ---
+
+fn emit_wall_torch(x: i64, y: i64, z: i64, idx: i64) -[Mem]-> unit {
+  let flick = ((FpsMem.tick * 13 + idx * 37) & 15);
+  let fl_h = 220 + flick * 10;
+  mesh3d_box(0, x - 45, y - 240, z - 45, x + 45, y, z + 45, MAT_METAL, pack_rgba(88, 82, 84, 255), 220, 0, 400);
+  mesh3d_box(0, x - 65, y, z - 65, x + 65, y + fl_h, z + 65, MAT_GLOW, pack_rgba(255, 192, 68, 255), 255, 1, 300);
+  mesh3d_add_light(x, y + 140, z, 5400, 255, 168, 78, 250 + flick * 6);
+}
+
+// --- True 3D Twin-Barrel Super-Shotgun Viewmodel (Camera-Space Mesh, Real Normal-Mapped Lighting!) ---
+
+fn draw_shotgun_mesh_vm() -[Mem]-> unit {
+  let bob_x = fixed_to_int(fixed_cos(FpsMem.bob_t / 2) * 18.0);
+  let bob_y = fixed_to_int(fixed_abs(fixed_sin(FpsMem.bob_t)) * 16.0);
+  let rec_z = FpsMem.recoil_t * 14;
+  let rec_y = FpsMem.recoil_t * 3;
+  let bx = bob_x;
+  let by = -230 - bob_y - rec_y;
+  let bz = -360 + rec_z;
+
+  let steel_l = pack_rgba(164, 172, 190, 255);
+  let steel_d = pack_rgba(92, 98, 114, 255);
+  let walnut = pack_rgba(156, 98, 56, 255);
+  let brass = pack_rgba(238, 198, 96, 255);
+
+  mesh3d_box(1, bx - 74, by + 20, bz - 540, bx - 8, by + 86, bz + 80, MAT_METAL, steel_l, 245, 0, 320);
+  mesh3d_box(1, bx + 8, by + 20, bz - 540, bx + 74, by + 86, bz + 80, MAT_METAL, steel_l, 245, 0, 320);
+  mesh3d_box(1, bx - 10, by + 78, bz - 530, bx + 10, by + 96, bz + 80, MAT_METAL, steel_d, 235, 0, 240);
+  mesh3d_box(1, bx - 6, by + 94, bz - 525, bx + 6, by + 110, bz - 505, MAT_SOLID, brass, 255, 0, 120);
+  mesh3d_box(1, bx - 80, by - 36, bz - 220, bx + 80, by + 26, bz + 120, MAT_WALNUT, walnut, 235, 0, 360);
+  mesh3d_box(1, bx - 66, by - 64, bz + 60, bx + 66, by + 48, bz + 260, MAT_METAL, steel_d, 230, 0, 300);
+
+  if FpsMem.muzzle_t > 0 {
+    let fr = 64 + FpsMem.muzzle_t * 16;
+    mesh3d_box(1, bx - fr, by + 50 - fr, bz - 620, bx + fr, by + 50 + fr, bz - 540, MAT_GLOW, pack_rgba(255, 224, 112, 255), 255, 1, 200);
+    let fx = FpsMem.cam_x + fixed_to_int(fixed_sin(FpsMem.yaw) * 650.0);
+    let fz = FpsMem.cam_z - fixed_to_int(fixed_cos(FpsMem.yaw) * 650.0);
+    mesh3d_add_light(fx, FpsMem.cam_y - 80, fz, 5800, 255, 186, 84, 390);
+  }
+}
+
+// --- Live Top-Right Radar Minimap (Mapped to Full 6-Zone Citadel: X=-10900..10900, Z=-20900..8900) ---
+
+fn draw_radar_minimap(vw: i64) -[Mem]-> unit {
+  let mw = 144;
+  let mh = 196;
+  let mx0 = vw - mw - 16;
+  let my0 = 16;
+  ui_rect(mx0, my0, mw, mh, 10, 2, 6, pack_rgba(16, 14, 20, 224), pack_rgba(128, 102, 72, 225), 0);
+
+  let wc = clamp_i64(FpsMem.wall_cnt, 0, 112);
+  for wi in 4..wc max 112 {
+    let wx0 = mx0 + ((FpsMem.walls[wi].x0 + 10900) * (mw - 12)) / 21800 + 6;
+    let wz0 = my0 + ((FpsMem.walls[wi].z0 + 20900) * (mh - 12)) / 29800 + 6;
+    let wx1 = mx0 + ((FpsMem.walls[wi].x1 + 10900) * (mw - 12)) / 21800 + 6;
+    let wz1 = my0 + ((FpsMem.walls[wi].z1 + 20900) * (mh - 12)) / 29800 + 6;
+    ui_rect(wx0, wz0, clamp_i64(wx1 - wx0, 2, mw), clamp_i64(wz1 - wz0, 2, mh), 1, 0, 0, pack_rgba(116, 98, 82, 215), 0, 0);
+  }
+
+  // SlipGate Portal + Lava Trenches + Sanctum Gate
+  ui_rect(mx0 + mw / 2 - 8, my0 + 8, 16, 5, 2, 0, 0, pack_rgba(186, 112, 255, 255), 0, 0);
+  if FpsMem.gate_y < 2100 {
+    let gy = my0 + ((-14500 + 20900) * (mh - 12)) / 29800 + 6;
+    ui_rect(mx0 + mw / 2 - 11, gy - 2, 22, 4, 1, 0, 0, pack_rgba(248, 200, 64, 255), 0, 0);
+  }
+  // Gold Key blip in East Crypt if not yet collected
+  if FpsMem.has_key == 0 {
+    let kx = mx0 + ((8500 + 10900) * (mw - 12)) / 21800 + 6;
+    let kz = my0 + ((-4300 + 20900) * (mh - 12)) / 29800 + 6;
+    ui_rect(kx - 4, kz - 4, 8, 8, 4, 1, 0, pack_rgba(255, 216, 62, 255), pack_rgba(255, 255, 255, 220), 0);
+  }
+
+  for e in 0..16 {
+    if FpsMem.enemies[e].state != 2 {
+      let rx = mx0 + ((FpsMem.enemies[e].x + 10900) * (mw - 12)) / 21800 + 6;
+      let ry = my0 + ((FpsMem.enemies[e].z + 20900) * (mh - 12)) / 29800 + 6;
+      let r = if FpsMem.enemies[e].kind == 3 { 4 } else { 2 };
+      ui_rect(rx - r, ry - r, r * 2, r * 2, r, 0, 0, pack_rgba(255, 68, 68, 255), 0, 0);
+    }
+  }
+
+  let px = mx0 + ((FpsMem.cam_x + 10900) * (mw - 12)) / 21800 + 6;
+  let py = my0 + ((FpsMem.cam_z + 20900) * (mh - 12)) / 29800 + 6;
+  let fx = px + fixed_to_int(fixed_sin(FpsMem.yaw) * 8.0);
+  let fy = py - fixed_to_int(fixed_cos(FpsMem.yaw) * 8.0);
+  ui_rect(fx - 2, fy - 2, 4, 4, 2, 0, 0, pack_rgba(255, 232, 128, 255), 0, 0);
+  ui_rect(px - 3, py - 3, 6, 6, 3, 1, 0, pack_rgba(88, 244, 148, 255), pack_rgba(255, 255, 255, 220), 0);
+}
+
+// --- Full Frame Renderer (Pass 1: Vulkan 3D Mesh + PBR Normal Maps + 24 Lights, Pass 2: 2D HUD) ---
+
+fn render_slipgate_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
+  req vw >= 560 && vh >= 460
+{
+  set_clip_rect(0, 0, 0, vw, vh);
+
+  // 1. Begin Native Vulkan 3D Mesh Pass (FOV=78, Two-Layer Quake Storm Sky, Volcanic Fog)
+  mesh3d_begin(FpsMem.cam_x, FpsMem.cam_y, FpsMem.cam_z, FpsMem.yaw, FpsMem.pitch, 78, 1, FOG_RED);
+
+  // 2. Walkable 3D Floors, Steps & Sanctum Dais (100% hardware frustum-clipped -> zero floor holes!)
+  let sc = clamp_i64(FpsMem.sector_cnt, 0, 40);
+  for si in 0..sc max 40 {
+    let sx0 = FpsMem.sectors[si].x0;
+    let sz0 = FpsMem.sectors[si].z0;
+    let sx1 = FpsMem.sectors[si].x1;
+    let sz1 = FpsMem.sectors[si].z1;
+    let fy = FpsMem.sectors[si].fy;
+    let mat = FpsMem.sectors[si].mat;
+    let col = FpsMem.sectors[si].col;
+    if fy == 0 {
+      let ux = ((sx1 - sx0) * 1024) / 1800;
+      let uz = ((sz1 - sz0) * 1024) / 1800;
+      mesh3d_quad(0, sx0, 0, sz0, 0, 0, sx1, 0, sz0, ux, 0, sx1, 0, sz1, ux, uz, sx0, 0, sz1, 0, uz, 0, 127, 0, mat, col, 240, 0);
+    } else {
+      mesh3d_box(0, sx0, 0, sz0, sx1, fy, sz1, mat, col, 240, 0, 1400);
+    }
+  }
+
+  // 3. Zone 5 Glowing Molten Lava Trenches flanking the Lava Bridge + Dynamic Orange Glow!
+  let lava_c = pack_rgba(255, 118, 36, 255);
+  mesh3d_quad(0, -5180, 18, -14100, 0, 0, -1920, 18, -14100, 2048, 0, -1920, 18, -7020, 2048, 4096, -5180, 18, -7020, 0, 4096, 0, 127, 0, MAT_LAVA, lava_c, 255, 1);
+  mesh3d_quad(0, 1920, 18, -14100, 0, 0, 5180, 18, -14100, 2048, 0, 5180, 18, -7020, 2048, 4096, 1920, 18, -7020, 0, 4096, 0, 127, 0, MAT_LAVA, lava_c, 255, 1);
+  mesh3d_add_light(-3400, 750, -10600, 6800, 255, 108, 32, 300);
+  mesh3d_add_light(3400, 750, -10600, 6800, 255, 108, 32, 300);
+
+  // 4. Solid 3D Walls, Canyon Cliffs, Columns & Archways
+  let wc = clamp_i64(FpsMem.wall_cnt, 0, 112);
+  for wi in 0..wc max 112 {
+    mesh3d_box(
+      0,
+      FpsMem.walls[wi].x0, FpsMem.walls[wi].y0, FpsMem.walls[wi].z0,
+      FpsMem.walls[wi].x1, FpsMem.walls[wi].y1, FpsMem.walls[wi].z1,
+      FpsMem.walls[wi].mat, FpsMem.walls[wi].col, 240, 0, 1300
+    );
+  }
+
+  // 5. Overhead Wooden Plank Bridge across Zone 1 Canyon (individual weathered planks with crimson sky gaps!)
+  let plank_c = pack_rgba(176, 154, 126, 255);
+  for pl in 0..8 {
+    let pz = 3950 + pl * 270;
+    mesh3d_box(0, -4550, 2450, pz, 3450, 2610, pz + 190, MAT_TIMBER, plank_c, 225, 0, 1200);
+  }
+  // Heavy longitudinal stringer beams supporting the Canyon plank bridge
+  mesh3d_box(0, -4550, 2260, 4050, 3450, 2450, 4240, MAT_WALNUT, pack_rgba(128, 92, 64, 255), 215, 0, 1200);
+  mesh3d_box(0, -4550, 2260, 5650, 3450, 2450, 5840, MAT_WALNUT, pack_rgba(128, 92, 64, 255), 215, 0, 1200);
+
+  // 6. Great Rafter Hall Overhead Diagonal Riveted Roof Rafters (Zone 2, inspired by screenshot #2!)
+  let rafter_c = pack_rgba(156, 152, 162, 255);
+  for rf in 0..4 {
+    let rz = -5600 + rf * 2100;
+    mesh3d_rafter_x(-5200, 2800, 200, 5100, rz, rz + 380, 420, MAT_METAL, rafter_c, 230);
+    mesh3d_rafter_x(-200, 5100, 5200, 2800, rz, rz + 380, 420, MAT_METAL, rafter_c, 230);
+  }
+
+  // 7. Rising Iron Sanctum Gate (Zone 5 -> Zone 6 at Z = -14600..-14350)
+  let gy = FpsMem.gate_y;
+  if gy < 2450 {
+    mesh3d_box(0, -1900, gy, -14620, 1900, 2600 + gy, -14340, MAT_METAL, pack_rgba(138, 142, 156, 255), 235, 0, 1100);
+    // Glowing Gold Lock Emblem on the Iron Gate
+    let lock_col = if FpsMem.has_key == 1 { pack_rgba(88, 255, 148, 255) } else { pack_rgba(255, 206, 62, 255) };
+    mesh3d_box(0, -240, 1100 + gy, -14320, 240, 1580 + gy, -14260, MAT_GLOW, lock_col, 255, 1, 300);
+  }
+
+  // 8. Glowing Animated SlipGate Portal at North Sanctum (Z = -19650) + Arcane Light!
+  mesh3d_quad(
+    0, -780, 2400, -19650, 0, 0,
+    780, 2400, -19650, 1024, 0,
+    780, 240, -19650, 1024, 1024,
+    -780, 240, -19650, 0, 1024,
+    0, 0, 127, MAT_PORTAL, pack_rgba(216, 172, 255, 255), 255, 1
+  );
+  mesh3d_add_light(0, 1400, -18700, 7400, 186, 116, 255, 340);
+
+  // 9. 16 Flickering 3D Wall Torches across all 6 Zones!
+  // Zone 1 Canyon
+  emit_wall_torch(-4380, 1650, 5600, 0);
+  emit_wall_torch(3250, 1650, 4800, 1);
+  // Zone 2 Great Rafter Hall
+  emit_wall_torch(-5020, 1800, -400, 2);
+  emit_wall_torch(5020, 1800, -400, 3);
+  emit_wall_torch(-5020, 1800, -4600, 4);
+  emit_wall_torch(5020, 1800, -4600, 5);
+  // Zone 3 West Gallery
+  emit_wall_torch(-10280, 1750, -2400, 6);
+  emit_wall_torch(-10280, 1750, -9600, 7);
+  // Zone 4 East Runic Crypt
+  emit_wall_torch(10280, 1750, -4300, 8);
+  emit_wall_torch(10280, 1750, -9600, 9);
+  // Zone 5 Lava Bridge & Gatehouse
+  emit_wall_torch(-2100, 1600, -13800, 10);
+  emit_wall_torch(2100, 1600, -13800, 11);
+  // Zone 6 SlipGate Sanctum
+  emit_wall_torch(-3500, 1850, -16500, 12);
+  emit_wall_torch(3500, 1850, -16500, 13);
+  emit_wall_torch(-3500, 1850, -18700, 14);
+  emit_wall_torch(3500, 1850, -18700, 15);
+
+  // 10. 16 Articulated 3D Monsters
+  for e in 0..16 {
+    draw_enemy_mesh_3d(e);
+  }
+
+  // 11. 16 Rotating Bobbing 3D Pickups (including glowing GOLD RUNIC KEY!)
+  let spin = (FpsMem.tick * 32) & 4095;
+  for it in 0..16 {
+    if FpsMem.items[it].active == 1 {
+      let ix = FpsMem.items[it].x;
+      let iy = FpsMem.items[it].y + 120 + fixed_to_int(fixed_sin(FpsMem.tick * 48 + it * 256) * 55.0);
+      let iz = FpsMem.items[it].z;
+      let ik = FpsMem.items[it].kind;
+      if ik == 1 {
+        mesh3d_limb(ix, iy, iz, spin, -180, 0, -180, 180, 240, 180, MAT_SOLID, pack_rgba(242, 244, 248, 255), 255, 0);
+        mesh3d_limb(ix, iy + 240, iz, spin, -45, 0, -130, 45, 35, 130, MAT_GLOW, pack_rgba(235, 36, 42, 255), 255, 1);
+        mesh3d_limb(ix, iy + 240, iz, spin, -130, 0, -45, 130, 35, 45, MAT_GLOW, pack_rgba(235, 36, 42, 255), 255, 1);
+      } else if ik == 2 {
+        mesh3d_limb(ix, iy, iz, spin, -190, 0, -140, 190, 240, 140, MAT_WALNUT, pack_rgba(226, 178, 72, 255), 245, 0);
+      } else if ik == 3 {
+        mesh3d_limb(ix, iy, iz, spin, -210, 0, -130, 210, 360, 130, MAT_METAL, pack_rgba(232, 86, 52, 255), 255, 0);
+      } else {
+        // GOLD RUNIC KEY (gleaming 3D golden key + dynamic golden aura!)
+        let gold = pack_rgba(255, 222, 68, 255);
+        mesh3d_limb(ix, iy + 180, iz, spin, -140, 160, -45, 140, 440, 45, MAT_GLOW, gold, 255, 1);
+        mesh3d_limb(ix, iy + 180, iz, spin, -45, -140, -45, 45, 180, 45, MAT_GLOW, gold, 255, 1);
+        mesh3d_limb(ix, iy + 180, iz, spin, 45, -100, -35, 145, -20, 35, MAT_GLOW, gold, 255, 1);
+        mesh3d_add_light(ix, iy + 360, iz, 4200, 255, 212, 64, 280);
+      }
+    }
+  }
+
+  // 12. 3D Blood & Ricochet Spark Particles
+  for p in 0..32 {
+    if FpsMem.particles[p].life > 0 {
+      let px = FpsMem.particles[p].x;
+      let py = FpsMem.particles[p].y;
+      let pz = FpsMem.particles[p].z;
+      mesh3d_box(0, px - 38, py - 38, pz - 38, px + 38, py + 38, pz + 38, MAT_GLOW, FpsMem.particles[p].col, 255, 1, 200);
+    }
+  }
+
+  // 13. True 3D Twin-Barrel Super-Shotgun Viewmodel
+  draw_shotgun_mesh_vm();
+
+  // --- PASS 2: Crisp 2D SDF HUD Overlay ---
+  if FpsMem.hurt_t > 0 {
+    ui_rect(0, 0, vw, vh, 0, 0, 0, pack_rgba(220, 24, 24, clamp_i64(FpsMem.hurt_t * 10, 0, 110)), 0, 0);
+  } else if FpsMem.pickup_t > 0 {
+    ui_rect(0, 0, vw, vh, 0, 0, 0, pack_rgba(248, 206, 72, clamp_i64(FpsMem.pickup_t * 7, 0, 70)), 0, 0);
+  }
+
+  // Crisp center crosshair
+  let cx = vw / 2;
+  let cy = vh / 2;
+  let ch_col = pack_rgba(255, 116, 74, 235);
+  ui_rect(cx - 10, cy - 1, 7, 2, 0, 0, 0, ch_col, 0, 0);
+  ui_rect(cx + 3, cy - 1, 7, 2, 0, 0, 0, ch_col, 0, 0);
+  ui_rect(cx - 1, cy - 10, 2, 7, 0, 0, 0, ch_col, 0, 0);
+  ui_rect(cx - 1, cy + 3, 2, 7, 0, 0, 0, ch_col, 0, 0);
+
+  // Top-left title + objective pill
+  let locked = pointer_locked();
+  ui_rect(16, 14, 468, 56, 10, 1, 6, pack_rgba(16, 14, 20, 224), pack_rgba(128, 102, 72, 205), 0);
+  ui_text(30, 22, "E1M1: THE SLIPGATE CITADEL  •  VULKAN PBR 3D", 14, 1, pack_rgba(248, 226, 178, 255), 0);
+  if FpsMem.has_key == 1 {
+    ui_text(30, 44, "GOLD KEY OK • ENTER NORTH SLIPGATE SANCTUM!", 12, 1, pack_rgba(116, 248, 164, 255), 0);
+  } else if locked {
+    ui_text(30, 44, "OBJ: FIND GOLD KEY IN EAST CRYPT • ESC UNLOCK", 12, 0, pack_rgba(248, 208, 96, 255), 0);
+  } else {
+    ui_text(30, 44, "CLICK TO AIM (360) • WASD MOVE • SPACE JUMP", 12, 0, pack_rgba(196, 184, 168, 235), 0);
+  }
+
+  // Center banner when Gold Key is acquired
+  if FpsMem.msg_timer > 0 {
+    ui_rect(cx - 230, 84, 460, 40, 10, 2, 6, pack_rgba(28, 22, 12, 236), pack_rgba(255, 212, 68, 255), 0);
+    ui_fmt_centered(cx, 96, "GOLD RUNIC KEY ACQUIRED — SANCTUM GATE OPEN!", 14, 1, pack_rgba(255, 226, 98, 255), 0);
+  }
+
+  draw_radar_minimap(vw);
+
+  // Bottom gothic status bar
+  let hud_y = vh - 68;
+  ui_rect(16, hud_y, vw - 32, 54, 10, 2, 8, pack_rgba(18, 15, 22, 232), pack_rgba(126, 98, 68, 225), 0);
+  ui_text(34, hud_y + 8, "HEALTH", 11, 1, pack_rgba(182, 164, 148, 255), 0);
+  let hp_col = if FpsMem.health > 40 { pack_rgba(248, 102, 86, 255) } else { pack_rgba(255, 52, 52, 255) };
+  ui_int(34, hud_y + 24, FpsMem.health, 20, 1, hp_col, 0);
+  ui_text(132, hud_y + 8, "ARMOR", 11, 1, pack_rgba(182, 164, 148, 255), 0);
+  ui_int(132, hud_y + 24, FpsMem.armor, 20, 1, pack_rgba(122, 198, 255, 255), 0);
+  ui_text(226, hud_y + 8, "SHELLS", 11, 1, pack_rgba(182, 164, 148, 255), 0);
+  ui_int(226, hud_y + 24, FpsMem.ammo, 20, 1, pack_rgba(252, 212, 92, 255), 0);
+  ui_text(324, hud_y + 8, "KILLS", 11, 1, pack_rgba(182, 164, 148, 255), 0);
+  ui_fmt(324, hud_y + 24, "{FpsMem.kills} / 16", 19, 1, pack_rgba(116, 244, 168, 255), 0);
+  ui_text(426, hud_y + 8, "KEY", 11, 1, pack_rgba(182, 164, 148, 255), 0);
+  if FpsMem.has_key == 1 {
+    ui_text(426, hud_y + 26, "GOLD", 16, 1, pack_rgba(255, 220, 74, 255), 0);
+  } else {
+    ui_text(426, hud_y + 26, "NONE", 16, 0, pack_rgba(128, 120, 114, 255), 0);
+  }
+
+  let rst_x = vw - 142;
+  let rst_y = hud_y + 10;
+  let hov_r = point_in_rect(mx, my, rst_x, rst_y, 112, 34);
+  if hov_r { gfx_set_cursor(CursorKind::Pointer); }
+  ui_rect(rst_x, rst_y, 112, 34, 8, 1, 2, if hov_r { pack_rgba(64, 46, 36, 255) } else { pack_rgba(40, 30, 26, 255) }, pack_rgba(176, 132, 84, 240), 0);
+  ui_text(rst_x + 14, rst_y + 10, "Restart [R]", 13, 1, pack_rgba(246, 228, 198, 255), 0);
+  if hov_r && m_clicked == 1 {
+    reset_slipgate(FpsMem.rng_state + FpsMem.tick + 7919);
+    sfx_play(SFX_CLICK, 110, 75);
+  }
+
+  if FpsMem.game_state == GameState::Victory || FpsMem.game_state == GameState::Dead {
+    let bx = cx - 220;
+    let by = cy - 92;
+    let accent = if FpsMem.game_state == GameState::Victory { pack_rgba(246, 196, 84, 255) } else { pack_rgba(232, 68, 62, 255) };
+    ui_rect(bx, by, 440, 184, 14, 2, 18, pack_rgba(18, 14, 22, 242), accent, 0);
+    if FpsMem.game_state == GameState::Victory {
+      ui_fmt_centered(cx, by + 26, "SLIPGATE CITADEL CLEARED!", 20, 1, pack_rgba(255, 228, 132, 255), 0);
+    } else {
+      ui_fmt_centered(cx, by + 26, "YOU HAVE FALLEN", 20, 1, pack_rgba(255, 112, 102, 255), 0);
+    }
+    ui_fmt_centered(cx, by + 66, "FINAL SCORE: {FpsMem.score}", 18, 1, pack_rgba(116, 244, 168, 255), 0);
+    ui_fmt_centered(cx, by + 112, "Press [R] to storm the Citadel again", 14, 0, pack_rgba(196, 184, 170, 255), 0);
+  }
+}

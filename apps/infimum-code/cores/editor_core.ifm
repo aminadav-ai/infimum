@@ -1,0 +1,239 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Z3-Verified Atomic Batch File Editor (`capsules/core/editor_core.ifm`).
+// Finds unique non-overlapping target spans across UTF-32 source text and
+// applies all replacements atomically (or aborts with structured error code).
+
+use "std/math.ifm";
+
+const MAX_EDITS: i64 = 64;
+const MAX_POOL: i64 = 65536;
+const MAX_SRC: i64 = 131072;
+const MAX_OUT: i64 = 131072;
+
+enum EditErr {
+  Ok = 0,
+  EmptyEdits = 1,
+  EmptyTarget = 2,
+  NotFound = 3,
+  Ambiguous = 4,
+  Overlap = 5,
+  Overflow = 6,
+}
+
+// Binary ABI shared with `infimum-code/daemon/src/agent.rs`
+layout EditMem at 0 {
+  err_code: word at 0 inv 0..=6,
+  err_idx: word at 1,
+  err_aux: word at 2,
+  out_len: word at 3 inv 0..=131072,
+  src_len: word at 4,
+  edit_count: word at 5,
+  t_off: words[64] at 16,
+  t_len: words[64] at 80,
+  r_off: words[64] at 144,
+  r_len: words[64] at 208,
+  s_start: words[64] at 272,
+  s_end: words[64] at 336,
+  s_idx: words[64] at 400 inv 0..=63,
+  pool_buf: words[65536] at 512,
+  src_buf: words[131072] at 66048,
+  out_buf: words[131072] at 197120,
+}
+
+fn match_at(pos: i64, src_n: i64, p_off: i64, p_len: i64) -[Mem]-> bool {
+  if pos < 0 || p_len <= 0 || pos + p_len > src_n || p_off < 0 || p_off + p_len > MAX_POOL {
+    false
+  } else {
+    let mut ok = true;
+    for k in 0..p_len max 16384 {
+      if EditMem.src_buf[pos + k] != EditMem.pool_buf[p_off + k] {
+        ok = false;
+        break;
+      }
+    }
+    ok
+  }
+}
+
+// Find non-overlapping occurrences of `pool[p_off..p_off+p_len]` in `src[0..src_n]`.
+// Returns tuple `(count, first_pos)`.
+fn find_target_matches(src_n: i64, p_off: i64, p_len: i64) -[Mem]-> (i64, i64) {
+  if p_len <= 0 || p_len > src_n {
+    (0, 0)
+  } else {
+    let first_ch = EditMem.pool_buf[p_off];
+    let lim = src_n - p_len + 1;
+    let mut i = 0;
+    let mut count = 0;
+    let mut first_pos = 0;
+    while i < lim max 131072 {
+      if EditMem.src_buf[i] == first_ch && match_at(i, src_n, p_off, p_len) {
+        if count == 0 {
+          first_pos = i;
+        }
+        count += 1;
+        i += p_len;
+      } else {
+        i += 1;
+      }
+    }
+    (count, first_pos)
+  }
+}
+
+fn sort_spans(n: i64) -[Mem]-> unit {
+  let lim = clamp_i64(n, 0, MAX_EDITS);
+  for i in 1..lim max 64 {
+    let ks = EditMem.s_start[i];
+    let ke = EditMem.s_end[i];
+    let ki = EditMem.s_idx[i];
+    let mut j = i - 1;
+    while j >= 0 max 64 {
+      let js = EditMem.s_start[j];
+      let je = EditMem.s_end[j];
+      if js > ks || (js == ks && je > ke) {
+        EditMem.s_start[j + 1] = js;
+        EditMem.s_end[j + 1] = je;
+        EditMem.s_idx[j + 1] = EditMem.s_idx[j];
+        j -= 1;
+      } else {
+        break;
+      }
+    }
+    EditMem.s_start[j + 1] = ks;
+    EditMem.s_end[j + 1] = ke;
+    EditMem.s_idx[j + 1] = ki;
+  }
+}
+
+fn copy_src_to_out(src_from: i64, src_to: i64, out_pos: i64) -[Mem]-> i64 {
+  let mut p = out_pos;
+  for i in src_from..src_to max 131072 {
+    if p >= MAX_OUT { break; }
+    EditMem.out_buf[p] = EditMem.src_buf[i];
+    p += 1;
+  }
+  p
+}
+
+fn copy_pool_to_out(p_off: i64, p_len: i64, out_pos: i64) -[Mem]-> i64 {
+  let mut p = out_pos;
+  let lim = clamp_i64(p_len, 0, MAX_POOL);
+  for i in 0..lim max 65536 {
+    if p >= MAX_OUT { break; }
+    EditMem.out_buf[p] = EditMem.pool_buf[p_off + i];
+    p += 1;
+  }
+  p
+}
+
+export fn apply_batch_edits_ifm() -[Mem]-> i64 {
+  EditMem.err_code = EditErr::Ok;
+  EditMem.err_idx = 0;
+  EditMem.err_aux = 0;
+  EditMem.out_len = 0;
+
+  let ec = clamp_i64(EditMem.edit_count, 0, MAX_EDITS);
+  let sn = clamp_i64(EditMem.src_len, 0, MAX_SRC);
+  if ec == 0 {
+    EditMem.err_code = EditErr::EmptyEdits;
+    -1
+  } else {
+    // Phase 1: Locate unique match for every target
+    let mut failed = false;
+    for idx in 0..ec max 64 {
+      let toff = EditMem.t_off[idx];
+      let tlen = EditMem.t_len[idx];
+      if tlen <= 0 {
+        EditMem.err_code = EditErr::EmptyTarget;
+        EditMem.err_idx = idx;
+        failed = true;
+        break;
+      }
+      let (cnt, pos) = find_target_matches(sn, toff, tlen);
+      if cnt == 0 {
+        EditMem.err_code = EditErr::NotFound;
+        EditMem.err_idx = idx;
+        failed = true;
+        break;
+      } else if cnt > 1 {
+        EditMem.err_code = EditErr::Ambiguous;
+        EditMem.err_idx = idx;
+        EditMem.err_aux = cnt;
+        failed = true;
+        break;
+      } else {
+        EditMem.s_start[idx] = pos;
+        EditMem.s_end[idx] = pos + tlen;
+        EditMem.s_idx[idx] = idx;
+      }
+    }
+
+    if failed {
+      -1
+    } else {
+      // Phase 2: Sort spans and reject overlaps
+      sort_spans(ec);
+      for k in 1..ec max 64 {
+        let prev_end = EditMem.s_end[k - 1];
+        let curr_start = EditMem.s_start[k];
+        if prev_end > curr_start {
+          EditMem.err_code = EditErr::Overlap;
+          EditMem.err_idx = EditMem.s_idx[k];
+          EditMem.err_aux = EditMem.s_idx[k - 1];
+          failed = true;
+          break;
+        }
+      }
+
+      if failed {
+        -1
+      } else {
+        // Phase 3: Atomic assembly into out_buf
+        let mut cursor = 0;
+        let mut out_p = 0;
+        for m in 0..ec max 64 {
+          let st = EditMem.s_start[m];
+          let en = EditMem.s_end[m];
+          let orig = EditMem.s_idx[m];
+          let roff = EditMem.r_off[orig];
+          let rlen = EditMem.r_len[orig];
+          out_p = copy_src_to_out(cursor, st, out_p);
+          out_p = copy_pool_to_out(roff, rlen, out_p);
+          cursor = en;
+        }
+        out_p = copy_src_to_out(cursor, sn, out_p);
+        if out_p >= MAX_OUT {
+          EditMem.err_code = EditErr::Overflow;
+          -1
+        } else {
+          let safe_out = clamp_i64(out_p, 0, MAX_OUT);
+          EditMem.out_len = safe_out;
+          safe_out
+        }
+      }
+    }
+  }
+}
+
+test "apply_batch_edits_ifm replaces unique target atomically" {
+  // src = "hi abc!"
+  EditMem.src_buf[0] = 'h'; EditMem.src_buf[1] = 'i'; EditMem.src_buf[2] = ' ';
+  EditMem.src_buf[3] = 'a'; EditMem.src_buf[4] = 'b'; EditMem.src_buf[5] = 'c';
+  EditMem.src_buf[6] = '!';
+  EditMem.src_len = 7;
+  // pool[0..3] = "abc", pool[3..5] = "XY"
+  EditMem.pool_buf[0] = 'a'; EditMem.pool_buf[1] = 'b'; EditMem.pool_buf[2] = 'c';
+  EditMem.pool_buf[3] = 'X'; EditMem.pool_buf[4] = 'Y';
+  EditMem.edit_count = 1;
+  EditMem.t_off[0] = 0; EditMem.t_len[0] = 3;
+  EditMem.r_off[0] = 3; EditMem.r_len[0] = 2;
+  let n = apply_batch_edits_ifm();
+  assert(EditMem.err_code == EditErr::Ok);
+  assert(n == 6);
+  assert(EditMem.out_buf[3] == 'X');
+  assert(EditMem.out_buf[4] == 'Y');
+  assert(EditMem.out_buf[5] == '!');
+}

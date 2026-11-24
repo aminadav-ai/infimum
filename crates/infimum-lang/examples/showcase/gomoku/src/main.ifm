@@ -1,0 +1,913 @@
+use "std/prelude.ifm";
+
+mod board_rules {
+  pub const N: i64 = 18;
+  pub const CELLS: i64 = 324;
+
+  pub fn is_star_point(r: i64, c: i64) -> i64 {
+    let corner = (r == 3 || r == 14) && (c == 3 || c == 14);
+    let inner = (r == 6 || r == 11) && (c == 6 || c == 11);
+    if corner || inner { 1 } else { 0 }
+  }
+}
+
+layout GameState {
+  tick: word,
+  turn: word inv 1..=2,          // 1 = Чёрные, 2 = Белые
+  state: word inv 1..=2,         // 1 = игра, 2 = финал
+  winner: word inv 0..=3,        // 0 = нет, 1 = Чёрные, 2 = Белые, 3 = Ничья
+  ai_timer: word,
+  hover: word,                   // -1 или 0..323
+  last_move: word,               // -1 или 0..323
+  move_count: word inv 0..=324,  // 0..324
+  mode: word inv 0..=1,          // 0 = Против ИИ, 1 = На двоих
+  difficulty: word inv 0..=2,    // 0 = Лёгкий, 1 = Средний, 2 = Сложный
+  sound_on: word inv 0..=1,      // 1 = вкл, 0 = выкл
+  wins_black: word,
+  wins_white: word,
+  draws: word,
+  rng_seed: word,
+  win_count: word inv 0..=5,     // 0 или 5
+
+  win_cells: words[5] inv 0..=323,
+  board: words[324] inv 0..=2,
+  history: words[324] inv 0..=323,
+  anim: words[324],
+}
+
+// ---------- Вспомогательные функции доски ----------
+
+fn cell_at(r: i64, c: i64) -[Mem]-> i64 {
+  if r >= 0 && r < board_rules::N && c >= 0 && c < board_rules::N {
+    GameState.board[r * board_rules::N + c]
+  } else {
+    -1
+  }
+}
+
+fn reset_board() -[Mem]-> unit {
+  for i in 0..324 {
+    GameState.board[i] = 0;
+    GameState.history[i] = 0;
+    GameState.anim[i] = 0;
+  }
+  for k in 0..5 {
+    GameState.win_cells[k] = 0;
+  }
+  GameState.turn = 1;
+  GameState.state = 1;
+  GameState.winner = 0;
+  GameState.ai_timer = 0;
+  GameState.hover = -1;
+  GameState.last_move = -1;
+  GameState.move_count = 0;
+  GameState.win_count = 0;
+}
+
+fn check_win_from(r: i64, c: i64, dr: i64, dc: i64, p: i64) -[Mem]-> i64 {
+  let mut ok = 1;
+  for k in 0..5 {
+    if cell_at(r + dr * k, c + dc * k) != p {
+      ok = 0;
+      break;
+    }
+  }
+  if ok == 1 {
+    for k in 0..5 {
+      let rr = clamp_i64(r + dr * k, 0, 17);
+      let cc = clamp_i64(c + dc * k, 0, 17);
+      GameState.win_cells[k] = rr * 18 + cc;
+    }
+    GameState.win_count = 5;
+  }
+  ok
+}
+
+fn find_win(p: i64) -[Mem]-> i64 {
+  let mut found = 0;
+  for r in 0..18 {
+    for c in 0..18 {
+      if found == 0 && GameState.board[r * 18 + c] == p {
+        if c <= 13 && check_win_from(r, c, 0, 1, p) == 1 { found = 1; }
+        else if r <= 13 && check_win_from(r, c, 1, 0, p) == 1 { found = 1; }
+        else if r <= 13 && c <= 13 && check_win_from(r, c, 1, 1, p) == 1 { found = 1; }
+        else if r <= 13 && c >= 4 && check_win_from(r, c, 1, -1, p) == 1 { found = 1; }
+      }
+    }
+    if found == 1 { break; }
+  }
+  found
+}
+
+fn is_win_cell(idx: i64) -[Mem]-> i64 {
+  let mut res = 0;
+  if GameState.win_count == 5 {
+    for k in 0..5 {
+      if GameState.win_cells[k] == idx {
+        res = 1;
+        break;
+      }
+    }
+  }
+  res
+}
+
+fn place_stone(idx: i64, p: i64) -[Mem, Gpu]-> unit
+  req p == 1 || p == 2
+{
+  let ci = clamp_i64(idx, 0, 323);
+  if GameState.board[ci] == 0 {
+    GameState.board[ci] = p;
+    GameState.anim[ci] = 10;
+    GameState.last_move = ci;
+    let mc = GameState.move_count;
+    if mc < 324 {
+      GameState.history[mc] = ci;
+      GameState.move_count = mc + 1;
+    }
+    if GameState.sound_on == 1 {
+      if p == 1 { sfx_play(SFX_CLACK, 96, 82); }
+      else { sfx_play(SFX_CLACK, 114, 82); }
+    }
+    if find_win(p) == 1 {
+      GameState.state = 2;
+      GameState.winner = p;
+      if p == 1 { GameState.wins_black += 1; }
+      else { GameState.wins_white += 1; }
+      if GameState.sound_on == 1 { sfx_win(); }
+    } else if GameState.move_count >= board_rules::CELLS {
+      GameState.state = 2;
+      GameState.winner = 3;
+      GameState.draws += 1;
+      if GameState.sound_on == 1 { sfx_clear(); }
+    } else {
+      GameState.turn = if p == 1 { 2 } else { 1 };
+      GameState.ai_timer = 0;
+    }
+  }
+}
+
+fn revert_win_stats() -[Mem]-> unit {
+  if GameState.state == 2 {
+    if GameState.winner == 1 && GameState.wins_black > 0 { GameState.wins_black -= 1; }
+    else if GameState.winner == 2 && GameState.wins_white > 0 { GameState.wins_white -= 1; }
+    else if GameState.winner == 3 && GameState.draws > 0 { GameState.draws -= 1; }
+    GameState.state = 1;
+    GameState.winner = 0;
+    GameState.win_count = 0;
+  }
+}
+
+fn undo_one() -[Mem]-> i64 {
+  let cur_mc = GameState.move_count;
+  if cur_mc > 0 {
+    revert_win_stats();
+    let next_mc = cur_mc - 1;
+    GameState.move_count = next_mc;
+    // Z3 proves 0 <= next_mc < 324 (from move_count inv 0..=324) and 0 <= idx <= 323 (from history inv 0..=323)!
+    let idx = GameState.history[next_mc];
+    let prev_p = GameState.board[idx];
+    GameState.board[idx] = 0;
+    GameState.anim[idx] = 0;
+    GameState.turn = if prev_p == 1 { 1 } else { 2 };
+    if next_mc > 0 {
+      GameState.last_move = GameState.history[next_mc - 1];
+    } else {
+      GameState.last_move = -1;
+    }
+    GameState.ai_timer = 0;
+    1
+  } else {
+    0
+  }
+}
+
+// ---------- Умный ИИ Гомоку в изолированном модуле `mod ai` ----------
+
+mod ai {
+  fn has_neighbor(r: i64, c: i64) -[Mem]-> i64 {
+    let mut found = 0;
+    for dr in -2..=2 {
+      for dc in -2..=2 {
+        if dr == 0 && dc == 0 { continue; }
+        if cell_at(r + dr, c + dc) > 0 {
+          found = 1;
+          break;
+        }
+      }
+      if found == 1 { break; }
+    }
+    found
+  }
+
+  // Возвращает кортеж (score, threat_kind)
+  // threat_kind: 0=обычн, 1=живая 2, 2=живая 3, 3=закрытая/разрывная 4, 4=живая 4, 5=пятёрка
+  fn eval_axis(r: i64, c: i64, dr: i64, dc: i64, p: i64, use_jumps: i64) -[Mem]-> (i64, i64) {
+    let mut c1 = 0;
+    for k in 1..=5 {
+      if cell_at(r - dr * k, c - dc * k) == p {
+        c1 += 1;
+      } else {
+        break;
+      }
+    }
+    let end1 = cell_at(r - dr * (c1 + 1), c - dc * (c1 + 1));
+    let open1 = if end1 == 0 { 1 } else { 0 };
+
+    let mut c2 = 0;
+    for k in 1..=5 {
+      if cell_at(r + dr * k, c + dc * k) == p {
+        c2 += 1;
+      } else {
+        break;
+      }
+    }
+    let end2 = cell_at(r + dr * (c2 + 1), c + dc * (c2 + 1));
+    let open2 = if end2 == 0 { 1 } else { 0 };
+
+    let mut j1 = 0;
+    let mut jopen1 = 0;
+    if use_jumps == 1 && open1 == 1 {
+      for m in 1..=4 {
+        if cell_at(r - dr * (c1 + 1 + m), c - dc * (c1 + 1 + m)) == p {
+          j1 += 1;
+        } else {
+          break;
+        }
+      }
+      if j1 > 0 && cell_at(r - dr * (c1 + 2 + j1), c - dc * (c1 + 2 + j1)) == 0 {
+        jopen1 = 1;
+      }
+    }
+
+    let mut j2 = 0;
+    let mut jopen2 = 0;
+    if use_jumps == 1 && open2 == 1 {
+      for m in 1..=4 {
+        if cell_at(r + dr * (c2 + 1 + m), c + dc * (c2 + 1 + m)) == p {
+          j2 += 1;
+        } else {
+          break;
+        }
+      }
+      if j2 > 0 && cell_at(r + dr * (c2 + 2 + j2), c + dc * (c2 + 2 + j2)) == 0 {
+        jopen2 = 1;
+      }
+    }
+
+    let len = c1 + c2 + 1;
+    let opens = open1 + open2;
+
+    let mut score = 0;
+    let mut kind = 0;
+
+    if len >= 5 {
+      score = 1000000;
+      kind = 5;
+    } else if len == 4 {
+      if opens == 2 {
+        score = 120000;
+        kind = 4;
+      } else if opens == 1 {
+        score = 12000;
+        kind = 3;
+      }
+    } else if len == 3 {
+      if opens == 2 {
+        let ext1 = cell_at(r - dr * (c1 + 2), c - dc * (c1 + 2));
+        let ext2 = cell_at(r + dr * (c2 + 2), c + dc * (c2 + 2));
+        if ext1 == 0 || ext2 == 0 || ext1 == p || ext2 == p {
+          score = 10000;
+          kind = 2;
+        } else {
+          score = 1500;
+        }
+      } else if opens == 1 {
+        score = 1200;
+      }
+    } else if len == 2 {
+      if opens == 2 {
+        score = 900;
+        kind = 1;
+      } else if opens == 1 {
+        score = 160;
+      }
+    } else {
+      if opens == 2 {
+        score = 40;
+      } else if opens == 1 {
+        score = 10;
+      }
+    }
+
+    // Разрывные паттерны (X_XXX, XX_XX, _X_XX_)
+    if use_jumps == 1 && kind < 4 {
+      let j4_1 = if j1 > 0 && len + j1 >= 4 { 1 } else { 0 };
+      let j4_2 = if j2 > 0 && len + j2 >= 4 { 1 } else { 0 };
+      if j4_1 == 1 && j4_2 == 1 {
+        score = 115000;
+        kind = 4;
+      } else if (j4_1 == 1 || j4_2 == 1) && kind < 3 {
+        score = 10500;
+        kind = 3;
+      } else if kind < 2 {
+        let bl3_1 = if j1 > 0 && len + j1 == 3 && open2 == 1 && jopen1 == 1 { 1 } else { 0 };
+        let bl3_2 = if j2 > 0 && len + j2 == 3 && open1 == 1 && jopen2 == 1 { 1 } else { 0 };
+        if bl3_1 == 1 || bl3_2 == 1 {
+          score = 6500;
+          kind = 2;
+        } else if (j1 > 0 && len + j1 == 3 && (open2 == 1 || jopen1 == 1))
+               || (j2 > 0 && len + j2 == 3 && (open1 == 1 || jopen2 == 1)) {
+          if score < 1000 { score = 1000; }
+        } else if (j1 > 0 && len + j1 == 2 && open2 == 1 && jopen1 == 1)
+               || (j2 > 0 && len + j2 == 2 && open1 == 1 && jopen2 == 1) {
+          if score < 550 { score = 550; }
+          if kind < 1 { kind = 1; }
+        }
+      }
+    }
+
+    (score, kind)
+  }
+
+  fn eval_cell(r: i64, c: i64, p: i64, diff: i64) -[Mem]-> i64 {
+    let use_jumps = if diff >= 2 { 1 } else { 0 };
+    let (sc0, k0) = eval_axis(r, c, 0, 1, p, use_jumps);
+    let (sc1, k1) = eval_axis(r, c, 1, 0, p, use_jumps);
+    let (sc2, k2) = eval_axis(r, c, 1, 1, p, use_jumps);
+    let (sc3, k3) = eval_axis(r, c, 1, -1, p, use_jumps);
+
+    let mut total = sc0 + sc1 + sc2 + sc3;
+
+    let c_five = (if k0 == 5 { 1 } else { 0 }) + (if k1 == 5 { 1 } else { 0 })
+               + (if k2 == 5 { 1 } else { 0 }) + (if k3 == 5 { 1 } else { 0 });
+    let c_live4 = (if k0 == 4 { 1 } else { 0 }) + (if k1 == 4 { 1 } else { 0 })
+                + (if k2 == 4 { 1 } else { 0 }) + (if k3 == 4 { 1 } else { 0 });
+    let c_dead4 = (if k0 == 3 { 1 } else { 0 }) + (if k1 == 3 { 1 } else { 0 })
+                + (if k2 == 3 { 1 } else { 0 }) + (if k3 == 3 { 1 } else { 0 });
+    let c_live3 = (if k0 == 2 { 1 } else { 0 }) + (if k1 == 2 { 1 } else { 0 })
+                + (if k2 == 2 { 1 } else { 0 }) + (if k3 == 2 { 1 } else { 0 });
+    let c_live2 = (if k0 == 1 { 1 } else { 0 }) + (if k1 == 1 { 1 } else { 0 })
+                + (if k2 == 1 { 1 } else { 0 }) + (if k3 == 1 { 1 } else { 0 });
+
+    if c_five >= 1 {
+      total = 10000000;
+    } else if diff >= 2 {
+      if c_live4 >= 1 { total += 500000; }
+      else if c_dead4 >= 2 { total += 450000; }
+      else if c_dead4 >= 1 && c_live3 >= 1 { total += 400000; }
+      else if c_live3 >= 2 { total += 250000; }
+      else if c_live3 >= 1 && c_live2 >= 1 { total += 4500; }
+      else if c_live2 >= 2 { total += 2000; }
+    } else if diff == 1 {
+      if c_live4 >= 1 { total += 300000; }
+      else if c_dead4 >= 2 { total += 200000; }
+      else if c_live3 >= 2 { total += 60000; }
+    } else {
+      if c_live4 >= 1 { total += 40000; }
+    }
+
+    let dist = abs_i64(r - 8) + abs_i64(c - 8);
+    total += max_i64(0, 20 - dist);
+    total
+  }
+
+  pub fn pick() -[Mem]-> i64 {
+    if GameState.move_count == 0 {
+      8 * board_rules::N + 8
+    } else {
+      let diff = GameState.difficulty;
+      GameState.rng_seed = rng_next(GameState.rng_seed + GameState.tick * 7 + GameState.move_count * 31);
+
+      let mut best = -1;
+      let mut choice = -1;
+      for i in 0..324 {
+        if GameState.board[i] != 0 { continue; }
+        let r = i / board_rules::N;
+        let c = i % board_rules::N;
+        if has_neighbor(r, c) == 0 { continue; }
+        let s2 = eval_cell(r, c, 2, diff);
+        let s1 = eval_cell(r, c, 1, diff);
+        let mut score = 0;
+
+        if s2 >= 10000000 {
+          score = 200000000;
+        } else if s1 >= 10000000 {
+          score = 150000000 + s2;
+        } else if diff >= 2 {
+          if s2 >= 400000 { score = 80000000 + s2 + s1; }
+          else if s1 >= 400000 { score = 60000000 + s1 + s2; }
+          else if s2 >= 250000 { score = 40000000 + s2 + s1; }
+          else if s1 >= 250000 { score = 30000000 + s1 + s2; }
+          else {
+            GameState.rng_seed = rng_next(GameState.rng_seed);
+            let jitter = rng_range(GameState.rng_seed, 18);
+            score = (s2 * 115) / 100 + s1 + jitter;
+          }
+        } else if diff == 1 {
+          if s2 >= 300000 { score = 80000000 + s2; }
+          else if s1 >= 300000 { score = 60000000 + s1; }
+          else {
+            GameState.rng_seed = rng_next(GameState.rng_seed);
+            let jitter = rng_range(GameState.rng_seed, 550);
+            score = s2 + s1 + jitter;
+          }
+        } else {
+          GameState.rng_seed = rng_next(GameState.rng_seed);
+          let jitter = rng_range(GameState.rng_seed, 4200);
+          score = s2 + (s1 * 7) / 10 + jitter;
+        }
+
+        if score > best {
+          best = score;
+          choice = i;
+        }
+      }
+
+      if choice == -1 {
+        for j in 0..324 {
+          if GameState.board[j] == 0 {
+            choice = j;
+            break;
+          }
+        }
+      }
+      choice
+    }
+  }
+}
+
+// ---------- UI-компоненты в деревянном стиле ----------
+
+fn wood_btn(
+  x: i64, y: i64, w: i64, h: i64, label: str, sz: i64,
+  active: i64, disabled: i64, primary: i64,
+  mx: i64, my: i64, m_clicked: i64
+) -[Mem]-> i64 {
+  let hov = if disabled == 0 && point_in_rect(mx, my, x, y, w, h) { 1 } else { 0 };
+  if hov == 1 { gfx_set_cursor(1); }
+
+  let bg = if disabled == 1 {
+    pack_rgba(222, 206, 182, 255)
+  } else if active == 1 || primary == 1 {
+    if hov == 1 { pack_rgba(128, 80, 44, 255) } else { pack_rgba(104, 64, 34, 255) }
+  } else {
+    if hov == 1 { pack_rgba(240, 224, 198, 255) } else { pack_rgba(232, 214, 186, 255) }
+  };
+
+  let brd = if disabled == 1 {
+    pack_rgba(196, 176, 148, 255)
+  } else if active == 1 || primary == 1 {
+    pack_rgba(72, 42, 20, 255)
+  } else if hov == 1 {
+    pack_rgba(130, 86, 48, 255)
+  } else {
+    pack_rgba(180, 148, 108, 255)
+  };
+
+  let fg = if disabled == 1 {
+    pack_rgba(155, 134, 108, 255)
+  } else if active == 1 || primary == 1 {
+    pack_rgba(252, 245, 232, 255)
+  } else {
+    pack_rgba(68, 44, 24, 255)
+  };
+
+  let sh = if disabled == 0 && (primary == 1 || active == 1) { 3 } else { 0 };
+  ui_rect(x, y, w, h, 8, 1, sh, bg, brd, 0);
+
+  let tw = ui_text_width(label, sz, 1);
+  let tx = x + max_i64(4, (w - tw) / 2);
+  let ty = y + (h - sz) / 2;
+  ui_text(tx, ty, label, sz, 1, fg, 0);
+
+  if hov == 1 && m_clicked != 0 { 1 } else { 0 }
+}
+
+// ---------- Жизненный цикл ----------
+
+export fn init_app() -[Mem]-> i64 {
+  GameState.tick = 0;
+  GameState.mode = 0;
+  GameState.difficulty = 2;
+  GameState.sound_on = 1;
+  GameState.wins_black = 0;
+  GameState.wins_white = 0;
+  GameState.draws = 0;
+  GameState.rng_seed = 918273645;
+  reset_board();
+  1
+}
+
+export fn step_ui(
+  vw: i64, vh: i64,
+  mx: i64, my: i64,
+  m_down: i64, m_clicked: i64,
+  wheel_dy: i64, key_char: i64, key_special: i64
+) -[Mem, Gpu]-> i64 {
+  let w = clamp_i64(vw, 640, 4096);
+  let h = clamp_i64(vh, 480, 2160);
+  GameState.tick += 1;
+  gfx_begin_frame(w, h);
+
+  // Обновление анимаций постановки шариков
+  for ai in 0..324 {
+    if GameState.anim[ai] > 0 {
+      GameState.anim[ai] -= 1;
+    }
+  }
+
+  // Адаптивная геометрия: доска слева, панель управления справа
+  let panel_w = clamp_i64(w / 4, 198, 256);
+  let gap = 18;
+  let pad_x = 18;
+  let pad_y = 14;
+  let coord_l = 22;
+  let coord_t = 20;
+  let frame_pad = 10;
+
+  let avail_w = w - panel_w - gap - pad_x * 2 - coord_l - frame_pad * 2;
+  let avail_h = h - pad_y * 2 - coord_t - frame_pad * 2;
+  let max_side = min_i64(avail_w, avail_h);
+  let cell = clamp_i64(max_side / 18, 18, 42);
+  let board_s = cell * 18;
+  let ball_r = clamp_i64((cell * 43) / 100, 7, 18);
+
+  let frame_w = board_s + coord_l + frame_pad * 2;
+  let frame_h = board_s + coord_t + frame_pad * 2;
+  let total_w = frame_w + gap + panel_w;
+  let start_x = max_i64(pad_x, (w - total_w) / 2);
+
+  let frame_x = start_x;
+  let frame_y = max_i64(pad_y, (h - frame_h) / 2);
+  let bx = frame_x + frame_pad + coord_l;
+  let by = frame_y + frame_pad + coord_t;
+
+  let px = frame_x + frame_w + gap;
+  let panel_h = 436;
+  let py = max_i64(pad_y, (h - panel_h) / 2);
+
+  // Палитра
+  let bg_top = pack_rgba(244, 234, 216, 255);
+  let bg_bot = pack_rgba(214, 190, 154, 255);
+  let walnut = pack_rgba(92, 60, 36, 255);
+  let walnut_dk = pack_rgba(56, 34, 18, 255);
+  let kaya_top = pack_rgba(226, 184, 120, 255);
+  let kaya_bot = pack_rgba(198, 150, 88, 255);
+  let ink = pack_rgba(64, 40, 20, 255);
+  let muted = pack_rgba(128, 96, 66, 255);
+  let coord_col = pack_rgba(238, 218, 186, 230);
+  let grid_col = pack_rgba(74, 48, 24, 215);
+  let black_stone = pack_rgba(26, 28, 34, 255);
+  let black_rim = pack_rgba(120, 128, 146, 255);
+  let white_stone = pack_rgba(246, 244, 238, 255);
+  let white_rim = pack_rgba(255, 255, 255, 255);
+
+  // Фон
+  ui_grad_rect(0, 0, w, h, 0, 0, 0, bg_top, bg_bot, 0);
+
+  // Определение клетки под мышью (клик по всей площади клетки!)
+  let human_turn = if GameState.state == 1 && (GameState.mode == 1 || GameState.turn == 1) { 1 } else { 0 };
+  let mut hover = -1;
+  if human_turn == 1 && point_in_rect(mx, my, bx, by, board_s, board_s) {
+    let hc = clamp_i64((mx - bx) / cell, 0, 17);
+    let hr = clamp_i64((my - by) / cell, 0, 17);
+    let idx = hr * 18 + hc;
+    if GameState.board[idx] == 0 {
+      hover = idx;
+      gfx_set_cursor(1);
+    }
+  }
+  GameState.hover = hover;
+
+  // Ход человека (в режиме ИИ — только чёрные; на двоих — оба игрока)
+  if human_turn == 1 && m_clicked != 0 && hover >= 0 {
+    place_stone(hover, GameState.turn);
+  }
+
+  // Ход компьютера
+  if GameState.state == 1 && GameState.mode == 0 && GameState.turn == 2 {
+    GameState.ai_timer += 1;
+    if GameState.ai_timer >= 14 {
+      let pick = ai::pick();
+      if pick >= 0 {
+        place_stone(pick, 2);
+      }
+      GameState.ai_timer = 0;
+    }
+  }
+
+  // ---------- Отрисовка деревянной доски в стиле Го/Рэндзю ----------
+  ui_rect(frame_x, frame_y, frame_w, frame_h, 12, 2, 12, walnut, walnut_dk, 0);
+  ui_grad_rect(bx, by, board_s, board_s, 5, 2, 0, kaya_top, kaya_bot, 0);
+  ui_rect(bx, by, board_s, board_s, 5, 1, 0, pack_rgba(0, 0, 0, 0), walnut_dk, 0);
+
+  // Координаты A-R сверху и 1-18 слева
+  let coord_sz = clamp_i64(cell / 2, 10, 13);
+  for g in 0..18 {
+    let cx = bx + g * cell + cell / 2;
+    let cy = by + g * cell + cell / 2;
+    let ch = 'A' + g;
+    let cw = glyph_px(ch, coord_sz, 1);
+    ui_glyph(cx - cw / 2, frame_y + frame_pad + (coord_t - coord_sz) / 2 - 1, ch, coord_sz, 1, coord_col, 0);
+    ui_int_centered(frame_x + frame_pad + coord_l / 2 - 1, cy - coord_sz / 2, g + 1, coord_sz, 1, coord_col, 0);
+  }
+
+  // Сетка 18x18 (линии через центры пересечений)
+  let gx0 = bx + cell / 2;
+  let gy0 = by + cell / 2;
+  let gx1 = bx + 17 * cell + cell / 2;
+  let gy1 = by + 17 * cell + cell / 2;
+  for g in 0..18 {
+    let th = if g == 0 || g == 17 { 2 } else { 1 };
+    let lx = bx + g * cell + cell / 2;
+    let ly = by + g * cell + cell / 2;
+    ui_line(lx, gy0, lx, gy1, th, grid_col, 0);
+    ui_line(gx0, ly, gx1, ly, th, grid_col, 0);
+  }
+
+  // Звёздные точки-ориентиры (хоси)
+  for sr in 0..18 {
+    for sc in 0..18 {
+      if board_rules::is_star_point(sr, sc) == 1 {
+        let sx = bx + sc * cell + cell / 2;
+        let sy = by + sr * cell + cell / 2;
+        ui_circle(sx, sy, 3, 0, walnut_dk, 0);
+      }
+    }
+  }
+
+  // Линия, соединяющая выигрышную пятёрку (под шариками для мягкого свечения)
+  if GameState.state == 2 && GameState.win_count == 5 {
+    let w0 = GameState.win_cells[0];
+    let w4 = GameState.win_cells[4];
+    let wx0 = bx + (w0 % 18) * cell + cell / 2;
+    let wy0 = by + (w0 / 18) * cell + cell / 2;
+    let wx4 = bx + (w4 % 18) * cell + cell / 2;
+    let wy4 = by + (w4 / 18) * cell + cell / 2;
+    ui_line(wx0, wy0, wx4, wy4, 6, pack_rgba(255, 200, 40, 140), 0);
+    ui_line(wx0, wy0, wx4, wy4, 3, pack_rgba(255, 232, 110, 240), 0);
+  }
+
+  // Отрисовка шариков, превью, подсветки последнего хода и победы
+  let pulse = sin_1024(GameState.tick * 96);
+  for i in 0..324 {
+    let r = i / 18;
+    let c = i % 18;
+    let cx = bx + c * cell + cell / 2;
+    let cy = by + r * cell + cell / 2;
+    let val = GameState.board[i];
+
+    if val == 1 || val == 2 {
+      let an = GameState.anim[i];
+      let r_draw = if an > 0 { ball_r + (an + 2) / 4 } else { ball_r };
+
+      // Волна-блик при постановке
+      if an > 0 {
+        let ring_r = ball_r + (11 - an) * 2;
+        let alpha = clamp_i64(an * 20, 0, 200);
+        ui_circle(cx, cy, ring_r, max_i64(1, ring_r - 2), pack_rgba(255, 238, 180, alpha), 0);
+      }
+
+      // Свечение под выигрышными шариками
+      let win_hit = if GameState.state == 2 { is_win_cell(i) } else { 0 };
+      if win_hit == 1 {
+        let glow_r = ball_r + 8 + (pulse * 2) / 1024;
+        ui_glow(cx, cy, glow_r, 22, pack_rgba(255, 215, 60, 175), pack_rgba(255, 160, 20, 0), 0);
+      }
+
+      if val == 1 {
+        ui_sphere_3d(cx, cy, r_draw, 2, 3, 5, black_stone, black_rim, 0);
+      } else {
+        ui_sphere_3d(cx, cy, r_draw, 2, 2, 5, white_stone, white_rim, 0);
+      }
+
+      // Ободок победы
+      if win_hit == 1 {
+        ui_circle(cx, cy, ball_r + 3, ball_r, pack_rgba(255, 215, 55, 245), 0);
+      } else if i == GameState.last_move {
+        // Метка последнего хода
+        let dot_r = clamp_i64(ball_r / 3, 2, 5);
+        let mark_col = if val == 1 {
+          pack_rgba(248, 196, 78, 240)
+        } else {
+          pack_rgba(218, 66, 48, 240)
+        };
+        ui_circle(cx, cy, dot_r, 0, mark_col, 0);
+        ui_circle(cx, cy, ball_r + 2, ball_r, mark_col, 0);
+      }
+    } else if GameState.hover == i {
+      // Полупрозрачный шарик-превью под курсором
+      let ghost_fill = if GameState.turn == 1 {
+        pack_rgba(28, 30, 38, 115)
+      } else {
+        pack_rgba(250, 248, 242, 155)
+      };
+      let ghost_ring = if GameState.turn == 1 {
+        pack_rgba(40, 42, 52, 185)
+      } else {
+        pack_rgba(120, 96, 68, 185)
+      };
+      ui_circle(cx, cy, ball_r, 0, ghost_fill, 0);
+      ui_circle(cx, cy, ball_r + 1, max_i64(1, ball_r - 1), ghost_ring, 0);
+    }
+  }
+
+  // ---------- Боковая панель управления ----------
+  let card_bg = pack_rgba(248, 240, 226, 242);
+  let card_brd = pack_rgba(186, 156, 118, 255);
+  let inner_bg = pack_rgba(238, 224, 200, 255);
+  let inner_brd = pack_rgba(198, 170, 134, 255);
+
+  ui_rect(px, py, panel_w, panel_h, 12, 1, 8, card_bg, card_brd, 0);
+
+  let ix = px + 12;
+  let iw = panel_w - 24;
+  let mut cy_ui = py + 14;
+
+  // Заголовок
+  ui_text(ix, cy_ui, "Пять в ряд", 20, 1, ink, 0);
+  cy_ui += 24;
+  ui_text(ix, cy_ui, "Гомоку 18x18 • собери 5", 12, 0, muted, 0);
+  cy_ui += 20;
+
+  // Карточка статуса / результата
+  let status_h = 54;
+  let status_bg = if GameState.state == 2 {
+    pack_rgba(252, 232, 184, 255)
+  } else {
+    inner_bg
+  };
+  let status_brd = if GameState.state == 2 {
+    pack_rgba(198, 136, 40, 255)
+  } else {
+    inner_brd
+  };
+  ui_rect(ix, cy_ui, iw, status_h, 9, 1, 0, status_bg, status_brd, 0);
+
+  if GameState.state == 1 {
+    let icon_x = ix + 22;
+    let icon_y = cy_ui + status_h / 2;
+    if GameState.turn == 1 {
+      ui_sphere_3d(icon_x, icon_y, 11, 2, 3, 3, black_stone, black_rim, 0);
+      let s1 = if GameState.mode == 0 { "Ваш ход" } else { "Ход чёрных" };
+      ui_text(ix + 42, cy_ui + 11, s1, 14, 1, ink, 0);
+      ui_text(ix + 42, cy_ui + 30, "Чёрный шарик", 11, 0, muted, 0);
+    } else {
+      ui_sphere_3d(icon_x, icon_y, 11, 2, 2, 3, white_stone, white_rim, 0);
+      let s1 = if GameState.mode == 0 { "Ход ИИ..." } else { "Ход белых" };
+      let s2 = if GameState.mode == 0 { "Компьютер думает" } else { "Белый шарик" };
+      ui_text(ix + 42, cy_ui + 11, s1, 14, 1, ink, 0);
+      ui_text(ix + 42, cy_ui + 30, s2, 11, 0, muted, 0);
+    }
+  } else {
+    let win_txt = if GameState.winner == 1 {
+      "Победа чёрных!"
+    } else if GameState.winner == 2 {
+      "Победа белых!"
+    } else {
+      "Ничья!"
+    };
+    let sub_txt = if GameState.winner == 1 && GameState.mode == 0 {
+      "Отличная партия!"
+    } else if GameState.winner == 2 && GameState.mode == 0 {
+      "Компьютер победил"
+    } else if GameState.winner == 3 {
+      "Поле заполнено"
+    } else {
+      "Собрана линия из 5"
+    };
+    let wtw = ui_text_width(win_txt, 15, 1);
+    let stw = ui_text_width(sub_txt, 11, 0);
+    ui_text(ix + max_i64(6, (iw - wtw) / 2), cy_ui + 10, win_txt, 15, 1, pack_rgba(110, 56, 14, 255), 0);
+    ui_text(ix + max_i64(6, (iw - stw) / 2), cy_ui + 31, sub_txt, 11, 0, muted, 0);
+  }
+  cy_ui += status_h + 10;
+
+  // Счётчик побед и ходов
+  let score_h = 68;
+  ui_rect(ix, cy_ui, iw, score_h, 9, 1, 0, inner_bg, inner_brd, 0);
+  let col_w = iw / 3;
+  let c0 = ix + col_w / 2;
+  let c1 = ix + col_w + col_w / 2;
+  let c2 = ix + col_w * 2 + col_w / 2;
+
+  let l_blk = if GameState.mode == 0 { "Вы" } else { "Чёрн." };
+  let l_wht = if GameState.mode == 0 { "ИИ" } else { "Бел." };
+  ui_text(c0 - ui_text_width(l_blk, 11, 0) / 2, cy_ui + 7, l_blk, 11, 0, muted, 0);
+  ui_text(c1 - ui_text_width("Ничьи", 11, 0) / 2, cy_ui + 7, "Ничьи", 11, 0, muted, 0);
+  ui_text(c2 - ui_text_width(l_wht, 11, 0) / 2, cy_ui + 7, l_wht, 11, 0, muted, 0);
+
+  ui_int_centered(c0, cy_ui + 22, GameState.wins_black, 18, 1, ink, 0);
+  ui_int_centered(c1, cy_ui + 22, GameState.draws, 18, 1, muted, 0);
+  ui_int_centered(c2, cy_ui + 22, GameState.wins_white, 18, 1, ink, 0);
+
+  ui_line(ix + 10, cy_ui + 46, ix + iw - 10, cy_ui + 46, 1, inner_brd, 0);
+  ui_fmt_centered(ix + iw / 2, cy_ui + 51, "Ходов в партии: {GameState.move_count}", 11, 1, ink, 0);
+  cy_ui += score_h + 10;
+
+  // Режим игры
+  ui_text(ix, cy_ui, "Режим игры", 12, 1, muted, 0);
+  cy_ui += 17;
+  let half_w = (iw - 6) / 2;
+  if wood_btn(ix, cy_ui, half_w, 30, "Против ИИ", 12, if GameState.mode == 0 { 1 } else { 0 }, 0, 0, mx, my, m_clicked) == 1 {
+    if GameState.mode != 0 {
+      GameState.mode = 0;
+      GameState.ai_timer = 0;
+      if GameState.sound_on == 1 { sfx_click(); }
+    }
+  }
+  if wood_btn(ix + half_w + 6, cy_ui, iw - half_w - 6, 30, "На двоих", 12, if GameState.mode == 1 { 1 } else { 0 }, 0, 0, mx, my, m_clicked) == 1 {
+    if GameState.mode != 1 {
+      GameState.mode = 1;
+      GameState.ai_timer = 0;
+      if GameState.sound_on == 1 { sfx_click(); }
+    }
+  }
+  cy_ui += 38;
+
+  // Сложность ИИ
+  ui_text(ix, cy_ui, "Сложность ИИ", 12, 1, muted, 0);
+  cy_ui += 17;
+  let third_w = (iw - 8) / 3;
+  let diff_dis = if GameState.mode == 1 { 1 } else { 0 };
+  if wood_btn(ix, cy_ui, third_w, 28, "Лёгк.", 11, if GameState.difficulty == 0 && diff_dis == 0 { 1 } else { 0 }, diff_dis, 0, mx, my, m_clicked) == 1 {
+    GameState.difficulty = 0;
+    if GameState.sound_on == 1 { sfx_click(); }
+  }
+  if wood_btn(ix + third_w + 4, cy_ui, third_w, 28, "Сред.", 11, if GameState.difficulty == 1 && diff_dis == 0 { 1 } else { 0 }, diff_dis, 0, mx, my, m_clicked) == 1 {
+    GameState.difficulty = 1;
+    if GameState.sound_on == 1 { sfx_click(); }
+  }
+  if wood_btn(ix + third_w * 2 + 8, cy_ui, iw - third_w * 2 - 8, 28, "Слож.", 11, if GameState.difficulty == 2 && diff_dis == 0 { 1 } else { 0 }, diff_dis, 0, mx, my, m_clicked) == 1 {
+    GameState.difficulty = 2;
+    if GameState.sound_on == 1 { sfx_click(); }
+  }
+  cy_ui += 38;
+
+  // Кнопки управления
+  let can_undo = if GameState.move_count > 0 { 1 } else { 0 };
+  if wood_btn(ix, cy_ui, iw, 32, "Отменить ход", 13, 0, if can_undo == 0 { 1 } else { 0 }, 0, mx, my, m_clicked) == 1 {
+    let mut did = 0;
+    if GameState.mode == 1 {
+      did = undo_one();
+    } else {
+      if (GameState.state == 1 && GameState.turn == 1 && GameState.move_count >= 2)
+      || (GameState.state == 2 && GameState.winner == 2 && GameState.move_count >= 2) {
+        let _ = undo_one();
+        did = undo_one();
+      } else {
+        did = undo_one();
+      }
+    }
+    if did == 1 && GameState.sound_on == 1 { sfx_click(); }
+  }
+  cy_ui += 40;
+
+  let new_lbl = if GameState.state == 2 { "Сыграть снова" } else { "Новая игра" };
+  if wood_btn(ix, cy_ui, iw, 36, new_lbl, 14, 0, 0, 1, mx, my, m_clicked) == 1 {
+    reset_board();
+    if GameState.sound_on == 1 { sfx_spawn(); }
+  }
+  cy_ui += 44;
+
+  let snd_lbl = if GameState.sound_on == 1 { "Звук: Вкл" } else { "Звук: Выкл" };
+  if wood_btn(ix, cy_ui, iw, 28, snd_lbl, 12, 0, 0, 0, mx, my, m_clicked) == 1 {
+    GameState.sound_on = if GameState.sound_on == 1 { 0 } else { 1 };
+    if GameState.sound_on == 1 { sfx_click(); }
+  }
+
+  gfx_end_frame()
+}
+
+// ---------- Встроенные юнит-тесты (`infimum test`) ----------
+
+test "init resets clean 18x18 board" {
+  let _ = init_app();
+  assert(GameState.turn == 1);
+  assert(GameState.state == 1);
+  assert(GameState.move_count == 0);
+  assert(cell_at(8, 8) == 0);
+}
+
+test "find_win detects horizontal five in a row" {
+  let _ = init_app();
+  for c in 4..9 {
+    GameState.board[8 * 18 + c] = 1;
+  }
+  assert(find_win(1) == 1);
+  assert(GameState.win_count == 5);
+  assert(find_win(2) == 0);
+}
+
+test "ai blocks opponent four in a row" {
+  let _ = init_app();
+  // Чёрные построили открытую четвёрку (8,5)..(8,8), ИИ обязан заблокировать (8,4) или (8,9)
+  GameState.board[8 * 18 + 5] = 1;
+  GameState.board[8 * 18 + 6] = 1;
+  GameState.board[8 * 18 + 7] = 1;
+  GameState.board[8 * 18 + 8] = 1;
+  GameState.move_count = 4;
+  let pick = ai::pick();
+  assert(pick == 8 * board_rules::N + 4 || pick == 8 * board_rules::N + 9);
+}

@@ -1,0 +1,89 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/ui.ifm
+// Reusable themed UI widgets (cards, auto-width badges, buttons, progress bars,
+// scrollbars, dividers) built on std/gfx, std/text, std/fmt, std/theme, std/icons.
+
+use "std/math.ifm";
+use "std/color.ifm";
+use "std/gfx.ifm";
+use "std/text.ifm";
+use "std/fmt.ifm";
+use "std/theme.ifm";
+use "std/icons.ifm";
+
+fn ui_card(x: i64, y: i64, w: i64, h: i64, th: i64, radius: i64, clip: i64) -[Mem]-> unit {
+  ui_rect(x, y, w, h, radius, 1, 0, theme_surf(th), theme_border(th), clip);
+}
+
+fn ui_divider(x: i64, y: i64, w: i64, th: i64, clip: i64) -[Mem]-> unit {
+  if w > 0 {
+    ui_line(x, y, x + w, y, 1, theme_border(th), clip);
+  }
+}
+
+// Auto-sizing pill badge (fit-content): renders rounded pill + label and returns total width.
+fn ui_badge(x: i64, y: i64, s: str, size: i64, bg: i64, fg: i64, clip: i64) -[Mem]-> i64 {
+  let sz = clamp_i64(size, 10, 32);
+  let pad_x = clamp_i64(sz / 2, 6, 14);
+  let h = sz + 8;
+  let tw = ui_text_width(s, sz, 1);
+  let w = tw + pad_x * 2;
+  ui_rect(x, y, w, h, h / 2, 0, 0, bg, 0, clip);
+  ui_text(x + pad_x, y + 4, s, sz, 1, fg, clip);
+  w
+}
+
+// Interactive themed button with centered ellipsis-safe label; returns true when clicked.
+fn ui_button(
+  x: i64, y: i64, w: i64, h: i64, s: str, size: i64, th: i64, primary: bool,
+  mx: i64, my: i64, m_clicked: i64, clip: i64
+) -[Mem]-> bool {
+  let hov = point_in_rect(mx, my, x, y, w, h);
+  let bg = if primary {
+    if hov { theme_accent_hover() } else { theme_accent() }
+  } else {
+    if hov { theme_surf2(th) } else { theme_surf(th) }
+  };
+  let brd = if primary { theme_accent() } else if hov { theme_accent() } else { theme_border(th) };
+  let fg = if primary { pack_rgba(255, 255, 255, 255) } else { theme_text(th) };
+  ui_rect(x, y, w, h, 8, 1, 0, bg, brd, clip);
+  let sz = clamp_i64(size, 10, 32);
+  let inner_w = clamp_i64(w - 16, 0, 2000);
+  let tw = ui_text_width(s, sz, 1);
+  let tx = if tw < inner_w { x + (w - tw) / 2 } else { x + 8 };
+  let ty = y + (h - sz) / 2;
+  let _ = fmt_text_ellipsis(tx, ty, inner_w, s, sz, 1, fg, clip);
+  hov && m_clicked == 1
+}
+
+// Z3-safe clamped progress bar.
+fn ui_progress_bar(x: i64, y: i64, w: i64, h: i64, val: i64, max_val: i64, bg: i64, fill: i64, clip: i64) -[Mem]-> unit {
+  if w > 0 && h > 0 {
+    let r = clamp_i64(h / 2, 2, 16);
+    ui_rect(x, y, w, h, r, 0, 0, bg, 0, clip);
+    let mv = if max_val > 0 { max_val } else { 1 };
+    let v = clamp_i64(val, 0, mv);
+    let fw = (w * v) / mv;
+    if fw > 0 {
+      ui_rect(x, y, fw, h, r, 0, 0, fill, 0, clip);
+    }
+  }
+}
+
+// Vertical scrollbar track + thumb.
+fn ui_scrollbar_v(
+  x: i64, y: i64, h: i64, scroll_y: i64, max_scroll: i64, view_h: i64,
+  th: i64, active: bool, clip: i64
+) -[Mem]-> unit {
+  if h > 16 && max_scroll > 0 && view_h > 0 {
+    let total_h = clamp_i64(view_h + max_scroll, 1, 1000000);
+    let thumb_h = clamp_i64((h * view_h) / total_h, 24, h);
+    let span = clamp_i64(h - thumb_h, 1, 100000);
+    let scr = clamp_i64(scroll_y, 0, max_scroll);
+    let thumb_y = y + (scr * span) / max_scroll;
+    ui_rect(x, y, 6, h, 3, 0, 0, theme_bg(th), 0, clip);
+    ui_rect(x, thumb_y, 6, thumb_h, 3, 0, 0, if active { theme_accent() } else { theme_border(th) }, 0, clip);
+  }
+}

@@ -1,0 +1,666 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Native Modals & Overlays built on Infimum.Forma:
+//   - SettingsModal (with deferred Overlay for Currency Dropdown)
+//   - ConfirmDeleteModal (project / conversation delete confirmation)
+//   - ContextMenuOverlay (right-click clipboard menu)
+
+use "abi.ifm";
+use "primitives.ifm";
+use "theme.ifm";
+use "icons.ifm";
+use "text_buf.ifm";
+
+enum SetAct {
+  None = 0,
+  Close = 301,
+  Theme = 302,
+  ScaleChanged = 303,
+  CurDd = 305,
+  ResetSpend = 306,
+  CurIls = 310,
+  CurUsd = 311,
+  CurEur = 312,
+  SaveKey = 320,
+  TestKey = 321,
+}
+
+enum CtxAct {
+  None = 0,
+  Copy = 401,
+  Cut = 402,
+  Paste = 403,
+  SelectAll = 404,
+}
+
+enum DelAct {
+  None = 0,
+  Cancel = 501,
+  Confirm = 502,
+}
+
+// --- Settings Modal Slot Renderers (only dynamic numeric/icon slots; static labels use Forma 2.0 Text!) ---
+
+fn draw_settings_scale_val(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+  let scale = StudioMem.font_scale_pct;
+  let s_l = sf(14);
+  ui_fmt(rx + 2, ry + (rh - s_l) / 2, "{scale}%", s_l, 1, col_accent(), clip_id);
+}
+
+fn draw_settings_row_currency(rx: i64, ry: i64, _rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let s_l = sf(14);
+  let s_s = sf(12);
+  let cur_id = StudioMem.currency_id;
+  ui_text(rx + 2, ry + 2, "Расход и валюта API", s_l, 1, col_text(th), clip_id);
+  let cw = ui_text(rx + 2, ry + s_l + 6, "Сессия: ", s_s, 0, col_muted(th), clip_id);
+  emit_cost_in_currency(rx + 2 + cw, ry + s_l + 6, StudioMem.total_milli_ils, cur_id, s_s, 2, col_emerald(), clip_id);
+}
+
+fn draw_settings_cur_btn(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let s_l = sf(14);
+  let cur_id = StudioMem.currency_id;
+  ui_text(rx + 10, ry + (rh - s_l) / 2, currency_short_label(cur_id), s_l, 1, col_text(th), clip_id);
+  icon_chevron_down(rx + rw - 14, ry + rh / 2 + 1, s_l, if StudioMem.cur_dd_open == 1 { col_accent() } else { col_muted(th) }, clip_id);
+}
+
+forma CurOpt(
+  w: i64, h: i64, lbl: str, is_sel: bool, act: i64,
+  bg_surf: i64, bg_surf2: i64, col_txt: i64, col_acc: i64, col_ok: i64, s_l: i64
+)
+  req w >= 80 && h >= 24 && s_l >= 10 && s_l <= 20
+  -[Mem]-> i64
+{
+  Button(w: w, h: h, radius: 5, bg: bg_surf, hover_bg: bg_surf2, pad_x: 8, align: center, on_click: act) {
+    Row(align: center) {
+      Text(lbl, grow: 1, size: s_l, style: if is_sel { 1 } else { 0 }, color: if is_sel { col_acc } else { col_txt }, overflow: ellipsis)
+      Text(if is_sel { "✓" } else { "" }, w: 16, size: s_l, style: 1, color: col_ok, align: end, shrink: 1)
+    }
+  }
+}
+
+fn draw_settings_api_keys_header(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let s_l = sf(13);
+  let s_s = sf(12);
+  let mx = StudioMem.frame_mx;
+  let my = StudioMem.frame_my;
+  let m_clicked = StudioMem.frame_m_clicked;
+  let can_click = StudioMem.cur_dd_open == 0;
+  let sel_p = clamp_i64(StudioMem.keys_sel_prov, 0, 6);
+
+  ui_text(
+    rx + 2,
+    ry,
+    if StudioMem.online_mode == 1 { "API-ключи провайдеров (localStorage браузера)" } else { "API-ключи провайдеров (~/.env, права 0600)" },
+    s_l,
+    1,
+    col_text(th),
+    clip_id
+  );
+
+  // Row of provider tabs (2 tabs in Online Studio: Gemini + OpenRouter; 7 on desktop)
+  let tab_h = clamp_i64(s_s + 12, 22, 32);
+  let mut tx = rx + 2;
+  let mut ty = ry + s_l + 8;
+  let is_online = StudioMem.online_mode == 1;
+  let tab_cnt = if is_online { 2 } else { 7 };
+  for slot in 0..tab_cnt max 7 {
+    let p = if is_online { if slot == 0 { 0 } else { 3 } } else { slot };
+    let lbl = provider_short_name(p);
+    let tw = clamp_i64(ui_text_width(lbl, s_s, 1) + 24, 58, 120);
+    if tx + tw > rx + rw - 2 && slot > 0 {
+      tx = rx + 2;
+      ty += tab_h + 6;
+    }
+    let is_sel = p == sel_p;
+    let has_k = ((StudioMem.keys_status_mask >> p) & 1) == 1;
+    let hov = can_click && point_in_rect(mx, my, tx, ty, tw, tab_h);
+    if hov {
+      gfx_set_cursor(CursorKind::Pointer);
+      if m_clicked == 1 {
+        StudioMem.keys_sel_prov = clamp_i64(p, 0, 6);
+        StudioMem.keys_test_ok = 0;
+        mem_store(StudioMem::key_input_buf, 0);
+        mem_store(StudioMem::key_status_buf, 0);
+        forma_set_focus(320);
+      }
+    }
+    let tbg = if is_sel { col_surf2(th) } else if hov { col_surf2(th) } else { col_surf(th) };
+    let tbrd = if is_sel { col_accent() } else { col_border(th) };
+    ui_rect(tx, ty, tw, tab_h, 6, 1, 0, tbg, tbrd, clip_id);
+    ui_rect(tx + 7, ty + tab_h / 2 - 3, 6, 6, 3, 0, 0, if has_k { col_emerald() } else { col_border(th) }, 0, clip_id);
+    ui_text(tx + 17, ty + (tab_h - s_s) / 2, lbl, s_s, if is_sel { 1 } else { 0 }, if is_sel { col_accent() } else { col_text(th) }, clip_id);
+    tx += tw + 6;
+  }
+}
+
+fn draw_settings_api_keys_status(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let s_s = sf(12);
+  let sel_p = clamp_i64(StudioMem.keys_sel_prov, 0, 6);
+  let slen = clamp_i64(mem_load(StudioMem::key_status_buf), 0, 150);
+  if slen > 0 {
+    let scol = if StudioMem.keys_test_ok == 1 { col_emerald() } else { col_red() };
+    let mut sx = rx + 2;
+    let max_sx = rx + rw - 6;
+    let mut j = 0;
+    while j < slen && sx < max_sx max 150 {
+      let ch = mem_load(StudioMem::key_status_buf + 1 + j);
+      let adv = glyph_px(ch, s_s, 1);
+      if sx + adv <= max_sx {
+        ui_glyph(sx, ry + 2, ch, s_s, 1, scol, clip_id);
+      }
+      sx += adv;
+      j += 1;
+    }
+  } else {
+    let cur_has = ((StudioMem.keys_status_mask >> sel_p) & 1) == 1;
+    if cur_has {
+      ui_text(rx + 2, ry + 2, "✓ Ключ сохранён. Нажмите «Проверить» для живого теста.", s_s, 0, col_emerald(), clip_id);
+    } else {
+      ui_text(rx + 2, ry + 2, "Ключ не задан — вставьте и нажмите «Сохранить».", s_s, 0, col_muted(th), clip_id);
+    }
+  }
+}
+
+forma SettingsModal(
+  vw: i64,
+  vh: i64,
+  mx0: i64,
+  my0: i64,
+  mw: i64,
+  mh: i64,
+  row_h: i64,
+  s_bh: i64,
+  tbtn_w: i64,
+  seg_w: i64,
+  cur_w: i64,
+  rst_w: i64,
+  cdd_x: i64,
+  cdd_y: i64,
+  cdd_w: i64,
+  cdd_rh: i64,
+  cur_dd_open: bool,
+  col_scrim: i64,
+  bg_surf: i64,
+  bg_surf2: i64,
+  bg_bg: i64,
+  col_brd: i64,
+  col_txt: i64,
+  col_mut: i64,
+  col_acc: i64,
+  col_ok: i64,
+  cur_id: i64,
+  s_h: i64,
+  s_l: i64,
+  s_s: i64,
+  theme_lbl: str,
+  is_dark: bool,
+  key_ph: str
+)
+  req vw >= 680 && vh >= 460 && mw >= 460 && mh >= 440 && row_h >= 42 && row_h <= 58 && s_bh >= 28 && s_bh <= 42 && row_h >= s_bh && tbtn_w >= 110 && tbtn_w <= 170 && seg_w >= 120 && seg_w <= 210 && cur_w >= 86 && cur_w <= 130 && rst_w >= 76 && rst_w <= 110 && cdd_w >= 118 && cdd_rh >= 28 && cdd_rh <= 44 && s_h >= 12 && s_h <= 24 && s_l >= 10 && s_l <= 20 && s_s >= 10 && s_s <= 18 && mh >= 3 * row_h + 2 * s_s + 240
+  -[Mem]-> i64
+{
+  Box(x: 0, y: 0, w: vw, h: vh, bg: col_scrim) {
+    Overlay(x: mx0, y: my0, w: mw, h: mh, radius: 14, bg: bg_surf, border: 1, border_col: col_brd, shadow: 20, pad: 18, visible: true) {
+      Col(gap: 10) {
+        Row(h: 32, gap: 8, align: center) {
+          Text("Настройки Infimum Code", size: s_h, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
+          Spacer(grow: 1)
+          Button(id: 301, w: 30, h: 30, radius: 6, bg: bg_surf, hover_bg: bg_surf2, align: center, on_click: SetAct::Close) {
+            Text("X", size: s_l, style: 1, color: col_mut, align: center, shrink: 1)
+          }
+        }
+        Row(h: row_h, gap: 8, align: center) {
+          Col(grow: 1, gap: 2) {
+            Text("Тема оформления", size: s_l, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
+            Text("Тёмная или светлая палитра", size: s_s, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
+          }
+          Row(w: tbtn_w, h: s_bh, gap: 8, align: center, justify: end) {
+            Text(theme_lbl, size: s_s, style: 1, color: col_mut, shrink: 1, overflow: ellipsis)
+            Toggle(id: 302, w: 46, h: 24, checked: is_dark, bg: bg_bg, border_col: col_brd, accent: col_acc, on_change: SetAct::Theme)
+          }
+        }
+        Row(h: row_h, gap: 8, align: center) {
+          Col(grow: 1, gap: 2) {
+            Text("Масштаб всех шрифтов", size: s_l, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
+            Text("Пропорционально (80% - 200%)", size: s_s, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
+          }
+          Row(w: seg_w, h: s_bh, gap: 8, align: center) {
+            Slider(id: 303, grow: 1, h: 24, bind: StudioMem::font_scale_pct, min: 80, max: 200, step: 5, bg: bg_bg, border_col: col_brd, accent: col_acc, on_change: SetAct::ScaleChanged)
+            Box(w: 44, h: s_bh) {
+              Slot(render: draw_settings_scale_val)
+            }
+          }
+        }
+        Row(h: row_h, gap: 8, align: center) {
+          Box(grow: 1, h: row_h) {
+            Slot(render: draw_settings_row_currency)
+          }
+          Dropdown(id: 305, w: cur_w, h: s_bh, radius: 7, bg: bg_surf2, hover_bg: col_brd, border: 1, border_col: col_brd, on_click: SetAct::CurDd) {
+            Slot(render: draw_settings_cur_btn)
+            Overlay(x: cdd_x, y: cdd_y, w: cdd_w, h: cdd_rh * 3 + 10, radius: 8, bg: bg_surf, border: 1, border_col: col_brd, shadow: 14, pad_x: 4, pad_y: 5, visible: cur_dd_open) {
+              Col(gap: 0) {
+                for ci in 0..3 {
+                  CurOpt(
+                    cdd_w - 8, cdd_rh,
+                    currency_menu_label(ci),
+                    cur_id == ci,
+                    SetAct::CurIls + ci,
+                    bg_surf, bg_surf2, col_txt, col_acc, col_ok, s_l
+                  )
+                }
+              }
+            }
+          }
+          Button(id: 306, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf2, hover_bg: col_brd, border: 1, border_col: col_brd, align: center, on_click: SetAct::ResetSpend) {
+            Text("Сбросить", size: s_s, style: 1, color: col_mut, align: center, shrink: 1, overflow: ellipsis)
+          }
+        }
+        Box(grow: 1, pad_x: 12, pad_y: 10, radius: 8, bg: bg_bg, border: 1, border_col: col_brd) {
+          Col(gap: 8) {
+            Box(grow: 1) {
+              Slot(render: draw_settings_api_keys_header)
+            }
+            Row(h: s_bh, gap: 6, align: center) {
+              TextInput(id: 320, grow: 1, h: s_bh, buf: StudioMem::key_input_buf, max_len: 180, mask: true, bg: bg_surf, border_col: col_brd, accent: col_acc, color: col_txt, size: s_s, placeholder: key_ph, on_submit: SetAct::SaveKey)
+              Button(id: 321, w: rst_w, h: s_bh, pad_x: 6, radius: 6, bg: bg_surf2, hover_bg: col_acc, border: 1, border_col: col_brd, align: center, on_click: SetAct::SaveKey) {
+                Text("Сохранить", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
+              }
+              Button(id: 322, w: rst_w, h: s_bh, pad_x: 6, radius: 6, bg: bg_surf, hover_bg: bg_surf2, border: 1, border_col: col_brd, align: center, on_click: SetAct::TestKey) {
+                Text("Проверить", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
+              }
+            }
+            Box(h: s_s + 6) {
+              Slot(render: draw_settings_api_keys_status)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
+  if StudioMem.settings_open == 1 {
+    let th = StudioMem.theme;
+    let scale = StudioMem.font_scale_pct;
+    let safe_w = clamp_i64(w, 680, 4096);
+    let safe_h = clamp_i64(h, 460, 2160);
+    let s_h = clamp_i64(sf(16), 12, 24);
+    let s_l = clamp_i64(sf(14), 10, 20);
+    let s_s = clamp_i64(sf(12), 10, 18);
+    let s_bh = clamp_i64((30 * scale) / 100, 28, 42);
+    let row_h = clamp_i64(s_bh + 14, 42, 58);
+    let min_mh = max_i64(440, 3 * row_h + 2 * s_s + 240);
+    let mw = clamp_i64((560 * scale) / 100, 460, safe_w - 40);
+    let mh = clamp_i64((465 * scale) / 100, min_mh, safe_h - 32);
+    let mx0 = (safe_w - mw) / 2;
+    let my0 = (safe_h - mh) / 2;
+
+    let tbtn_w = clamp_i64((120 * scale) / 100, 110, 170);
+    let seg_w = clamp_i64((150 * scale) / 100, 120, 210);
+    let rst_w = clamp_i64((84 * scale) / 100, 76, 110);
+    let cur_w = clamp_i64((94 * scale) / 100, 86, 130);
+
+    let cdd_w = clamp_i64((126 * scale) / 100, 118, 180);
+    let cdd_rh = clamp_i64((30 * scale) / 100, 28, 44);
+    let cdd_x = mx0 + mw - 18 - rst_w - 8 - cur_w;
+    let cdd_y = my0 + 18 + 32 + 10 + row_h * 3 + 20 + 4;
+    let cur_dd_open = StudioMem.cur_dd_open == 1;
+    let theme_lbl = if th == 0 { "Тёмная" } else { "Светлая" };
+    let sel_p = clamp_i64(StudioMem.keys_sel_prov, 0, 6);
+    let cur_has = ((StudioMem.keys_status_mask >> sel_p) & 1) == 1;
+    let key_ph = if cur_has { "Ключ задан (вставьте новый Ctrl+V)" } else { "Вставьте API-ключ (Ctrl+V)..." };
+
+    forma_set_pointer(StudioMem.frame_mx, StudioMem.frame_my, StudioMem.frame_m_clicked, 0);
+
+    let act = SettingsModal(
+      safe_w, safe_h, mx0, my0, mw, mh, row_h, s_bh, tbtn_w, seg_w, cur_w, rst_w,
+      cdd_x, cdd_y, cdd_w, cdd_rh, cur_dd_open,
+      pack_rgba(0, 0, 0, 150), col_surf(th), col_surf2(th), col_bg(th), col_border(th),
+      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph
+    );
+    let fc = forma_cursor();
+    if fc != 0 {
+      gfx_set_cursor(fc);
+    }
+
+    let mut cur_dd_just_opened = false;
+    match act {
+      SetAct::Close => {
+        StudioMem.settings_open = 0;
+        StudioMem.cur_dd_open = 0;
+        forma_set_focus(0);
+      },
+      SetAct::Theme => {
+        StudioMem.theme = if th == 0 { 1 } else { 0 };
+        save_settings();
+      },
+      SetAct::ScaleChanged => {
+        save_settings();
+      },
+      SetAct::CurDd => {
+        let nx = if StudioMem.cur_dd_open == 0 { 1 } else { 0 };
+        StudioMem.cur_dd_open = nx;
+        if nx == 1 { cur_dd_just_opened = true; }
+      },
+      SetAct::ResetSpend => {
+        if StudioMem.cur_dd_open == 0 { StudioMem.total_milli_ils = 0; }
+      },
+      SetAct::CurIls => { StudioMem.currency_id = Currency::Ils; StudioMem.cur_dd_open = 0; save_settings(); },
+      SetAct::CurUsd => { StudioMem.currency_id = Currency::Usd; StudioMem.cur_dd_open = 0; save_settings(); },
+      SetAct::CurEur => { StudioMem.currency_id = Currency::Eur; StudioMem.cur_dd_open = 0; save_settings(); },
+      SetAct::SaveKey => {
+        let klen = clamp_i64(mem_load(StudioMem::key_input_buf), 0, 180);
+        if klen > 0 {
+          let ok = daemon::keys_save(sel_p, StudioMem::key_input_buf);
+          if ok == 1 {
+            mem_store(StudioMem::key_input_buf, 0);
+            forma_set_focus(0);
+            daemon::keys_test(sel_p, StudioMem::key_status_buf);
+          }
+        }
+      },
+      SetAct::TestKey => {
+        daemon::keys_test(sel_p, StudioMem::key_status_buf);
+      },
+      _ => {},
+    }
+
+    if StudioMem.frame_m_clicked == 1 {
+      let mx = StudioMem.frame_mx;
+      let my = StudioMem.frame_my;
+      if cur_dd_open && !cur_dd_just_opened && act == SetAct::None {
+        if !point_in_rect(mx, my, cdd_x, cdd_y, cdd_w, cdd_rh * 3 + 10) {
+          StudioMem.cur_dd_open = 0;
+        }
+      } else if StudioMem.frame_settings_just_opened == 0 && !cur_dd_just_opened && StudioMem.cur_dd_open == 0 && !point_in_rect(mx, my, mx0, my0, mw, mh) {
+        StudioMem.settings_open = 0;
+        forma_set_focus(0);
+      }
+    }
+  }
+}
+
+// --- Confirm Delete Modal (Infimum.Forma 2.0 — for Project Folders & Individual Dialogs) ---
+
+forma ConfirmDeleteModal(
+  vw: i64, vh: i64, mx0: i64, my0: i64, mw: i64, mh: i64,
+  bw: i64, bh: i64, s_h: i64, s_l: i64,
+  title: str, desc: str,
+  col_scrim: i64, bg_surf: i64, bg_surf2: i64, bg_bg: i64, col_brd: i64,
+  col_txt: i64, col_mut: i64, col_danger: i64, col_danger_hov: i64, col_white: i64
+)
+  req vw >= 400 && vh >= 300 && mw >= 360 && mh >= 144 && bw >= 96 && bw <= 150 && bh >= 30 && bh <= 44 && s_h >= 12 && s_h <= 26 && s_l >= 10 && s_l <= 20 && mh >= s_h + s_l + bh + 72
+  -[Mem]-> i64
+{
+  Box(x: 0, y: 0, w: vw, h: vh, bg: col_scrim) {
+    Overlay(x: mx0, y: my0, w: mw, h: mh, radius: 12, bg: bg_surf, border: 1, border_col: col_brd, shadow: 20, pad: 18, visible: true) {
+      Col(gap: 8) {
+        Text(title, size: s_h, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
+        Text(desc, size: s_l, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
+        Spacer(grow: 1)
+        Row(h: bh, gap: 10, align: center) {
+          Spacer(grow: 1)
+          Button(id: 501, w: bw, h: bh, radius: 7, bg: bg_bg, hover_bg: bg_surf2, border: 1, border_col: col_brd, align: center, on_click: DelAct::Cancel) {
+            Text("Отмена", size: s_l, style: 1, color: col_txt, align: center, shrink: 1)
+          }
+          Button(id: 502, w: bw, h: bh, radius: 7, bg: col_danger, hover_bg: col_danger_hov, align: center, on_click: DelAct::Confirm) {
+            Text("Удалить", size: s_l, style: 1, color: col_white, align: center, shrink: 1)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn render_confirm_delete_modal(w: i64, h: i64) -[Mem, Net]-> unit {
+  let kind = StudioMem.confirm_del_kind;
+  if kind == 1 || kind == 2 {
+    let th = StudioMem.theme;
+    let scale = StudioMem.font_scale_pct;
+    let safe_w = clamp_i64(w, 400, 4096);
+    let safe_h = clamp_i64(h, 300, 2160);
+    let s_h = clamp_i64(sf(16), 12, 26);
+    let s_l = clamp_i64(sf(13), 10, 20);
+    let bh = clamp_i64((34 * scale) / 100, 30, 44);
+    let bw = clamp_i64((112 * scale) / 100, 96, 150);
+    let min_mh = max_i64(144, s_h + s_l + bh + 72);
+    let mw = clamp_i64((400 * scale) / 100, 360, safe_w - 40);
+    let mh = clamp_i64((156 * scale) / 100, min_mh, safe_h - 40);
+    let mx0 = (safe_w - mw) / 2;
+    let my0 = (safe_h - mh) / 2;
+    let title = if kind == 1 { "Убрать папку проекта?" } else { "Удалить диалог?" };
+    let desc = if kind == 1 { "Папка и её диалоги будут удалены (файлы на диске сохранятся)." } else { "Этот диалог будет удалён без возможности восстановления." };
+
+    let confirm_clk = if StudioMem.frame_confirm_just_opened == 0 { StudioMem.frame_m_clicked } else { 0 };
+    forma_set_pointer(StudioMem.frame_mx, StudioMem.frame_my, confirm_clk, 0);
+
+    let act = ConfirmDeleteModal(
+      safe_w, safe_h, mx0, my0, mw, mh, bw, bh, s_h, s_l, title, desc,
+      pack_rgba(0, 0, 0, 155), col_surf(th), col_surf2(th), col_bg(th), col_border(th),
+      col_text(th), col_muted(th), col_red(), pack_rgba(235, 58, 58, 255), pack_rgba(255, 255, 255, 255)
+    );
+    if forma_hovered() {
+      gfx_set_cursor(CursorKind::Pointer);
+    }
+
+    if act == DelAct::Confirm {
+      let target_idx = StudioMem.confirm_del_idx;
+      StudioMem.confirm_del_kind = 0;
+      if kind == 1 {
+        let was_active = target_idx == StudioMem.active_proj_idx;
+        daemon::remove_project(target_idx);
+        daemon::list_convs();
+        count_and_init_project_tree();
+        if StudioMem.active_proj_idx >= StudioMem.proj_count {
+          StudioMem.active_proj_idx = if StudioMem.proj_count > 0 { StudioMem.proj_count - 1 } else { 0 };
+        }
+        extract_active_project_to(StudioMem::active_proj_buf);
+        if was_active || (StudioMem.active_conv_idx < 0 && StudioMem.msg_count <= 1) {
+          StudioMem.active_conv_idx = -1;
+          StudioMem.msg_count = 0;
+          daemon::new_conv();
+        }
+      } else {
+        daemon::delete_conv(target_idx);
+        if StudioMem.active_conv_idx == target_idx {
+          StudioMem.active_conv_idx = -1;
+          StudioMem.msg_count = 0;
+          extract_active_project_to(StudioMem::active_proj_buf);
+          daemon::new_conv();
+        } else if StudioMem.active_conv_idx > target_idx {
+          StudioMem.active_conv_idx -= 1;
+        }
+      }
+    } else if act == DelAct::Cancel || (StudioMem.frame_m_clicked == 1 && StudioMem.frame_confirm_just_opened == 0 && !point_in_rect(StudioMem.frame_mx, StudioMem.frame_my, mx0, my0, mw, mh)) {
+      StudioMem.confirm_del_kind = 0;
+    }
+  }
+}
+
+// --- Full-Size Image Lightbox Preview Modal ---
+
+fn render_image_preview_modal(w: i64, h: i64, key_special: i64) -[Mem]-> unit {
+  let raw_idx = StudioMem.img_preview_idx;
+  if raw_idx >= 0 {
+    let start = clamp_i64(StudioMem.img_preview_start, 0, 15);
+    let cnt = clamp_i64(StudioMem.img_preview_count, 0, 6);
+    let end_i = clamp_i64(start + cnt, 0, 16);
+    if cnt == 0 || raw_idx < start || raw_idx >= end_i {
+      StudioMem.img_preview_idx = -1;
+    } else {
+      let mut idx = raw_idx;
+      if key_special == KeySpecial::Escape {
+        StudioMem.img_preview_idx = -1;
+      } else {
+        if cnt > 1 {
+          if key_special == KeySpecial::ArrowLeft {
+            idx = if idx > start { idx - 1 } else { end_i - 1 };
+            StudioMem.img_preview_idx = idx;
+          } else if key_special == KeySpecial::ArrowRight {
+            idx = if idx + 1 < end_i { idx + 1 } else { start };
+            StudioMem.img_preview_idx = idx;
+          }
+        }
+
+        let th = StudioMem.theme;
+        let mx = StudioMem.frame_mx;
+        let my = StudioMem.frame_my;
+        let m_clicked = StudioMem.frame_m_clicked;
+        let iw = clamp_i64(StudioMem.img_w[idx], 1, 8192);
+        let ih = clamp_i64(StudioMem.img_h[idx], 1, 8192);
+
+        let max_pw = clamp_i64((w * 84) / 100, 200, 3200);
+        let max_ph = clamp_i64((h * 80) / 100, 160, 1800);
+        let mut pw = max_pw;
+        let mut ph = (pw * ih) / iw;
+        if ph > max_ph {
+          ph = max_ph;
+          pw = (ph * iw) / ih;
+        }
+        pw = clamp_i64(pw, 80, max_pw);
+        ph = clamp_i64(ph, 80, max_ph);
+        let px = (w - pw) / 2;
+        let py = (h - ph) / 2;
+
+        // Scrim + image card
+        ui_rect(0, 0, w, h, 0, 0, 0, pack_rgba(0, 0, 0, 200), 0, ClipId::Root);
+        ui_rect(px - 6, py - 6, pw + 12, ph + 12, 12, 1, 24, col_surf(th), col_border(th), ClipId::Root);
+        ui_image_slot(px, py, pw, ph, 8, idx, ClipId::Root);
+
+        // Close button (top-right)
+        let cls_sz = 34;
+        let cls_x = clamp_i64(px + pw - cls_sz + 14, 12, clamp_i64(w - cls_sz - 12, 12, 4000));
+        let cls_y = clamp_i64(py - 14, 12, clamp_i64(h - cls_sz - 12, 12, 2000));
+        let cls_hov = point_in_rect(mx, my, cls_x, cls_y, cls_sz, cls_sz);
+        ui_rect(cls_x, cls_y, cls_sz, cls_sz, 17, 1, 6, if cls_hov { col_red() } else { col_surf(th) }, col_border(th), ClipId::Root);
+        icon_close(cls_x + cls_sz / 2, cls_y + cls_sz / 2, 6, pack_rgba(255, 255, 255, 255), ClipId::Root);
+
+        let mut handled_click = false;
+        if cls_hov {
+          gfx_set_cursor(CursorKind::Pointer);
+          if m_clicked == 1 {
+            StudioMem.img_preview_idx = -1;
+            handled_click = true;
+          }
+        }
+
+        // Prev / Next navigation when multiple images are in this group
+        if cnt > 1 {
+          let nav_sz = 38;
+          let nav_y = py + (ph - nav_sz) / 2;
+          let prev_x = clamp_i64(px - nav_sz - 16, 12, clamp_i64(w - nav_sz - 12, 12, 4000));
+          let next_x = clamp_i64(px + pw + 16, 12, clamp_i64(w - nav_sz - 12, 12, 4000));
+          let prev_hov = point_in_rect(mx, my, prev_x, nav_y, nav_sz, nav_sz);
+          let next_hov = point_in_rect(mx, my, next_x, nav_y, nav_sz, nav_sz);
+
+          ui_rect(prev_x, nav_y, nav_sz, nav_sz, 19, 1, 6, if prev_hov { col_accent() } else { col_surf(th) }, col_border(th), ClipId::Root);
+          ui_text(prev_x + 12, nav_y + 10, "<", 16, 1, pack_rgba(255, 255, 255, 255), ClipId::Root);
+          ui_rect(next_x, nav_y, nav_sz, nav_sz, 19, 1, 6, if next_hov { col_accent() } else { col_surf(th) }, col_border(th), ClipId::Root);
+          ui_text(next_x + 13, nav_y + 10, ">", 16, 1, pack_rgba(255, 255, 255, 255), ClipId::Root);
+
+          if prev_hov {
+            gfx_set_cursor(CursorKind::Pointer);
+            if m_clicked == 1 {
+              StudioMem.img_preview_idx = if idx > start { idx - 1 } else { end_i - 1 };
+              handled_click = true;
+            }
+          }
+          if next_hov {
+            gfx_set_cursor(CursorKind::Pointer);
+            if m_clicked == 1 {
+              StudioMem.img_preview_idx = if idx + 1 < end_i { idx + 1 } else { start };
+              handled_click = true;
+            }
+          }
+
+          // Subtle index pill at bottom ("1 / 3")
+          let cur_num = (idx - start) + 1;
+          let pil_w = clamp_i64(ui_fmt_width("{cur_num} / {cnt}", 13, 2) + 24, 56, 120);
+          let pil_h = 26;
+          let pil_x = (w - pil_w) / 2;
+          let pil_y = clamp_i64(py + ph + 16, 12, clamp_i64(h - pil_h - 10, 12, 2000));
+          ui_rect(pil_x, pil_y, pil_w, pil_h, 13, 1, 0, col_surf(th), col_border(th), ClipId::Root);
+          ui_fmt(pil_x + 12, pil_y + 6, "{cur_num} / {cnt}", 13, 2, col_text(th), ClipId::Root);
+        }
+
+        // Clicking outside the image closes the lightbox
+        if !handled_click && m_clicked == 1 && !point_in_rect(mx, my, px - 6, py - 6, pw + 12, ph + 12) {
+          StudioMem.img_preview_idx = -1;
+        }
+      }
+    }
+  }
+}
+
+// --- Right-Click Context Menu Overlay (Infimum.Forma 2.0 — 0 Slot callbacks!) ---
+
+forma ContextMenuOverlay(cm_x: i64, cm_y: i64, bg_surf: i64, bg_surf2: i64, col_brd: i64, col_txt: i64)
+  -[Mem]-> i64
+{
+  Overlay(x: cm_x, y: cm_y, w: 200, h: 140, radius: 10, bg: bg_surf, border: 1, border_col: col_brd, shadow: 14, pad_x: 4, pad_y: 6, visible: true) {
+    Col(gap: 0) {
+      Button(id: 401, h: 32, pad_x: 10, radius: 6, bg: bg_surf, hover_bg: bg_surf2, align: center, on_click: CtxAct::Copy) {
+        Text("Копировать", size: 14, color: col_txt, shrink: 1, overflow: ellipsis)
+      }
+      Button(id: 402, h: 32, pad_x: 10, radius: 6, bg: bg_surf, hover_bg: bg_surf2, align: center, on_click: CtxAct::Cut) {
+        Text("Вырезать", size: 14, color: col_txt, shrink: 1, overflow: ellipsis)
+      }
+      Button(id: 403, h: 32, pad_x: 10, radius: 6, bg: bg_surf, hover_bg: bg_surf2, align: center, on_click: CtxAct::Paste) {
+        Text("Вставить", size: 14, color: col_txt, shrink: 1, overflow: ellipsis)
+      }
+      Button(id: 404, h: 32, pad_x: 10, radius: 6, bg: bg_surf, hover_bg: bg_surf2, align: center, on_click: CtxAct::SelectAll) {
+        Text("Выделить всё", size: 14, color: col_txt, shrink: 1, overflow: ellipsis)
+      }
+    }
+  }
+}
+
+fn render_context_menu(w: i64, h: i64, key_special: i64) -[Mem]-> unit {
+  if key_special == KeySpecial::RightClick && StudioMem.settings_open == 0 {
+    StudioMem.ctx_open = 1;
+    StudioMem.ctx_x = clamp_i64(StudioMem.frame_mx, 8, clamp_i64(w - 210, 8, 4096));
+    StudioMem.ctx_y = clamp_i64(StudioMem.frame_my, 8, clamp_i64(h - 152, 8, 2160));
+  }
+  if key_special == KeySpecial::Escape { StudioMem.ctx_open = 0; }
+
+  if StudioMem.ctx_open == 1 {
+    let th = StudioMem.theme;
+    let cm_x = StudioMem.ctx_x;
+    let cm_y = StudioMem.ctx_y;
+
+    forma_set_pointer(StudioMem.frame_mx, StudioMem.frame_my, StudioMem.frame_m_clicked, 0);
+
+    let act = ContextMenuOverlay(cm_x, cm_y, col_surf(th), col_surf2(th), col_border(th), col_text(th));
+    if forma_hovered() {
+      gfx_set_cursor(CursorKind::Pointer);
+    }
+
+    match act {
+      CtxAct::Copy => { StudioMem.host_action = HostAction::Copy; StudioMem.ctx_open = 0; },
+      CtxAct::Cut => { StudioMem.host_action = HostAction::Cut; StudioMem.ctx_open = 0; },
+      CtxAct::Paste => { StudioMem.host_action = HostAction::Paste; StudioMem.ctx_open = 0; },
+      CtxAct::SelectAll => {
+        let mp_cm = StudioMem.msg_sel_ptr;
+        if mp_cm > 0 {
+          StudioMem.msg_sel_anchor = 0;
+          StudioMem.msg_sel_focus = clamp_i64(mem_load(mp_cm), 0, MAX_MSG_CHARS);
+        } else {
+          StudioMem.sel_anchor = 0;
+          StudioMem.cursor_pos = input_len();
+        }
+        StudioMem.ctx_open = 0;
+      },
+      _ => {
+        if StudioMem.frame_m_clicked == 1 && !point_in_rect(StudioMem.frame_mx, StudioMem.frame_my, cm_x, cm_y, 200, 140) {
+          StudioMem.ctx_open = 0;
+        }
+      },
+    }
+  }
+}

@@ -1,0 +1,72 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/icons.ifm
+// Crisp DPI-independent vector UI icons rendered via 1-Draw-Call GPU primitives.
+
+use "std/math.ifm";
+use "std/gfx.ifm";
+
+fn icon_chevron_down(cx: i64, cy: i64, sz: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let r = clamp_i64(sz / 4, 3, 10);
+  ui_line(cx - r, cy - r / 2, cx, cy + r / 2, 2, rgba, clip);
+  ui_line(cx, cy + r / 2, cx + r, cy - r / 2, 2, rgba, clip);
+}
+
+fn icon_chevron_right(cx: i64, cy: i64, sz: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let r = clamp_i64(sz / 4, 3, 10);
+  ui_line(cx - r / 2, cy - r, cx + r / 2, cy, 2, rgba, clip);
+  ui_line(cx + r / 2, cy, cx - r / 2, cy + r, 2, rgba, clip);
+}
+
+fn icon_plus(cx: i64, cy: i64, r: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let h = clamp_i64(r, 3, 16);
+  ui_line(cx - h, cy, cx + h, cy, 2, rgba, clip);
+  ui_line(cx, cy - h, cx, cy + h, 2, rgba, clip);
+}
+
+fn icon_close(cx: i64, cy: i64, r: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let h = clamp_i64(r, 3, 16);
+  ui_line(cx - h, cy - h, cx + h, cy + h, 2, rgba, clip);
+  ui_line(cx + h, cy - h, cx - h, cy + h, 2, rgba, clip);
+}
+
+fn icon_check(cx: i64, cy: i64, r: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let h = clamp_i64(r, 3, 16);
+  ui_line(cx - h, cy, cx - h / 3, cy + h - 1, 2, rgba, clip);
+  ui_line(cx - h / 3, cy + h - 1, cx + h, cy - h + 1, 2, rgba, clip);
+}
+
+fn icon_folder(x: i64, y: i64, sz: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let s = clamp_i64(sz, 10, 32);
+  let tab_w = (s * 45) / 100;
+  let tab_h = clamp_i64(s / 5, 2, 6);
+  ui_rect(x, y, tab_w, tab_h + 2, 2, 0, 0, rgba, 0, clip);
+  ui_rect(x, y + tab_h, s, s - tab_h - 2, 3, 0, 0, rgba, 0, clip);
+}
+
+fn icon_copy(x: i64, y: i64, sz: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let s = clamp_i64(sz, 10, 28);
+  let bw = (s * 7) / 10;
+  let bh = (s * 8) / 10;
+  let off = clamp_i64(s - bw, 2, 6);
+  ui_rect(x + off, y, bw, bh, 2, 1, 0, 0, rgba, clip);
+  ui_rect(x, y + off, bw, bh, 2, 1, 0, 0, rgba, clip);
+}
+
+fn icon_send(cx: i64, cy: i64, r: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let h = clamp_i64(r, 4, 16);
+  ui_line(cx - h, cy, cx + h, cy, 2, rgba, clip);
+  ui_line(cx + h - h / 2, cy - h / 2, cx + h, cy, 2, rgba, clip);
+  ui_line(cx + h - h / 2, cy + h / 2, cx + h, cy, 2, rgba, clip);
+}
+
+fn icon_spinner(cx: i64, cy: i64, r: i64, tick: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+  let rad = clamp_i64(r, 4, 24);
+  let phase = (tick / 5) % 4;
+  let d = clamp_i64(rad / 2, 2, 8);
+  let dx = if phase == 0 { 0 } else if phase == 1 { rad } else if phase == 2 { 0 } else { -rad };
+  let dy = if phase == 0 { -rad } else if phase == 1 { 0 } else if phase == 2 { rad } else { 0 };
+  ui_circle(cx, cy, rad, clamp_i64(rad - 2, 1, rad), with_alpha(rgba, 70), clip);
+  ui_circle(cx + dx, cy + dy, clamp_i64(d / 2, 2, 5), 0, rgba, clip);
+}

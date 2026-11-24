@@ -1,0 +1,309 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Shared Typed ABI for Infimum Code Native (.ifw <-> Rust host).
+// Exported to Rust via:
+//   infimum export-abi capsules/studio/src/abi.ifm --rust -o src/studio_abi.rs
+
+// --- Capacity & Protocol Constants ---
+const MAX_GPU_PRIMS: i64 = 80000;
+use "std/gfx.ifm";
+use "std/input.ifm";
+const MAX_CLIP_RECTS: i64 = 16;
+
+const INPUT_MAX_CHARS: i64 = 8192;
+const CLIPBOARD_MAX_CHARS: i64 = 4096;
+const LARGE_COPY_MAX_CHARS: i64 = 32768;
+const MAX_MSG_CHARS: i64 = 32768;
+const MAX_MESSAGES: i64 = 128;
+const MSG_META_STRIDE: i64 = 8;
+
+struct MsgMeta {
+  role: word,
+  elapsed_tenths: word,
+  cost_milli: word,
+  tokens: word,
+  text_ptr: word,
+  cached_h: word,
+  feedback_pack: word,
+  tl_ptr: word,
+}
+const MSG_POOL_CAP: i64 = 1050000;
+const MSG_POOL_GUARD_OFFSET: i64 = 1049900;
+const MSG_POOL_WRAP_OFFSET: i64 = 1046000;
+const MAX_PROJECTS: i64 = 64;
+const MAX_CONVS: i64 = 60;
+const FONT_ATLAS_SLOTS: i64 = 176;
+const MAX_TBL_COLS: i64 = 12;
+
+const DEFAULT_FONT_SCALE_PCT: i64 = 120;
+const MIN_FONT_SCALE_PCT: i64 = 80;
+const MAX_FONT_SCALE_PCT: i64 = 200;
+
+const LIVE_TIMELINE_MAX_WORDS: i64 = 9000;
+const STEP_STATUS_RUNNING: i64 = 0;
+const STEP_STATUS_DONE: i64 = 1;
+const STEP_STATUS_ERROR: i64 = 2;
+const STEP_STATUS_CANCELLED: i64 = 3;
+const STEP_KIND_THINK: i64 = 0;
+const STEP_KIND_TOOL: i64 = 1;
+const STEP_KIND_CMD: i64 = 2;
+
+// --- Typed Enums ---
+
+enum HostAction {
+  None = 0,
+  Copy = 1,
+  Paste = 2,
+  Cut = 3,
+  PickImage = 4,
+  ClearImage = 5,
+  RemoveImage0 = 6,
+  RemoveImage1 = 7,
+  RemoveImage2 = 8,
+  RemoveImage3 = 9,
+  RemoveImage4 = 10,
+  RemoveImage5 = 11,
+  GoHome = 12,
+}
+
+enum ViewMode {
+  Chat = 0,
+  Web = 1,
+}
+
+enum Currency {
+  Ils = 0,
+  Usd = 1,
+  Eur = 2,
+}
+
+enum ModelId {
+  Gemini4Neon = 0,
+  Gemini4Carbon = 1,
+  Gemini4Argon = 2,
+  Gemini4Hydrogen = 3,
+  Gemini38Flash = 4,
+  Gemini25Pro = 5,
+  Gemini25FlashLite = 6,
+  DeepSeekChat = 7,
+  DeepSeekReasoner = 8,
+  OpenRouterQwenFree = 9,
+  OpenRouterDeepSeekFree = 10,
+  GroqGptOss120B = 11,
+  ZaiGlm53Flash = 12,
+  MistralCodestral = 13,
+  OpenRouterNemotron35VlFree = 14,
+  OpenRouterQwen3Coder480B = 15,
+  OpenRouterDeepSeekV41Flash = 16,
+  OpenRouterDeepSeekV4Flash = 17,
+  OpenRouterGlm53Flash = 18,
+  OpenAiGpt41 = 19,
+  OpenAiGpt41Mini = 20,
+  OpenAiO4Mini = 21,
+}
+
+enum DragScrollbar {
+  None = 0,
+  Sidebar = 1,
+  Feed = 2,
+  Input = 3,
+  SidebarResize = 4,
+  FileView = 5,
+}
+
+enum ClipId {
+  Root = 0,
+  Feed = 1,
+  Input = 2,
+  Sidebar = 3,
+}
+
+enum CursorKind {
+  Default = 0,
+  Pointer = 1,
+  Text = 2,
+  EwResize = 3,
+}
+
+enum HostOp {
+  GetRssTenthsMb = 40,
+  NetHttpRequest = 60,
+  CapArgGet = 61,
+  GpuLoadImageUrl = 62,
+  GpuClearImages = 63,
+  NetPostPendingImage = 64,
+}
+
+// --- Linear Memory Layout (Zero Magic Addresses — Auto-Placed Above GPU Stream at 705536+) ---
+layout StudioMem {
+  // Core UI & Session State Registers
+  tick: word,
+  theme: word inv 0..=1,
+  scroll_y: word,
+  max_scroll_y: word,
+  cursor_pos: word,
+  sel_anchor: word,
+  mouse_selecting: word,
+  pasted_img_w: word,
+  pasted_img_h: word,
+  msg_count: word inv 0..=128,
+  active_proj_idx: word,
+  model_idx: word inv 0..=21,
+  ctx_open: word,
+  ctx_x: word,
+  ctx_y: word,
+  host_action: word,
+  view_mode: word,
+  settings_open: word,
+  font_scale_pct: word inv 80..=200,
+  currency_id: word inv 0..=2,
+  total_milli_ils: word,
+  ai_running: word,
+  copy_override_ptr: word,
+  rss_tenths_mb: word,
+  side_scroll_y: word,
+  side_max_scroll: word,
+  drag_sb: word,
+  model_dd_open: word,
+  cur_dd_open: word,
+  active_conv_idx: word,
+  auto_scroll_bottom: word,
+  msg_pool_cursor: word,
+  cached_layout_col_w: word,
+  cached_layout_scale: word,
+  proj_count: word,
+  msg_sel_ptr: word,
+  msg_sel_anchor: word,
+  msg_sel_focus: word,
+  msg_sel_dragging: word,
+  copy_toast_ticks: word,
+  copy_toast_ptr: word,
+  last_msg_click_tick: word,
+  last_msg_click_ptr: word,
+  last_msg_click_idx: word,
+  in_scroll_y: word,
+  in_follow_cursor: word,
+
+  // Async Gemini Telemetry Registers
+  async_elapsed_tenths: word,
+  async_cost_milli_ils: word,
+  async_total_tokens: word,
+
+  // Settings Persistence Mailbox
+  settings_theme: word,
+  settings_scale: word,
+  settings_currency: word,
+  settings_model: word,
+
+  // Per-Frame Forma Slot Context
+  frame_vw: word,
+  frame_vh: word,
+  frame_mx: word,
+  frame_my: word,
+  frame_m_down: word,
+  frame_m_clicked: word,
+  frame_wheel_dy: word,
+  frame_in_max_scroll: word,
+  frame_in_lh: word,
+  frame_in_max_w: word,
+  frame_in_view_h: word,
+  frame_in_area_h: word,
+  frame_modal_blocked: word,
+  frame_settings_just_opened: word,
+  live_timeline_words: word,
+  live_cmd_killing: word,
+  tl_bar_ptr: word,
+  tl_bar_exp: word,
+  tl_bar_hov: word,
+  tl_bar_sm_sz: word,
+  img_count: word inv 0..=6,
+  img_pending_base: word,
+  img_preview_idx: word,
+  img_preview_start: word,
+  img_preview_count: word,
+  img_w: words[16],
+  img_h: words[16],
+
+  // Confirm-Delete & In-App API Key Settings State
+  confirm_del_kind: word,
+  confirm_del_idx: word,
+  keys_status_mask: word,
+  keys_sel_prov: word inv 0..=6,
+  keys_test_ok: word,
+  frame_confirm_just_opened: word,
+  side_custom_w: word,
+  online_mode: word,
+
+  // Sidebar Mode Tab & Native File Viewer State
+  side_tab: word,
+  active_file_idx: word,
+  file_view_open: word,
+  file_view_scroll_y: word,
+  file_view_max_scroll: word,
+  file_view_lines: word,
+  file_view_win_start: word,
+  file_view_win_count: word,
+
+  // Project Tree Expansion Flags
+  proj_expanded: words[64],
+
+  // Editable Input StrBuf: word 0 = len, 1..8192 = UTF-32 chars
+  input_buf: words[8200],
+
+  // Loaded ~/Projects List UTF-32
+  projects_buf: words[4000],
+
+  // Saved Conversations UTF-32 (`project\ttitle\n`)
+  convs_buf: words[3600],
+
+  // Async Agent Live Status Line
+  agent_status_buf: words[300],
+
+  // Paste Clipboard Mailbox (exported dynamically via `ifw_get_paste_mailbox_word`)
+  paste_mailbox: words[4150],
+
+  // Active Project Scratch
+  active_proj_buf: words[200],
+
+  // Active Header Title
+  active_hdr_buf: words[300],
+
+  // Per-Message Timeline Expansion Flags
+  msg_tl_expanded: words[128],
+
+  // In-App API Key Input & Live Test Status Buffers
+  key_input_buf: words[200],
+  key_status_buf: words[160],
+
+  // Live Agent Work Timeline & Thought Snippet Blob
+  live_timeline_buf: words[9000],
+
+  // Large Host Reply / Clean-Reader Buffer
+  reply_buf: words[33000],
+
+  // Packed Message Metadata: 128 msgs * 8 words
+  msg_meta: MsgMeta[128],
+
+  // Packed Message Text Pool: 1.05M UTF-32 chars
+  msg_pool: words[1050000],
+
+  // Native Source File Viewer Path, Request Key & Paged Content UTF-32
+  file_view_path_buf: words[256],
+  file_view_req_buf: words[256],
+  file_view_buf: words[65500],
+
+  // Local Agent Daemon Connection & HTTP Buffers
+  agent_url_buf: words[256],
+  agent_tok_buf: words[256],
+  http_key_tmp: words[64],
+  http_body_tmp: words[16000],
+  http_req_buf: words[36000],
+  http_resp_buf: words[66000],
+
+  // Large Copy Clipboard Mailbox (exported dynamically via `ifw_get_copy_mailbox_word`)
+  copy_mailbox: words[33000],
+
+  // Project Files List UTF-32: proj\tfilename\n
+  files_buf: words[3600],
+}

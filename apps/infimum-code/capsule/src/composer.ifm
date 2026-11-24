@@ -1,0 +1,601 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Multiline Composer Card built on Infimum.Forma (Z3-verified geometry,
+// Scroll clip #2, image preview strip, vector icons, and deferred Overlay model picker).
+
+use "abi.ifm";
+use "primitives.ifm";
+use "theme.ifm";
+use "icons.ifm";
+use "text_buf.ifm";
+
+enum CompAct {
+  None = 0,
+  PickImg = 201,
+  ToggleModelDd = 202,
+  SendOrStop = 203,
+}
+
+fn remove_attached_image(idx: i64) -[Mem]-> unit {
+  let base = clamp_i64(StudioMem.img_pending_base, 0, 15);
+  let cnt = clamp_i64(StudioMem.img_count, 0, 6);
+  if idx >= 0 && idx < cnt {
+    for k in idx..(cnt - 1) max 6 {
+      let s_dst = clamp_i64(base + k, 0, 15);
+      let s_src = clamp_i64(base + k + 1, 0, 15);
+      StudioMem.img_w[s_dst] = StudioMem.img_w[s_src];
+      StudioMem.img_h[s_dst] = StudioMem.img_h[s_src];
+    }
+    let next_cnt = cnt - 1;
+    StudioMem.img_count = next_cnt;
+    if next_cnt > 0 {
+      StudioMem.pasted_img_w = StudioMem.img_w[base];
+      StudioMem.pasted_img_h = StudioMem.img_h[base];
+    } else {
+      StudioMem.pasted_img_w = 0;
+      StudioMem.pasted_img_h = 0;
+    }
+    StudioMem.img_preview_idx = -1;
+    StudioMem.host_action = match idx {
+      0 => HostAction::RemoveImage0,
+      1 => HostAction::RemoveImage1,
+      2 => HostAction::RemoveImage2,
+      3 => HostAction::RemoveImage3,
+      4 => HostAction::RemoveImage4,
+      _ => HostAction::RemoveImage5,
+    };
+  }
+}
+
+fn draw_composer_image_preview(rx: i64, ry: i64, rw: i64, rh: i64, _clip_id: i64) -[Mem]-> unit {
+  let base = clamp_i64(StudioMem.img_pending_base, 0, 15);
+  let cnt = clamp_i64(StudioMem.img_count, 0, 6);
+  if cnt > 0 && rh >= 40 {
+    let th = StudioMem.theme;
+    let mx = StudioMem.frame_mx;
+    let my = StudioMem.frame_my;
+    let m_clicked = StudioMem.frame_m_clicked;
+    let can_click = StudioMem.frame_modal_blocked == 0;
+
+    let th_h = clamp_i64(rh - 12, 42, 68);
+    let tile_h = th_h + 4;
+    let cy_img = ry + (rh - tile_h) / 2;
+    let mut cur_x = rx + 2;
+    let mut removed_idx = -1;
+    for i in 0..cnt max 6 {
+      let slot = clamp_i64(base + i, 0, 15);
+      let iw = clamp_i64(StudioMem.img_w[slot], 1, 8192);
+      let ih = clamp_i64(StudioMem.img_h[slot], 1, 8192);
+      let th_w = clamp_i64((th_h * iw) / ih, 40, 92);
+      let tile_w = th_w + 4;
+
+      if cur_x + tile_w <= rx + rw {
+        let rm_sz = 18;
+        let rm_x = cur_x + tile_w - rm_sz - 3;
+        let rm_y = cy_img + 3;
+        let rm_hov = can_click && point_in_rect(mx, my, rm_x, rm_y, rm_sz, rm_sz);
+        let tile_hov = can_click && !rm_hov && point_in_rect(mx, my, cur_x, cy_img, tile_w, tile_h);
+
+        let brd_col = if tile_hov { col_accent() } else { col_border(th) };
+        ui_rect(cur_x, cy_img, tile_w, tile_h, 8, 1, 0, col_bg(th), brd_col, ClipId::Root);
+        ui_image_slot(cur_x + 2, cy_img + 2, th_w, th_h, 6, slot, ClipId::Root);
+
+        if tile_hov {
+          gfx_set_cursor(CursorKind::Pointer);
+          if m_clicked == 1 {
+            StudioMem.img_preview_start = base;
+            StudioMem.img_preview_count = cnt;
+            StudioMem.img_preview_idx = slot;
+          }
+        }
+
+        let rm_bg = if rm_hov { col_red() } else { pack_rgba(14, 17, 24, 195) };
+        ui_rect(rm_x, rm_y, rm_sz, rm_sz, 9, 0, 0, rm_bg, 0, ClipId::Root);
+        icon_close(rm_x + rm_sz / 2, rm_y + rm_sz / 2, 4, pack_rgba(255, 255, 255, 255), ClipId::Root);
+        if rm_hov {
+          gfx_set_cursor(CursorKind::Pointer);
+          if m_clicked == 1 {
+            removed_idx = i;
+          }
+        }
+        cur_x += tile_w + 8;
+      }
+    }
+
+    // Compact "+" button to attach more images (up to 6 per message, 16 per session)
+    if cnt < 6 && base + cnt < 16 && cur_x + 38 <= rx + rw {
+      let add_w = 38;
+      let add_hov = can_click && point_in_rect(mx, my, cur_x, cy_img, add_w, tile_h);
+      let add_bg = if add_hov { col_surf2(th) } else { col_bg(th) };
+      let add_brd = if add_hov { col_accent() } else { col_border(th) };
+      ui_rect(cur_x, cy_img, add_w, tile_h, 8, 1, 0, add_bg, add_brd, ClipId::Root);
+      icon_plus(cur_x + add_w / 2, cy_img + tile_h / 2, 6, if add_hov { col_accent() } else { col_muted(th) }, ClipId::Root);
+      if add_hov {
+        gfx_set_cursor(CursorKind::Pointer);
+        if m_clicked == 1 {
+          StudioMem.host_action = HostAction::PickImage;
+        }
+      }
+    }
+
+    if removed_idx >= 0 {
+      remove_attached_image(removed_idx);
+    }
+  }
+}
+
+fn handle_composer_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
+  let in_max_scroll = clamp_i64(StudioMem.frame_in_max_scroll, 0, 800000);
+  if StudioMem.frame_modal_blocked == 0 && StudioMem.model_dd_open == 0 && in_max_scroll > 0 {
+    let dy = forma_wheel_dy();
+    if dy != 0 {
+      StudioMem.in_follow_cursor = 0;
+      StudioMem.in_scroll_y = clamp_i64(StudioMem.in_scroll_y + dy, 0, in_max_scroll);
+    }
+  }
+}
+
+fn draw_composer_editor(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let tsz = sf(15);
+  let ui_sz = sf(13);
+  let in_lh = clamp_i64(StudioMem.frame_in_lh, 14, 60);
+  let in_max_w = clamp_i64(StudioMem.frame_in_max_w, 120, 1600);
+  let in_view_h = clamp_i64(StudioMem.frame_in_view_h, 16, 600);
+  let in_max_scroll = clamp_i64(StudioMem.frame_in_max_scroll, 0, 800000);
+  let mx = StudioMem.frame_mx;
+  let my = StudioMem.frame_my;
+  let m_down = StudioMem.frame_m_down;
+  let m_clicked = StudioMem.frame_m_clicked;
+  let tick = StudioMem.tick;
+  let modal_none = StudioMem.frame_modal_blocked == 0;
+  let has_img = StudioMem.pasted_img_w > 0 && StudioMem.pasted_img_h > 0;
+
+  let ilen = input_len();
+  let cur_i = clamp_i64(StudioMem.cursor_pos, 0, ilen);
+  let anc_i = clamp_i64(StudioMem.sel_anchor, 0, ilen);
+  let s_lo = min_i64(cur_i, anc_i);
+  let s_hi = max_i64(cur_i, anc_i);
+
+  let mut in_scr = clamp_i64(StudioMem.in_scroll_y, 0, in_max_scroll);
+
+  // Smooth auto-scroll while drag-selecting inside composer
+  if StudioMem.mouse_selecting == 1 && m_down == 1 && in_max_scroll > 0 {
+    if my < ry + 12 {
+      in_scr = clamp_i64(in_scr - 10, 0, in_max_scroll);
+    } else if my > ry + rh - 12 {
+      in_scr = clamp_i64(in_scr + 10, 0, in_max_scroll);
+    }
+  }
+
+  // Draggable Composer Scrollbar
+  if in_max_scroll > 0 {
+    let isb_x = rx + rw - 6;
+    let isb_y = ry + 2;
+    let isb_h = clamp_i64(rh - 4, 24, 400);
+    let i_tot = clamp_i64(in_view_h + in_max_scroll, 1, 800000);
+    let i_th = clamp_i64((isb_h * in_view_h) / i_tot, 22, isb_h);
+    let i_span = clamp_i64(isb_h - i_th, 1, 2000);
+    if point_in_rect(mx, my, isb_x - 4, isb_y, 14, isb_h) && modal_none {
+      gfx_set_cursor(CursorKind::Pointer);
+      if m_clicked == 1 {
+        StudioMem.drag_sb = DragScrollbar::Input;
+        StudioMem.in_follow_cursor = 0;
+      }
+    }
+    if StudioMem.drag_sb == DragScrollbar::Input && m_down == 1 {
+      let rel = clamp_i64(my - isb_y - i_th / 2, 0, i_span);
+      in_scr = (rel * in_max_scroll) / i_span;
+    }
+    let safe_ims = clamp_i64(in_max_scroll, 1, 800000);
+    let i_ty = isb_y + ((in_scr * i_span) / safe_ims);
+    ui_rect(isb_x, isb_y, 5, isb_h, 3, 0, 0, col_bg(th), 0, ClipId::Root);
+    ui_rect(isb_x, i_ty, 5, i_th, 3, 0, 0, if StudioMem.drag_sb == DragScrollbar::Input { col_accent() } else { col_border(th) }, 0, ClipId::Root);
+  }
+
+  // Auto-follow cursor after typing, pasting, or arrow navigation
+  if StudioMem.in_follow_cursor == 1 {
+    let cur_ry = input_cursor_rel_y(cur_i, in_max_w, tsz, in_lh);
+    if cur_ry < in_scr {
+      in_scr = cur_ry;
+    } else if cur_ry + in_lh > in_scr + in_view_h {
+      in_scr = cur_ry + in_lh - in_view_h;
+    }
+    in_scr = clamp_i64(in_scr, 0, in_max_scroll);
+    StudioMem.in_follow_cursor = 0;
+  }
+  StudioMem.in_scroll_y = in_scr;
+
+  set_clip_rect(clip_id, rx + 2, ry, rx + rw - 10, ry + rh);
+  let tx = rx + 6;
+  let ty = ry + 4 - in_scr;
+
+  if point_in_rect(mx, my, rx, ry, rw - 12, rh) && modal_none && StudioMem.drag_sb == DragScrollbar::None {
+    gfx_set_cursor(CursorKind::Text);
+    if m_clicked == 1 {
+      clear_msg_sel();
+      let idx = hit_input_index_2d(mx, my, tx, ty, in_max_w, tsz, in_lh);
+      StudioMem.cursor_pos = idx;
+      StudioMem.sel_anchor = idx;
+      StudioMem.mouse_selecting = 1;
+    }
+  }
+  if m_down == 1 && StudioMem.mouse_selecting == 1 {
+    StudioMem.cursor_pos = hit_input_index_2d(mx, my, tx, ty, in_max_w, tsz, in_lh);
+  } else if m_down == 0 {
+    StudioMem.mouse_selecting = 0;
+  }
+
+  let mut cur_px = tx;
+  let mut cur_py = ty;
+  if ilen == 0 {
+    let ph = if has_img {
+      "Добавьте комментарий к изображению или нажмите Enter..."
+    } else {
+      "Спросите что угодно по-русски... (Enter — отправить, Ctrl+V — скриншот)"
+    };
+    ui_text(tx, ry + 6, ph, ui_sz, 0, col_muted(th), clip_id);
+  } else {
+    let mut cx = tx;
+    let mut cy = ty;
+    for k in 0..ilen max 8192 {
+      let cp = mem_load(StudioMem::input_buf + 1 + k);
+      if k == cur_i { cur_px = cx; cur_py = cy; }
+      if cp == '\n' {
+        if s_hi > s_lo && k >= s_lo && k < s_hi {
+          ui_rect(cx, cy - 1, 6, tsz + 4, 2, 0, 0, col_sel(), 0, clip_id);
+        }
+        cx = tx;
+        cy += in_lh;
+      } else {
+        let adv = glyph_px(cp, tsz, 0);
+        if cx > tx && (cx - tx) + adv > in_max_w {
+          cx = tx;
+          cy += in_lh;
+          if k == cur_i { cur_px = cx; cur_py = cy; }
+        }
+        if s_hi > s_lo && k >= s_lo && k < s_hi {
+          ui_rect(cx, cy - 1, adv, tsz + 4, 2, 0, 0, col_sel(), 0, clip_id);
+        }
+        if cy + in_lh >= ry && cy <= ry + rh + 6 {
+          ui_glyph(cx, cy, cp, tsz, 0, col_text(th), clip_id);
+        }
+        cx += adv;
+      }
+    }
+    if cur_i == ilen { cur_px = cx; cur_py = cy; }
+  }
+  if (tick / 28) % 2 == 0 && modal_none {
+    ui_rect(cur_px, cur_py - 1, 2, tsz + 4, 1, 0, 0, col_accent(), 0, clip_id);
+  }
+}
+
+fn draw_composer_attach_icon(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let ui_sz = sf(13);
+  let has_img = StudioMem.pasted_img_w > 0 && StudioMem.pasted_img_h > 0;
+  if has_img {
+    ui_rect(rx, ry, rw, rh, 6, 1, 0, col_bg(th), col_emerald(), clip_id);
+  }
+  let img_ic_sz = clamp_i64(ui_sz + 3, 15, 22);
+  let col = if has_img { col_emerald() } else { col_muted(th) };
+  ui_icon_image(rx + (rw - img_ic_sz) / 2, ry + (rh - img_ic_sz) / 2, img_ic_sz, col, clip_id);
+}
+
+fn draw_composer_model_chip(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let ui_sz = sf(13);
+  let m_idx = StudioMem.model_idx;
+  let dd_open = StudioMem.model_dd_open >= 1;
+  let lbl_col = if dd_open { col_text(th) } else { col_muted(th) };
+  let max_lbl_w = clamp_i64(rw - 28, 40, 400);
+  let ml_w = fmt_text_ellipsis(rx + 8, ry + (rh - ui_sz) / 2, max_lbl_w, model_display_name(m_idx), ui_sz, 1, lbl_col, clip_id);
+  icon_chevron_down(rx + 8 + ml_w + 10, ry + rh / 2 + 1, ui_sz, if dd_open { col_accent() } else { col_muted(th) }, clip_id);
+}
+
+fn draw_composer_cost_pill(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let sm_sz = sf(12);
+  let cur_id = clamp_i64(StudioMem.currency_id, 0, 2);
+  emit_cost_in_currency(rx + 10, ry + (rh - sm_sz) / 2, StudioMem.total_milli_ils, cur_id, sm_sz, 2, col_muted(th), clip_id);
+}
+
+fn provider_menu_label(p: i64) -> str {
+  match p {
+    0 => "Google Gemini (7)",
+    1 => "OpenAI (3)",
+    2 => "DeepSeek (2)",
+    3 => "OpenRouter (7)",
+    4 => "GroqCloud (1)",
+    5 => "Z.ai GLM (1)",
+    _ => "Mistral (1)",
+  }
+}
+
+fn provider_model_count(p: i64) -> i64 {
+  match p {
+    0 => 7,
+    1 => 3,
+    2 => 2,
+    3 => 7,
+    _ => 1,
+  }
+}
+
+fn provider_model_at(p: i64, idx: i64) -> i64 {
+  if p == 0 {
+    match idx {
+      0 => ModelId::Gemini4Neon,
+      1 => ModelId::Gemini4Carbon,
+      2 => ModelId::Gemini4Argon,
+      3 => ModelId::Gemini4Hydrogen,
+      4 => ModelId::Gemini38Flash,
+      5 => ModelId::Gemini25Pro,
+      _ => ModelId::Gemini25FlashLite,
+    }
+  } else if p == 1 {
+    match idx {
+      0 => ModelId::OpenAiGpt41,
+      1 => ModelId::OpenAiGpt41Mini,
+      _ => ModelId::OpenAiO4Mini,
+    }
+  } else if p == 2 {
+    if idx == 0 { ModelId::DeepSeekChat } else { ModelId::DeepSeekReasoner }
+  } else if p == 3 {
+    match idx {
+      0 => ModelId::OpenRouterQwenFree,
+      1 => ModelId::OpenRouterNemotron35VlFree,
+      2 => ModelId::OpenRouterDeepSeekFree,
+      3 => ModelId::OpenRouterQwen3Coder480B,
+      4 => ModelId::OpenRouterDeepSeekV41Flash,
+      5 => ModelId::OpenRouterDeepSeekV4Flash,
+      _ => ModelId::OpenRouterGlm53Flash,
+    }
+  } else if p == 4 {
+    ModelId::GroqGptOss120B
+  } else if p == 5 {
+    ModelId::ZaiGlm53Flash
+  } else {
+    ModelId::MistralCodestral
+  }
+}
+
+fn render_model_provider_menus(
+  dd_x: i64, dd_y: i64, dd_w: i64, dd_rh: i64, h: i64, just_opened: bool
+) -[Mem, Net]-> unit {
+  let th = StudioMem.theme;
+  let ui_sz = sf(13);
+  let mx = StudioMem.frame_mx;
+  let my = StudioMem.frame_my;
+  let m_clicked = StudioMem.frame_m_clicked;
+  let is_online = StudioMem.online_mode == 1;
+  let prov_cnt = if is_online { 2 } else { 7 };
+  let dd_h = dd_rh * prov_cnt + 12;
+  let cur_grp = model_provider_group(StudioMem.model_idx);
+  let active_sub = StudioMem.model_dd_open; // 2..8 => provider 0..6
+
+  // 1. Main Provider Menu (2 providers in Online Studio: Gemini + OpenRouter; 7 on desktop)
+  ui_rect(dd_x, dd_y, dd_w, dd_h, 10, 1, 16, col_surf(th), col_border(th), ClipId::Root);
+  let mut clicked_inside = false;
+  for slot in 0..prov_cnt max 7 {
+    let p = if is_online { if slot == 0 { 0 } else { 3 } } else { slot };
+    let ry = dd_y + 6 + slot * dd_rh;
+    let rx = dd_x + 4;
+    let rw = dd_w - 8;
+    let grp_id = p + 2;
+    let is_open = active_sub == grp_id;
+    let is_cur = cur_grp == grp_id;
+    let hov = point_in_rect(mx, my, rx, ry, rw, dd_rh);
+    if hov {
+      gfx_set_cursor(CursorKind::Pointer);
+      StudioMem.model_dd_open = grp_id;
+      if m_clicked == 1 { clicked_inside = true; }
+    }
+    let rbg = if hov { col_surf2(th) } else if is_open || is_cur { col_bg(th) } else { col_surf(th) };
+    if hov || is_open || is_cur {
+      ui_rect(rx, ry, rw, dd_rh, 6, 0, 0, rbg, 0, ClipId::Root);
+    }
+    // Green dot if API key for this provider is configured
+    let has_k = ((StudioMem.keys_status_mask >> p) & 1) == 1;
+    let dot_col = if has_k { col_emerald() } else { col_border(th) };
+    ui_rect(rx + 9, ry + dd_rh / 2 - 3, 6, 6, 3, 0, 0, dot_col, 0, ClipId::Root);
+
+    let lcol = if is_open || is_cur { col_accent() } else { col_text(th) };
+    fmt_text_ellipsis(rx + 22, ry + (dd_rh - ui_sz) / 2, rw - 42, provider_menu_label(p), ui_sz, if is_open || is_cur { 1 } else { 0 }, lcol, ClipId::Root);
+    ui_text(rx + rw - 18, ry + (dd_rh - ui_sz) / 2, "→", ui_sz, 1, lcol, ClipId::Root);
+  }
+
+  // 2. Right Submenu for the active provider (StudioMem.model_dd_open in 2..8)
+  let sub_p = StudioMem.model_dd_open - 2;
+  let mut sub_x = dd_x + dd_w + 4;
+  let mut sub_y = dd_y;
+  let sub_w = clamp_i64((315 * clamp_i64(StudioMem.font_scale_pct, MIN_FONT_SCALE_PCT, MAX_FONT_SCALE_PCT)) / 100, 260, 430);
+  let mut sub_h = 0;
+  if sub_p >= 0 && sub_p < 7 {
+    let cnt = provider_model_count(sub_p);
+    sub_h = dd_rh * cnt + 12;
+    sub_x = clamp_i64(dd_x + dd_w + 4, 8, clamp_i64(StudioMem.frame_vw - sub_w - 8, 8, 3000));
+    let sub_slot = if is_online { if sub_p == 3 { 1 } else { 0 } } else { sub_p };
+    let anchor_y = dd_y + 6 + sub_slot * dd_rh - 6;
+    sub_y = clamp_i64(anchor_y, 8, clamp_i64(h - sub_h - 8, 8, 2000));
+    ui_rect(sub_x, sub_y, sub_w, sub_h, 10, 1, 18, col_surf(th), col_accent(), ClipId::Root);
+
+    for mi in 0..cnt max 8 {
+      let mid = provider_model_at(sub_p, mi);
+      let mrx = sub_x + 4;
+      let mry = sub_y + 6 + mi * dd_rh;
+      let mrw = sub_w - 8;
+      let mhov = point_in_rect(mx, my, mrx, mry, mrw, dd_rh);
+      let is_sel = mid == StudioMem.model_idx;
+      if mhov {
+        gfx_set_cursor(CursorKind::Pointer);
+        if m_clicked == 1 {
+          StudioMem.model_idx = mid;
+          StudioMem.model_dd_open = 0;
+          save_settings();
+          clicked_inside = true;
+        }
+      }
+      if mhov {
+        ui_rect(mrx, mry, mrw, dd_rh, 6, 0, 0, col_surf2(th), 0, ClipId::Root);
+      } else if is_sel {
+        ui_rect(mrx, mry, mrw, dd_rh, 6, 0, 0, col_bg(th), 0, ClipId::Root);
+      }
+      fmt_text_ellipsis(mrx + 10, mry + (dd_rh - ui_sz) / 2, mrw - 34, model_display_name(mid), ui_sz, if is_sel { 1 } else { 0 }, if is_sel { col_accent() } else { col_text(th) }, ClipId::Root);
+      if is_sel {
+        ui_text(mrx + mrw - 22, mry + (dd_rh - ui_sz) / 2, "✓", ui_sz, 1, col_emerald(), ClipId::Root);
+      }
+    }
+  }
+
+  // Close menu when clicking outside both menus
+  if m_clicked == 1 && !just_opened && !clicked_inside {
+    let in_main = point_in_rect(mx, my, dd_x, dd_y, dd_w, dd_h);
+    let in_sub = sub_h > 0 && point_in_rect(mx, my, sub_x, sub_y, sub_w, sub_h);
+    if !in_main && !in_sub {
+      StudioMem.model_dd_open = 0;
+    }
+  }
+}
+
+forma ComposerCard(
+  col_x: i64,
+  box_y: i64,
+  col_w: i64,
+  box_h: i64,
+  img_bar_h: i64,
+  tb_btn_h: i64,
+  chip_w: i64,
+  pill_w: i64,
+  bg_surf: i64,
+  bg_surf2: i64,
+  bg_bg: i64,
+  col_brd: i64,
+  col_acc: i64,
+  bg_send: i64,
+  send_lbl: str,
+  col_white: i64
+)
+  req col_w >= 360 && box_h >= img_bar_h + tb_btn_h + 36 && img_bar_h >= 0 && tb_btn_h >= 32 && tb_btn_h <= 48 && chip_w >= 120 && pill_w >= 64 && col_w >= tb_btn_h + chip_w + pill_w + 80
+  -[Mem]-> i64
+{
+  Box(x: col_x, y: box_y, w: col_w, h: box_h, radius: 12, border: 1, shadow: 6, bg: bg_surf, border_col: col_acc, pad_x: 10, pad_y: 6) {
+    Col(gap: 4) {
+      Box(h: img_bar_h) {
+        Slot(render: draw_composer_image_preview)
+      }
+      Scroll(id: 201, grow: 1, clip: 2) {
+        Slot(render: draw_composer_editor, on_wheel: handle_composer_wheel)
+      }
+      Row(h: tb_btn_h, gap: 6, align: center) {
+        Button(id: 202, w: tb_btn_h, h: tb_btn_h, radius: 6, bg: bg_surf, hover_bg: bg_surf2, on_click: CompAct::PickImg) {
+          Slot(render: draw_composer_attach_icon)
+        }
+        Button(id: 203, w: chip_w, h: tb_btn_h, radius: 6, bg: bg_surf, hover_bg: bg_surf2, on_click: CompAct::ToggleModelDd) {
+          Slot(render: draw_composer_model_chip)
+        }
+        Spacer(grow: 1)
+        Box(w: pill_w, h: tb_btn_h - 4, radius: 12, bg: bg_bg, border: 1, border_col: col_brd) {
+          Slot(render: draw_composer_cost_pill)
+        }
+        Button(id: 204, w: 32, h: 32, radius: 16, bg: bg_send, hover_bg: bg_send, align: center, on_click: CompAct::SendOrStop) {
+          Text(send_lbl, size: 17, style: 1, color: col_white, align: center, shrink: 1)
+        }
+      }
+    }
+  }
+}
+
+fn render_composer(
+  col_x: i64, box_y: i64, col_w: i64, box_h: i64,
+  img_bar_h: i64, h: i64, key_special: i64
+) -[Mem, Net]-> unit {
+  let th = StudioMem.theme;
+  let scale = StudioMem.font_scale_pct;
+  let tsz = sf(15);
+  let in_lh = clamp_i64(StudioMem.frame_in_lh, 14, 60);
+  let in_max_w = clamp_i64(StudioMem.frame_in_max_w, 120, 1600);
+
+  if StudioMem.frame_modal_blocked == 0 {
+    match key_special {
+      KeySpecial::ArrowUp => { clear_msg_sel(); input_move_vertical(-1, in_max_w, tsz, in_lh, false); },
+      KeySpecial::ArrowDown => { clear_msg_sel(); input_move_vertical(1, in_max_w, tsz, in_lh, false); },
+      KeySpecial::ShiftUp => { clear_msg_sel(); input_move_vertical(-1, in_max_w, tsz, in_lh, true); },
+      KeySpecial::ShiftDown => { clear_msg_sel(); input_move_vertical(1, in_max_w, tsz, in_lh, true); },
+      KeySpecial::Home => { clear_msg_sel(); input_move_line_edge(false, in_max_w, tsz, false); },
+      KeySpecial::End => { clear_msg_sel(); input_move_line_edge(true, in_max_w, tsz, false); },
+      KeySpecial::ShiftHome => { clear_msg_sel(); input_move_line_edge(false, in_max_w, tsz, true); },
+      KeySpecial::ShiftEnd => { clear_msg_sel(); input_move_line_edge(true, in_max_w, tsz, true); },
+      _ => {},
+    }
+  }
+
+  if key_special == KeySpecial::Escape {
+    StudioMem.model_dd_open = 0;
+  }
+
+  let safe_col_w = clamp_i64(col_w, 360, 1200);
+  let safe_img_h = clamp_i64(img_bar_h, 0, 120);
+  let tb_btn_h = clamp_i64((32 * scale) / 100, 32, 48);
+  let safe_box_h = clamp_i64(box_h, safe_img_h + tb_btn_h + 36, 600);
+
+  let avail_row = safe_col_w - tb_btn_h - 80;
+  let pill_max = if avail_row - 120 < 130 { avail_row - 120 } else { 130 };
+  let pill_w = clamp_i64((80 * scale) / 100, 64, pill_max);
+  let chip_max = if avail_row - pill_w < 320 { avail_row - pill_w } else { 320 };
+  let chip_w = clamp_i64((232 * scale) / 100, 120, chip_max);
+  let running = StudioMem.ai_running == 1;
+
+  if StudioMem.frame_modal_blocked != 0 {
+    forma_set_pointer(-1, -1, 0, 0);
+  } else {
+    forma_set_pointer(StudioMem.frame_mx, StudioMem.frame_my, StudioMem.frame_m_clicked, StudioMem.frame_wheel_dy);
+  }
+
+  let send_lbl = if running { "■" } else { "→" };
+  let act = ComposerCard(
+    col_x, box_y, safe_col_w, safe_box_h, safe_img_h, tb_btn_h, chip_w, pill_w,
+    col_surf(th), col_surf2(th), col_bg(th), col_border(th), col_accent(),
+    if running { col_red() } else { col_accent() },
+    send_lbl, pack_rgba(255, 255, 255, 255)
+  );
+  if forma_hovered() {
+    gfx_set_cursor(CursorKind::Pointer);
+  }
+
+  let mut just_opened = false;
+  match act {
+    CompAct::PickImg => {
+      StudioMem.host_action = HostAction::PickImage;
+    },
+    CompAct::ToggleModelDd => {
+      if StudioMem.model_dd_open == 0 {
+        StudioMem.model_dd_open = model_provider_group(StudioMem.model_idx);
+        daemon::keys_status();
+        just_opened = true;
+      } else {
+        StudioMem.model_dd_open = 0;
+      }
+    },
+    CompAct::SendOrStop => {
+      if running {
+        daemon::agent_cancel();
+      } else {
+        start_gemini_async();
+      }
+    },
+    _ => {},
+  }
+
+  if StudioMem.model_dd_open >= 1 && StudioMem.frame_modal_blocked == 0 {
+    let dd_w = clamp_i64((240 * scale) / 100, 210, 320);
+    let dd_rh = clamp_i64((30 * scale) / 100, 28, 40);
+    let dd_cnt = if StudioMem.online_mode == 1 { 2 } else { 7 };
+    let dd_h = dd_rh * dd_cnt + 12;
+    let dd_x = col_x + 10 + tb_btn_h + 6;
+    let tb_y = box_y + safe_box_h - tb_btn_h - 6;
+    let dd_y = clamp_i64(tb_y - dd_h - 6, 8, clamp_i64(h - dd_h - 8, 8, 2000));
+    render_model_provider_menus(dd_x, dd_y, dd_w, dd_rh, h, just_opened);
+  }
+}

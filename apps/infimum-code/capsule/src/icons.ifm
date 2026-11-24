@@ -1,0 +1,90 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Procedural 1-Draw-Call vector icons for Infimum Code Native.
+
+use "primitives.ifm";
+use "std/icons.ifm";
+
+fn ui_folder_icon(x: i64, y: i64, sz: i64, is_open: bool, is_act: bool, clip: i64) -[Mem]-> unit {
+  let s = clamp_i64(sz, 12, 26);
+  let tab_w = clamp_i64((s * 46) / 100, 5, 14);
+  let tab_h = clamp_i64((s * 24) / 100, 3, 7);
+  let body_y = y + clamp_i64((s * 18) / 100, 2, 6);
+  let body_h = clamp_i64((s * 66) / 100, 8, 18);
+  let tab_col = if is_act || is_open { pack_rgba(234, 179, 8, 255) } else { pack_rgba(202, 152, 42, 255) };
+  let body_col = if is_act || is_open { pack_rgba(250, 204, 21, 255) } else { pack_rgba(226, 176, 56, 255) };
+  ui_rect(x, y, tab_w, tab_h + 2, 2, 0, 0, tab_col, 0, clip);
+  ui_rect(x, body_y, s, body_h, 2, 0, 0, tab_col, 0, clip);
+  if is_open {
+    ui_rect(x + 1, body_y + 2, s - 2, 2, 0, 0, 0, pack_rgba(120, 74, 10, 190), 0, clip);
+    ui_rect(x, body_y + 4, s, clamp_i64(body_h - 4, 4, 16), 2, 0, 0, body_col, 0, clip);
+  } else {
+    ui_rect(x, body_y + 2, s, clamp_i64(body_h - 2, 6, 18), 2, 0, 0, body_col, 0, clip);
+  }
+}
+
+fn ui_icon_copy(x: i64, y: i64, sz: i64, col: i64, bg_col: i64, clip: i64) -[Mem]-> unit {
+  let s = clamp_i64(sz, 12, 32);
+  let sw = clamp_i64((s * 56) / 100, 7, 20);
+  let sh = clamp_i64((s * 68) / 100, 8, 22);
+  ui_rect(x + 1, y + 1, sw, sh, 2, 1, 0, 0, col, clip);
+  ui_rect(x + s - sw - 1, y + s - sh - 1, sw, sh, 2, 1, 0, bg_col, col, clip);
+}
+
+fn ui_icon_thumb(x: i64, y: i64, sz: i64, is_up: bool, col: i64, clip: i64) -[Mem]-> unit {
+  let s = clamp_i64(sz, 12, 32);
+  let p1 = (1 * s) / 14;
+  let p2 = (2 * s) / 14;
+  let p3 = clamp_i64((3 * s) / 14, 2, 8);
+  let p5 = (5 * s) / 14;
+  let p6 = (6 * s) / 14;
+  let p7 = clamp_i64((7 * s) / 14, 5, 18);
+  let p8 = (8 * s) / 14;
+  let p9 = (9 * s) / 14;
+  let p12 = (12 * s) / 14;
+  let p13 = (13 * s) / 14;
+  if is_up {
+    ui_rect(x + p1, y + p6, p3, p7, 1, 1, 0, 0, col, clip);
+    ui_line(x + p5, y + p6, x + p8, y + p2, 2, col, clip);
+    ui_line(x + p8, y + p2, x + p9, y + p5, 2, col, clip);
+    ui_line(x + p9, y + p5, x + p13, y + p5, 2, col, clip);
+    ui_line(x + p13, y + p5, x + p12, y + p12, 2, col, clip);
+    ui_line(x + p12, y + p12, x + p5, y + p12, 2, col, clip);
+  } else {
+    ui_rect(x + p1, y + p1, p3, p7, 1, 1, 0, 0, col, clip);
+    ui_line(x + p5, y + p8, x + p8, y + p12, 2, col, clip);
+    ui_line(x + p8, y + p12, x + p9, y + p9, 2, col, clip);
+    ui_line(x + p9, y + p9, x + p13, y + p9, 2, col, clip);
+    ui_line(x + p13, y + p9, x + p12, y + p2, 2, col, clip);
+    ui_line(x + p12, y + p2, x + p5, y + p2, 2, col, clip);
+  }
+}
+
+fn ui_icon_image(x: i64, y: i64, sz: i64, col: i64, clip: i64) -[Mem]-> unit {
+  let s = clamp_i64(sz, 12, 24);
+  let p2 = clamp_i64((2 * s) / 16, 1, 4);
+  let p6 = (6 * s) / 16;
+  let p9 = (9 * s) / 16;
+  let p10 = (10 * s) / 16;
+  let p12 = (12 * s) / 16;
+  let p13 = (13 * s) / 16;
+  ui_rect(x + 1, y + 2, s - 2, s - 4, 3, 1, 0, 0, col, clip);
+  ui_circle(x + p6, y + p6, clamp_i64(p2, 1, 3), 0, col, clip);
+  ui_line(x + 3, y + s - 4, x + p6, y + p9, 2, col, clip);
+  ui_line(x + p6, y + p9, x + p9, y + p12, 2, col, clip);
+  ui_line(x + p9, y + p12, x + p12, y + p10, 2, col, clip);
+  ui_line(x + p12, y + p10, x + p13 + 1, y + s - 4, 2, col, clip);
+}
+
+// Infimum brand mark: a circle resting over its greatest lower bound (horizontal bar).
+fn ui_icon_infimum_logo(cx: i64, cy: i64, sz: i64, dot_col: i64, bar_col: i64, clip: i64) -[Mem]-> unit {
+  let s = clamp_i64(sz, 14, 28);
+  let r = clamp_i64((s * 22) / 100, 3, 6);
+  let bar_w = clamp_i64((s * 72) / 100, 10, 22);
+  let bar_h = clamp_i64((s * 12) / 100, 2, 3);
+  let dot_y = cy - clamp_i64((s * 14) / 100, 2, 5);
+  let bar_y = cy + clamp_i64((s * 26) / 100, 4, 8);
+  ui_circle(cx, dot_y, r, 0, dot_col, clip);
+  ui_rect(cx - bar_w / 2, bar_y, bar_w, bar_h, 1, 0, 0, bar_col, 0, clip);
+}

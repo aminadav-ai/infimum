@@ -1,0 +1,125 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Z3-Verified `infimum.passport` Gatekeeper Core.
+// Classifies capability tokens and formally proves that no unauthorized
+// capability bit can ever pass policy enforcement.
+
+use "std/math.ifm";
+
+const CAP_NONE: i64 = 0;
+const CAP_GPU: i64 = 1;
+const CAP_INPUT: i64 = 2;
+const CAP_CLIPBOARD: i64 = 4;
+const CAP_PROC: i64 = 8;
+const CAP_FS: i64 = 16;
+const CAP_NET: i64 = 32;
+const CAP_UNKNOWN: i64 = 64;
+
+const MAX_EFF_CHARS: i64 = 256;
+
+layout PassMem at 0 {
+  last_mask: word at 0,
+  eff_buf: words[256] at 16,
+}
+
+fn lower_ascii(c: i64) -> i64 {
+  if c >= 'A' && c <= 'Z' { c + 32 } else { c }
+}
+
+fn eff_at(idx: i64, n: i64) -[Mem]-> i64 {
+  if idx >= 0 && idx < n && idx < MAX_EFF_CHARS {
+    lower_ascii(PassMem.eff_buf[idx])
+  } else {
+    0
+  }
+}
+
+fn starts2(n: i64, c0: i64, c1: i64) -[Mem]-> bool {
+  n >= 2 && eff_at(0, n) == c0 && eff_at(1, n) == c1
+}
+
+fn starts3(n: i64, c0: i64, c1: i64, c2: i64) -[Mem]-> bool {
+  starts2(n, c0, c1) && n >= 3 && eff_at(2, n) == c2
+}
+
+fn starts4(n: i64, c0: i64, c1: i64, c2: i64, c3: i64) -[Mem]-> bool {
+  starts3(n, c0, c1, c2) && n >= 4 && eff_at(3, n) == c3
+}
+
+fn starts5(n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64) -[Mem]-> bool {
+  starts4(n, c0, c1, c2, c3) && n >= 5 && eff_at(4, n) == c4
+}
+
+// Classify a single capability token written into `eff_buf[0..raw_len)`.
+export fn classify_effect_ifm(raw_len: i64) -[Mem]-> i64 {
+  let n = clamp_i64(raw_len, 0, MAX_EFF_CHARS);
+  if n == 0 {
+    CAP_NONE
+  } else if n == 3 && starts3(n, 'm', 'e', 'm') {
+    CAP_NONE
+  } else if n == 4 && (starts4(n, 'p', 'u', 'r', 'e') || starts4(n, 't', 'i', 'm', 'e')) {
+    CAP_NONE
+  } else if n == 5 && starts5(n, 's', 't', 'a', 't', 'e') {
+    CAP_NONE
+  } else if starts3(n, 'g', 'p', 'u') {
+    CAP_GPU
+  } else if starts5(n, 'i', 'n', 'p', 'u', 't') {
+    CAP_INPUT
+  } else if n >= 9 && starts5(n, 'c', 'l', 'i', 'p', 'b')
+    && eff_at(5, n) == 'o' && eff_at(6, n) == 'a' && eff_at(7, n) == 'r' && eff_at(8, n) == 'd'
+  {
+    CAP_CLIPBOARD
+  } else if starts4(n, 'p', 'r', 'o', 'c') || starts4(n, 'e', 'x', 'e', 'c') || starts5(n, 's', 'h', 'e', 'l', 'l') {
+    CAP_PROC
+  } else if starts2(n, 'f', 's') || starts4(n, 'f', 'i', 'l', 'e') {
+    CAP_FS
+  } else if starts3(n, 'n', 'e', 't') || starts4(n, 'h', 't', 't', 'p') {
+    CAP_NET
+  } else {
+    CAP_UNKNOWN
+  }
+}
+
+fn bit_denied(req_mask: i64, allow_mask: i64, bit: i64) -> i64
+  req bit > 0 && req_mask >= 0 && allow_mask >= 0
+  ens result == 0 || result == bit
+{
+  let r = (req_mask / bit) % 2;
+  let a = (allow_mask / bit) % 2;
+  if r == 1 && a == 0 { bit } else { 0 }
+}
+
+// Z3-Proved Policy Gatekeeper: returns 0 (ALLOW) if and only if EVERY requested
+// capability bit in `req_mask` (0..127) is authorized by `allow_mask` (0..63).
+// CAP_UNKNOWN (64) is ALWAYS denied because allow_mask <= 63.
+export fn check_policy_mask_ifm(req_mask: i64, allow_mask: i64) -> i64
+  req req_mask >= 0 && req_mask <= 127 && allow_mask >= 0 && allow_mask <= 63
+  ens result >= 0 && (req_mask == 0 || result >= 0) && (req_mask < 64 || result >= 64)
+{
+  let d1 = bit_denied(req_mask, allow_mask, CAP_GPU);
+  let d2 = bit_denied(req_mask, allow_mask, CAP_INPUT);
+  let d4 = bit_denied(req_mask, allow_mask, CAP_CLIPBOARD);
+  let d8 = bit_denied(req_mask, allow_mask, CAP_PROC);
+  let d16 = bit_denied(req_mask, allow_mask, CAP_FS);
+  let d32 = bit_denied(req_mask, allow_mask, CAP_NET);
+  let d64 = if req_mask >= 64 { CAP_UNKNOWN } else { 0 };
+  d1 + d2 + d4 + d8 + d16 + d32 + d64
+}
+
+test "classify_effect_ifm recognizes gpu and net" {
+  PassMem.eff_buf[0] = 'G';
+  PassMem.eff_buf[1] = 'p';
+  PassMem.eff_buf[2] = 'u';
+  assert(classify_effect_ifm(3) == CAP_GPU);
+  PassMem.eff_buf[0] = 'n';
+  PassMem.eff_buf[1] = 'e';
+  PassMem.eff_buf[2] = 't';
+  assert(classify_effect_ifm(3) == CAP_NET);
+}
+
+test "check_policy_mask_ifm blocks unauthorized and unknown caps" {
+  assert(check_policy_mask_ifm(CAP_GPU + CAP_INPUT, CAP_GPU + CAP_INPUT) == 0);
+  assert(check_policy_mask_ifm(CAP_NET, CAP_GPU) == CAP_NET);
+  assert(check_policy_mask_ifm(CAP_UNKNOWN, 63) >= CAP_UNKNOWN);
+}

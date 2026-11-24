@@ -1,0 +1,82 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM LION HERD — Native .ifw Capsule Entrypoint for `infimum-web`
+// 100% Clean-Room Infimum Lang (Telos + Flux + Strata) • Zero JS / Zero Chromium
+
+use "abi.ifm";
+use "logic.ifm";
+use "render.ifm";
+
+export fn init_app(seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu]-> i64 {
+  HerdMem.prev_r_key = 0;
+  HerdMem.prev_z_key = 0;
+  HerdMem.prev_sp_key = 0;
+  reset_herd(seed);
+  1
+}
+
+export fn step_ui(
+  vw: i64, vh: i64,
+  mx: i64, my: i64,
+  m_down: i64, m_clicked: i64,
+  _wheel_dy: i64, key_char: i64, _key_special: i64
+) -[Mem, Gpu]-> i64 {
+  let w = clamp_i64(vw, 560, 4096);
+  let h = clamp_i64(vh, 460, 2160);
+  gfx_begin_frame(w, h);
+
+  // Keyboard shortcuts: R = restart, Z = rewind 24 ticks, Space = roar
+  let r_now = if key_held(KEY_R) || key_char == 'r' || key_char == 'R' { 1 } else { 0 };
+  if r_now == 1 && HerdMem.prev_r_key == 0 {
+    reset_herd(HerdMem.rng_state + HerdMem.tick + 9973);
+    sfx_play(SFX_CLICK, 110, 75);
+  }
+  HerdMem.prev_r_key = r_now;
+
+  let z_now = if key_held(KEY_Z) || key_char == 'z' || key_char == 'Z' { 1 } else { 0 };
+  if z_now == 1 && HerdMem.prev_z_key == 0 && HerdMem.snap_count > 10 {
+    rewind_snapshots(24);
+  }
+  HerdMem.prev_z_key = z_now;
+
+  let sp_now = if key_held(KEY_SPACE) || key_char == ' ' { 1 } else { 0 };
+  let roar_trigger = if sp_now == 1 && HerdMem.prev_sp_key == 0 { 1 } else { 0 };
+  HerdMem.prev_sp_key = sp_now;
+
+  let mut dx = 0;
+  let mut dy = 0;
+  if key_held(KEY_A) || key_held(KEY_LEFT) { dx -= 1; }
+  if key_held(KEY_D) || key_held(KEY_RIGHT) { dx += 1; }
+  if key_held(KEY_W) || key_held(KEY_UP) { dy -= 1; }
+  if key_held(KEY_S) || key_held(KEY_DOWN) { dy += 1; }
+
+  let ptr_active = if m_down == 1 && my > 64 && my < h - 58 && HerdMem.win_tick == 0 { 1 } else { 0 };
+  let ptr_wx = if ptr_active == 1 { screen_to_arena_x(mx, my, w, h) } else { HerdMem.lion_x };
+  let ptr_wy = if ptr_active == 1 { screen_to_arena_y(my, w, h) } else { HerdMem.lion_y };
+
+  if HerdMem.win_tick == 0 {
+    step_herd_sim(dx, dy, roar_trigger, ptr_active, ptr_wx, ptr_wy);
+  }
+
+  render_herd_frame(w, h, mx, my, m_clicked);
+  gfx_end_frame()
+}
+
+test "init spawns 14 unpenned sheep and healthy lion" {
+  let _ = init_app(123, 1024, 768);
+  assert(HerdMem.penned_count == 0);
+  assert(HerdMem.win_tick == 0);
+  assert(HerdMem.stamina > 0);
+  for i in 0..14 {
+    assert(HerdMem.sheep[i].penned == 0);
+  }
+}
+
+test "sim step advances tick and moves lion" {
+  let _ = init_app(123, 1024, 768);
+  let x0 = HerdMem.lion_x;
+  step_herd_sim(1, 0, 0, 0, x0, HerdMem.lion_y);
+  assert(HerdMem.tick == 1);
+  assert(HerdMem.lion_x > x0);
+}

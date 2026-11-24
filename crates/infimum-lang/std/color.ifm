@@ -1,0 +1,61 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/color.ifm
+// Pure RGBA color packing (0xAABBGGRR), channel extraction, blending, and shading.
+
+use "std/math.ifm";
+
+fn pack_rgba(r: i64, g: i64, b: i64, a: i64) -> i64 {
+  clamp_byte(r) | (clamp_byte(g) << 8) | (clamp_byte(b) << 16) | (clamp_byte(a) << 24)
+}
+
+fn rgba_r(c: i64) -> i64 ens result >= 0 && result <= 255 {
+  clamp_byte(c & 255)
+}
+
+fn rgba_g(c: i64) -> i64 ens result >= 0 && result <= 255 {
+  clamp_byte((c >> 8) & 255)
+}
+
+fn rgba_b(c: i64) -> i64 ens result >= 0 && result <= 255 {
+  clamp_byte((c >> 16) & 255)
+}
+
+fn rgba_a(c: i64) -> i64 ens result >= 0 && result <= 255 {
+  clamp_byte((c >> 24) & 255)
+}
+
+fn with_alpha(c: i64, a: i64) -> i64 {
+  pack_rgba(rgba_r(c), rgba_g(c), rgba_b(c), a)
+}
+
+fn lerp_rgba(c1: i64, c2: i64, t1000: i64) -> i64 {
+  let t = clamp_i64(t1000, 0, 1000);
+  pack_rgba(
+    lerp_i64(rgba_r(c1), rgba_r(c2), t),
+    lerp_i64(rgba_g(c1), rgba_g(c2), t),
+    lerp_i64(rgba_b(c1), rgba_b(c2), t),
+    lerp_i64(rgba_a(c1), rgba_a(c2), t)
+  )
+}
+
+fn darken_rgba(c: i64, pct: i64) -> i64 {
+  let k = clamp_i64(100 - clamp_i64(pct, 0, 100), 0, 100);
+  pack_rgba(
+    (rgba_r(c) * k) / 100,
+    (rgba_g(c) * k) / 100,
+    (rgba_b(c) * k) / 100,
+    rgba_a(c)
+  )
+}
+
+fn lighten_rgba(c: i64, pct: i64) -> i64 {
+  let p = clamp_i64(pct, 0, 100);
+  pack_rgba(
+    rgba_r(c) + ((255 - rgba_r(c)) * p) / 100,
+    rgba_g(c) + ((255 - rgba_g(c)) * p) / 100,
+    rgba_b(c) + ((255 - rgba_b(c)) * p) / 100,
+    rgba_a(c)
+  )
+}

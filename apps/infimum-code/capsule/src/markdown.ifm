@@ -1,0 +1,32 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Thin Infimum Code bridge over the standard GFM Markdown engine (`std/markdown.ifm`).
+
+use "abi.ifm";
+use "std/markdown.ifm";
+
+pub fn layout_md_ptr(
+  mode: i64, mx: i64, my: i64,
+  x: i64, y: i64, max_w: i64,
+  ptr: i64, body_sz: i64, line_h: i64,
+  th: i64, clip: i64, vis_y0: i64, vis_y1: i64,
+  sel_lo_i: i64, sel_hi_i: i64
+) -[Mem]-> i64 {
+  md_layout(mode, mx, my, x, y, max_w, ptr, MAX_MSG_CHARS, body_sz, line_h, th, clip, vis_y0, vis_y1, sel_lo_i, sel_hi_i)
+}
+
+test "markdown table layout and hit-test work" {
+  // "|A|B|\n|-|-|\n|1|2|"
+  let b = StudioMem::http_body_tmp;
+  mem_store(b, 17);
+  mem_store(b + 1, '|'); mem_store(b + 2, 'A'); mem_store(b + 3, '|'); mem_store(b + 4, 'B'); mem_store(b + 5, '|'); mem_store(b + 6, '\n');
+  mem_store(b + 7, '|'); mem_store(b + 8, '-'); mem_store(b + 9, '|'); mem_store(b + 10, '-'); mem_store(b + 11, '|'); mem_store(b + 12, '\n');
+  mem_store(b + 13, '|'); mem_store(b + 14, '1'); mem_store(b + 15, '|'); mem_store(b + 16, '2'); mem_store(b + 17, '|');
+  let h = layout_md_ptr(0, 0, 0, 0, 0, 400, b, 14, 20, 0, 0, 0, 400, 0, 0);
+  assert(h > 40);
+  let idx_top = layout_md_ptr(1, 10, -5, 0, 0, 400, b, 14, 20, 0, 0, 0, 400, 0, 0);
+  assert(idx_top == 0);
+  let idx_mid = layout_md_ptr(1, 16, 10, 0, 0, 400, b, 14, 20, 0, 0, 0, 400, 0, 0);
+  assert(idx_mid >= 1 && idx_mid <= 5);
+}

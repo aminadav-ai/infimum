@@ -1,0 +1,181 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// CERES DRIFT — Native .ifw Capsule Entrypoint & Built-in Unit Tests
+// True 6-DOF Zero-Gravity 3D Room-and-Tube Spaceship Shooter in Infimum Lang
+
+use "abi.ifm";
+use "maze.ifm";
+use "logic.ifm";
+use "render.ifm";
+
+fn try_restart_key(r_now: i64) -[Mem, Gpu]-> i64 {
+  let triggered = if r_now == 1 && GameMem.prev_r_key == 0 && GameMem.phase == GamePhase::Dead {
+    reset_ceres();
+    sfx_click();
+    1
+  } else {
+    0
+  };
+  GameMem.prev_r_key = r_now;
+  triggered
+}
+
+export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu]-> i64 {
+  GameMem.prev_r_key = 0;
+  GameMem.prev_e_key = 0;
+  reset_ceres();
+  1
+}
+
+export fn step_ui(
+  vw: i64, vh: i64,
+  mx: i64, my: i64,
+  m_down: i64, m_clicked: i64,
+  _wheel_dy: i64, key_char: i64, _key_special: i64
+) -[Mem, Gpu]-> i64 {
+  let w = clamp_i64(vw, 640, 4096);
+  let h = clamp_i64(vh, 480, 2160);
+  gfx_begin_frame(w, h);
+
+  // Restart with [R] only after the player ship is destroyed
+  let r_now = if key_held(KEY_R) || key_char == 'r' || key_char == 'R' { 1 } else { 0 };
+  let _ = try_restart_key(r_now);
+
+  // 6-DOF Ship Thrust Inputs
+  let mut fwd = 0;
+  let mut strafe = 0;
+  let mut vert = 0;
+  let mut turn_yaw = 0;
+  let mut turn_pitch = 0;
+
+  if key_held(KEY_W) { fwd += 1; }
+  if key_held(KEY_S) { fwd -= 1; }
+  if key_held(KEY_A) { strafe -= 1; }
+  if key_held(KEY_D) { strafe += 1; }
+  if key_held(KEY_SPACE) || key_held(KEY_Q) { vert += 1; }
+  if key_held(KEY_SHIFT) { vert -= 1; }
+
+  // Keyboard steering (Arrow keys)
+  if key_held(KEY_LEFT) { turn_yaw -= 44; }
+  if key_held(KEY_RIGHT) { turn_yaw += 44; }
+  if key_held(KEY_UP) { turn_pitch += 8; }
+  if key_held(KEY_DOWN) { turn_pitch -= 8; }
+
+  // Mouse Look (Pointer Lock) + Weapons
+  let locked = pointer_locked();
+  let mut fire_laser = 0;
+  let e_now = if key_held(KEY_E) || key_char == 'e' || key_char == 'E' { 1 } else { 0 };
+  let mut fire_missile = if e_now == 1 && GameMem.prev_e_key == 0 { 1 } else { 0 };
+  GameMem.prev_e_key = e_now;
+
+  let active_play = GameMem.phase == GamePhase::Playing || GameMem.phase == GamePhase::Escape;
+  if active_play {
+    let on_restart_btn = my >= h - 72 && mx >= w - 170;
+    if !locked && m_clicked == 1 && !on_restart_btn {
+      set_pointer_lock(true);
+    } else if locked {
+      turn_yaw += mouse_dx() * 4;
+      turn_pitch -= mouse_dy();
+      if m_down == 1 || m_clicked == 1 {
+        fire_laser = 1;
+      }
+    }
+    if key_held(KEY_F) || key_char == 'f' || key_char == 'F' {
+      fire_laser = 1;
+    }
+  } else {
+    fire_missile = 0;
+    // Keep pointer lock active so pressing [R] (or clicking) restarts seamlessly without re-locking!
+    if locked && m_clicked == 1 {
+      reset_ceres();
+      sfx_click();
+    }
+  }
+
+  step_ceres_sim(fwd, strafe, vert, turn_yaw, turn_pitch, fire_laser, fire_missile);
+  render_ceres_frame(w, h, mx, my, m_clicked);
+  gfx_end_frame()
+}
+
+// --- Built-in Unit Tests (auto-stripped from .ifw binary) ---
+
+test "fixed Ceres-1 mine has all 11 chambers across 3 decks connected by 13 tubes" {
+  build_ceres_mine();
+  for r in 0..11 {
+    assert(mine_rooms_reachable(ROOM_START, r));
+  }
+  assert(mine_rooms_reachable(ROOM_START, ROOM_REACTOR));
+  assert(mine_rooms_reachable(ROOM_MINE, ROOM_DOME));
+}
+
+test "seamless flight from Airlock through octagonal Entry Tube into Central Atrium" {
+  let _ = init_app(1, 1024, 768);
+  assert(find_current_room(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z) == ROOM_START);
+  // Fly forward straight through Tube 0 (z = 20400 -> 9000) without snagging at either doorway!
+  for _t in 0..55 {
+    step_ceres_sim(1, 0, 0, 0, 0, 0, 0);
+  }
+  assert(find_current_room(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z) == ROOM_ATRIUM);
+  // Verify octagonal tube wall blocks sideways clipping inside Tube 0
+  assert(!hits_maze_3d(0, 10000, 15000, 420));
+  assert(hits_maze_3d(1000, 10000, 15000, 420));
+  assert(hits_maze_3d(750, 10750, 15000, 420)); // hits 45-degree chamfer bevel!
+}
+
+test "vertical elevator shafts connect Atrium seamlessly to Deck 1 and Deck 3" {
+  build_ceres_mine();
+  // Check continuous open path along vertical Shaft 10 (Atrium y=10000 -> Upper Bridge y=18000)
+  for s in 0..40 {
+    let py = 10000 + s * 200;
+    assert(!hits_maze_3d(0, py, 9000, 420));
+  }
+  // Check continuous open path along vertical Shaft 7 (Atrium y=10000 -> Lower Ore Mine y=2000)
+  for s in 0..40 {
+    let py = 10000 - s * 200;
+    assert(!hits_maze_3d(0, py, 9000, 420));
+  }
+}
+
+test "weapons and reactor destruction escape sequence work on fixed mine" {
+  let _ = init_app(123, 1024, 768);
+  let e0 = GameMem.energy;
+  let m0 = GameMem.missiles;
+  fire_player_laser();
+  assert(GameMem.energy == e0 - 2);
+  assert(GameMem.bolts[0].life > 0);
+  fire_player_missile();
+  assert(GameMem.missiles == m0 - 1);
+
+  damage_reactor(300);
+  assert(GameMem.reactor_hp == 0);
+  assert(GameMem.phase == GamePhase::Escape);
+  assert(GameMem.escape_ticks == 2700);
+}
+
+test "R key restarts game only when player ship is destroyed" {
+  let _ = init_app(7, 1024, 768);
+  GameMem.score = 1234;
+  // While Playing, pressing R does nothing
+  assert(try_restart_key(1) == 0);
+  assert(GameMem.score == 1234);
+  assert(try_restart_key(0) == 0);
+
+  // While in Escape phase, pressing R also does nothing
+  GameMem.phase = GamePhase::Escape;
+  assert(try_restart_key(1) == 0);
+  assert(GameMem.score == 1234);
+  assert(try_restart_key(0) == 0);
+
+  // While on Victory screen, pressing R also does nothing
+  GameMem.phase = GamePhase::Victory;
+  assert(try_restart_key(1) == 0);
+  assert(GameMem.score == 1234);
+  assert(try_restart_key(0) == 0);
+
+  // Once destroyed (Dead), pressing R restarts the mission
+  GameMem.phase = GamePhase::Dead;
+  assert(try_restart_key(1) == 1);
+  assert(GameMem.phase == GamePhase::Playing);
+  assert(GameMem.score == 0);
+}

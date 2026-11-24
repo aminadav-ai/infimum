@@ -1,0 +1,412 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM LION HERD — Z3-Verified Boids Flocking, Corral Physics, Time-Travel & Audio
+
+use "abi.ifm";
+
+// --- Layer 1: Z3-Verified Pure Telos Kernels ---
+
+fn clamp_arena(v: i64) -> i64
+  ens result >= 36 && result <= 988
+{
+  if v < 36 { 36 } else if v > 988 { 988 } else { v }
+}
+
+fn clamp_corral_x(v: i64) -> i64
+  ens result >= 732 && result <= 936
+{
+  if v < 732 { 732 } else if v > 936 { 936 } else { v }
+}
+
+fn clamp_corral_y(v: i64) -> i64
+  ens result >= 134 && result <= 346
+{
+  if v < 134 { 134 } else if v > 346 { 346 } else { v }
+}
+
+fn clamp_vel(v: i64, limit: i64) -> i64
+  req limit >= 0
+  ens result >= -limit && result <= limit
+{
+  if v < -limit { -limit } else if v > limit { limit } else { v }
+}
+
+fn compute_herd_score(penned: i64, speed_bonus: i64) -> i64
+  req penned >= 0 && penned <= 14 && speed_bonus >= 0 && speed_bonus <= 2000
+  ens result >= 0 && result <= 4800
+{
+  penned * 200 + speed_bonus
+}
+
+fn next_rand() -[Mem]-> i64 {
+  let s = HerdMem.rng_state;
+  let nxt = (s * 1103515245 + 12345) & 2147483647;
+  let safe = if nxt == 0 { 9876543 } else { nxt };
+  HerdMem.rng_state = safe;
+  safe
+}
+
+// Fast 8-direction heading angle (0..1023) from velocity
+fn yaw_from_vel(vx: i64, vy: i64, prev: i64) -> i64 {
+  let ax = abs_i64(vx);
+  let ay = abs_i64(vy);
+  if ax + ay <= 1 {
+    prev
+  } else if ax > ay * 2 {
+    if vx > 0 { 0 } else { 512 }
+  } else if ay > ax * 2 {
+    if vy > 0 { 256 } else { 768 }
+  } else if vx > 0 {
+    if vy > 0 { 128 } else { 896 }
+  } else {
+    if vy > 0 { 384 } else { 640 }
+  }
+}
+
+// --- Time-Travel Snapshot Ring Buffer ---
+
+fn save_snapshot() -[Mem]-> unit {
+  let head = HerdMem.snap_head;
+  let slot = if head >= 0 && head < 240 { head } else { 0 };
+  HerdMem.snap_hdrs[slot].tick = HerdMem.tick;
+  HerdMem.snap_hdrs[slot].lion_x = HerdMem.lion_x;
+  HerdMem.snap_hdrs[slot].lion_y = HerdMem.lion_y;
+  HerdMem.snap_hdrs[slot].lion_vx = HerdMem.lion_vx;
+  HerdMem.snap_hdrs[slot].lion_vy = HerdMem.lion_vy;
+  HerdMem.snap_hdrs[slot].stamina = HerdMem.stamina;
+  HerdMem.snap_hdrs[slot].roar_timer = HerdMem.roar_timer;
+  HerdMem.snap_hdrs[slot].penned_count = HerdMem.penned_count;
+  HerdMem.snap_hdrs[slot].score = HerdMem.score;
+  HerdMem.snap_hdrs[slot].rng_state = HerdMem.rng_state;
+  HerdMem.snap_hdrs[slot].win_tick = HerdMem.win_tick;
+  HerdMem.snap_hdrs[slot].lion_yaw = HerdMem.lion_yaw;
+
+  let base_i = slot * 14;
+  for i in 0..14 {
+    let si = base_i + i;
+    HerdMem.snap_sheep[si].x = HerdMem.sheep[i].x;
+    HerdMem.snap_sheep[si].y = HerdMem.sheep[i].y;
+    HerdMem.snap_sheep[si].penned = HerdMem.sheep[i].penned;
+    HerdMem.snap_sheep[si].yaw = HerdMem.sheep[i].yaw;
+  }
+  let next_head = if slot + 1 >= 240 { 0 } else { slot + 1 };
+  HerdMem.snap_head = next_head;
+  let cnt = HerdMem.snap_count;
+  if cnt < 240 { HerdMem.snap_count = cnt + 1; }
+}
+
+fn rewind_snapshots(steps_back: i64) -[Mem, Gpu]-> unit {
+  let cnt = HerdMem.snap_count;
+  if cnt > 1 {
+    let clamped_back = clamp_i64(steps_back, 1, cnt - 1);
+    let head = HerdMem.snap_head;
+    let raw_idx = head - 1 - clamped_back;
+    let slot = ((raw_idx % 240) + 240) % 240;
+
+    HerdMem.tick = HerdMem.snap_hdrs[slot].tick;
+    HerdMem.lion_x = HerdMem.snap_hdrs[slot].lion_x;
+    HerdMem.lion_y = HerdMem.snap_hdrs[slot].lion_y;
+    HerdMem.lion_vx = HerdMem.snap_hdrs[slot].lion_vx;
+    HerdMem.lion_vy = HerdMem.snap_hdrs[slot].lion_vy;
+    HerdMem.stamina = HerdMem.snap_hdrs[slot].stamina;
+    HerdMem.roar_timer = HerdMem.snap_hdrs[slot].roar_timer;
+    HerdMem.penned_count = HerdMem.snap_hdrs[slot].penned_count;
+    HerdMem.score = HerdMem.snap_hdrs[slot].score;
+    HerdMem.rng_state = HerdMem.snap_hdrs[slot].rng_state;
+    HerdMem.win_tick = HerdMem.snap_hdrs[slot].win_tick;
+    HerdMem.lion_yaw = HerdMem.snap_hdrs[slot].lion_yaw;
+
+    let base_i = slot * 14;
+    for i in 0..14 {
+      let si = base_i + i;
+      HerdMem.sheep[i].x = HerdMem.snap_sheep[si].x;
+      HerdMem.sheep[i].y = HerdMem.snap_sheep[si].y;
+      HerdMem.sheep[i].vx = 0;
+      HerdMem.sheep[i].vy = 0;
+      HerdMem.sheep[i].penned = HerdMem.snap_sheep[si].penned;
+      HerdMem.sheep[i].yaw = HerdMem.snap_sheep[si].yaw;
+    }
+    HerdMem.snap_head = if slot + 1 >= 240 { 0 } else { slot + 1 };
+    HerdMem.snap_count = clamp_i64(cnt - clamped_back, 1, 240);
+    sfx_play(SFX_CLICK, 85, 60);
+  }
+}
+
+// --- 14-Sheep Boids Flocking & Corral Gate Physics ---
+
+fn step_sheep_flock(lion_x: i64, lion_y: i64, roaring: i64) -[Mem, Gpu]-> i64 {
+  let scare_sq = if roaring > 0 { 115600 } else { 44100 };
+  let mut penned_total = 0;
+  let mut newly_penned = 0;
+  for i in 0..14 {
+    let sx = HerdMem.sheep[i].x;
+    let sy = HerdMem.sheep[i].y;
+    let svx = HerdMem.sheep[i].vx;
+    let svy = HerdMem.sheep[i].vy;
+    let state = HerdMem.sheep[i].penned;
+    let hop = HerdMem.sheep[i].hop;
+    let prev_yaw = HerdMem.sheep[i].yaw;
+
+    if state == 1 {
+      let jitter = next_rand();
+      let jx = if (jitter & 31) == 0 { ((jitter >> 5) & 3) - 1 } else { 0 };
+      let jy = if (jitter & 31) == 7 { ((jitter >> 8) & 3) - 1 } else { 0 };
+      let nvx = clamp_vel(svx + jx, 2);
+      let nvy = clamp_vel(svy + jy, 2);
+      let nx = clamp_corral_x(sx + nvx);
+      let ny = clamp_corral_y(sy + nvy);
+      let bvx = if nx == 732 || nx == 936 { -nvx } else { nvx };
+      let bvy = if ny == 134 || ny == 346 { -nvy } else { nvy };
+      let nyaw = yaw_from_vel(bvx, bvy, prev_yaw);
+      HerdMem.sheep[i].x = nx;
+      HerdMem.sheep[i].y = ny;
+      HerdMem.sheep[i].vx = bvx;
+      HerdMem.sheep[i].vy = bvy;
+      HerdMem.sheep[i].hop = (hop + 1) & 31;
+      HerdMem.sheep[i].yaw = nyaw;
+      penned_total += 1;
+    } else {
+      let mut sep_x = 0;
+      let mut sep_y = 0;
+      let mut coh_x = 0;
+      let mut coh_y = 0;
+      let mut ali_x = 0;
+      let mut ali_y = 0;
+      let mut neighbors = 0;
+
+      for j in 0..14 {
+        if j != i && HerdMem.sheep[j].penned == 0 {
+          let ox = HerdMem.sheep[j].x;
+          let oy = HerdMem.sheep[j].y;
+          let dx = sx - ox;
+          let dy = sy - oy;
+          let adx = abs_i64(dx);
+          let ady = abs_i64(dy);
+          if adx < 150 && ady < 150 {
+            coh_x += ox;
+            coh_y += oy;
+            ali_x += HerdMem.sheep[j].vx;
+            ali_y += HerdMem.sheep[j].vy;
+            neighbors += 1;
+            if adx < 48 && ady < 48 {
+              sep_x += dx;
+              sep_y += dy;
+            }
+          }
+        }
+      }
+
+      let mut ax = sep_x / 10;
+      let mut ay = sep_y / 10;
+      if neighbors > 0 {
+        let cx = coh_x / neighbors;
+        let cy = coh_y / neighbors;
+        ax += (cx - sx) / 48 + (ali_x / neighbors) / 4;
+        ay += (cy - sy) / 48 + (ali_y / neighbors) / 4;
+      }
+
+      let ldx = sx - lion_x;
+      let ldy = sy - lion_y;
+      let dist_sq = ldx * ldx + ldy * ldy;
+      let mut max_spd = 4;
+      if dist_sq < scare_sq {
+        max_spd = if roaring > 0 { 13 } else { 9 };
+        let push = if roaring > 0 { 12 } else { 8 };
+        let approx_d = abs_i64(ldx) + abs_i64(ldy) + 12;
+        if approx_d > 0 {
+          ax += (ldx * push) / approx_d;
+          ay += (ldy * push) / approx_d;
+        }
+      } else {
+        let r = next_rand();
+        if (r & 15) == 0 {
+          ax += ((r >> 4) & 3) - 1;
+          ay += ((r >> 7) & 3) - 1;
+        }
+      }
+
+      // Gentle funnel toward open west corral gate
+      if sx >= 590 && sx <= 735 && sy >= 165 && sy <= 315 {
+        ax += 4;
+        ay += (240 - sy) / 20;
+      }
+
+      let mut nvx = clamp_vel((svx * 7) / 8 + ax, max_spd);
+      let mut nvy = clamp_vel((svy * 7) / 8 + ay, max_spd);
+      let mut nx = clamp_arena(sx + nvx);
+      let mut ny = clamp_arena(sy + nvy);
+
+      if nx <= 44 { nvx = abs_i64(nvx) + 2; }
+      if nx >= 980 { nvx = -abs_i64(nvx) - 2; }
+      if ny <= 44 { nvy = abs_i64(nvy) + 2; }
+      if ny >= 980 { nvy = -abs_i64(nvy) - 2; }
+
+      // Corral wall collisions (west gate open at y=165..315)
+      let in_gate_y = ny >= 165 && ny <= 315;
+      if sx < 700 && nx >= 694 && ny >= 104 && ny <= 376 && !in_gate_y {
+        nx = 693;
+        nvx = -abs_i64(nvx);
+      }
+      if sy < 110 && ny >= 104 && nx >= 694 && nx <= 966 {
+        ny = 103;
+        nvy = -abs_i64(nvy);
+      }
+      if sy > 370 && ny <= 376 && nx >= 694 && nx <= 966 {
+        ny = 377;
+        nvy = abs_i64(nvy);
+      }
+
+      let nyaw = yaw_from_vel(nvx, nvy, prev_yaw);
+      if nx >= 722 && nx <= 956 && ny >= 122 && ny <= 358 {
+        HerdMem.sheep[i].x = clamp_corral_x(nx);
+        HerdMem.sheep[i].y = clamp_corral_y(ny);
+        HerdMem.sheep[i].vx = 2;
+        HerdMem.sheep[i].vy = 0;
+        HerdMem.sheep[i].penned = 1;
+        HerdMem.sheep[i].hop = 8;
+        HerdMem.sheep[i].yaw = nyaw;
+        penned_total += 1;
+        newly_penned += 1;
+      } else {
+        let spd = abs_i64(nvx) + abs_i64(nvy);
+        let hop_step = if spd > 6 { 3 } else if spd > 1 { 2 } else { 0 };
+        HerdMem.sheep[i].x = nx;
+        HerdMem.sheep[i].y = ny;
+        HerdMem.sheep[i].vx = nvx;
+        HerdMem.sheep[i].vy = nvy;
+        HerdMem.sheep[i].hop = (hop + hop_step) & 31;
+        HerdMem.sheep[i].yaw = nyaw;
+      }
+    }
+  }
+  if newly_penned > 0 {
+    HerdMem.pen_flash_timer = 24;
+    sfx_play(SFX_SPAWN, clamp_i64(95 + penned_total * 6, 90, 190), 80);
+  }
+  penned_total
+}
+
+fn reset_herd(seed: i64) -[Mem]-> unit {
+  let clean_seed = if seed <= 0 { 424242 } else { seed & 2147483647 };
+  HerdMem.tick = 0;
+  HerdMem.lion_x = 220;
+  HerdMem.lion_y = 780;
+  HerdMem.lion_vx = 0;
+  HerdMem.lion_vy = 0;
+  HerdMem.stamina = 100;
+  HerdMem.roar_timer = 0;
+  HerdMem.penned_count = 0;
+  HerdMem.score = 0;
+  HerdMem.rng_state = clean_seed;
+  HerdMem.win_tick = 0;
+  HerdMem.snap_head = 0;
+  HerdMem.snap_count = 0;
+  HerdMem.lion_hop = 0;
+  HerdMem.lion_yaw = 896;
+  HerdMem.pen_flash_timer = 0;
+
+  for i in 0..14 {
+    let rx = next_rand();
+    let ry = next_rand();
+    let sx = clamp_arena(180 + (rx & 511));
+    let sy = clamp_arena(320 + (ry & 511));
+    HerdMem.sheep[i].x = sx;
+    HerdMem.sheep[i].y = sy;
+    HerdMem.sheep[i].vx = ((rx >> 9) & 3) - 1;
+    HerdMem.sheep[i].vy = ((ry >> 9) & 3) - 1;
+    HerdMem.sheep[i].penned = 0;
+    HerdMem.sheep[i].hop = (i * 5) & 31;
+    HerdMem.sheep[i].tint = i - (i / 3) * 3;
+    HerdMem.sheep[i].yaw = (i * 128) & 1023;
+  }
+  save_snapshot();
+}
+
+fn step_herd_sim(dx_in: i64, dy_in: i64, roar_in: i64, ptr_active: i64, ptr_wx: i64, ptr_wy: i64) -[Mem, Gpu]-> unit {
+  let tick = HerdMem.tick + 1;
+  HerdMem.tick = tick;
+  if HerdMem.pen_flash_timer > 0 { HerdMem.pen_flash_timer -= 1; }
+
+  let lx = HerdMem.lion_x;
+  let ly = HerdMem.lion_y;
+  let mut lvx = HerdMem.lion_vx;
+  let mut lvy = HerdMem.lion_vy;
+  let mut stamina = HerdMem.stamina;
+  let mut roar_timer = HerdMem.roar_timer;
+
+  if roar_in > 0 && stamina >= 28 && roar_timer == 0 {
+    roar_timer = 24;
+    stamina -= 28;
+    sfx_play(SFX_LION_ROAR, 96, 98);
+    sfx_play(SFX_SHEEP_BAA, 108, 62);
+  } else if roar_timer > 0 {
+    roar_timer -= 1;
+  } else if stamina < 100 && (tick & 1) == 0 {
+    stamina += 1;
+  }
+
+  let lion_max = if roar_timer > 10 { 15 } else { 10 };
+  let mut wish_wx = 0;
+  let mut wish_wy = 0;
+  if dx_in != 0 || dy_in != 0 {
+    wish_wx = dx_in * 5;
+    wish_wy = dy_in * 5;
+  } else if ptr_active > 0 {
+    let pdx = ptr_wx - lx;
+    let pdy = ptr_wy - ly;
+    if abs_i64(pdx) > 16 || abs_i64(pdy) > 16 {
+      wish_wx = clamp_vel(pdx / 6, 7);
+      wish_wy = clamp_vel(pdy / 6, 7);
+    }
+  }
+
+  lvx = clamp_vel((lvx * 3) / 4 + wish_wx, lion_max);
+  lvy = clamp_vel((lvy * 3) / 4 + wish_wy, lion_max);
+
+  let mut nlx = clamp_arena(lx + lvx);
+  let mut nly = clamp_arena(ly + lvy);
+
+  // Lion cannot enter the sheep corral
+  if nlx >= 688 && nlx <= 968 && nly >= 102 && nly <= 378 {
+    if lx < 688 {
+      nlx = 687;
+    } else if ly < 102 {
+      nly = 101;
+    } else if ly > 378 {
+      nly = 379;
+    } else {
+      nlx = 687;
+    }
+  }
+
+  let lspd = abs_i64(lvx) + abs_i64(lvy);
+  let lhop = if lspd > 2 { (HerdMem.lion_hop + 1) & 15 } else { 0 };
+  if lspd > 1 {
+    HerdMem.lion_yaw = yaw_from_vel(lvx, lvy, HerdMem.lion_yaw);
+  }
+
+  HerdMem.lion_x = nlx;
+  HerdMem.lion_y = nly;
+  HerdMem.lion_vx = lvx;
+  HerdMem.lion_vy = lvy;
+  HerdMem.stamina = stamina;
+  HerdMem.roar_timer = roar_timer;
+  HerdMem.lion_hop = lhop;
+
+  let penned = clamp_i64(step_sheep_flock(nlx, nly, roar_timer), 0, 14);
+  HerdMem.penned_count = penned;
+
+  if penned == 14 && HerdMem.win_tick == 0 {
+    HerdMem.win_tick = tick;
+    sfx_win();
+  }
+
+  let ref_tick = if HerdMem.win_tick > 0 { HerdMem.win_tick } else { tick };
+  let speed_bonus = if penned == 0 { 0 } else { clamp_i64(2000 - ref_tick / 2, 0, 2000) };
+  HerdMem.score = compute_herd_score(penned, speed_bonus);
+
+  if (tick & 3) == 0 {
+    save_snapshot();
+  }
+}

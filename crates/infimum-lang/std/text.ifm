@@ -1,0 +1,209 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/text.ifm
+// HiDPI Unicode glyph, string, and integer rendering using infimum-web TrueType font metrics
+// (auto-uploaded by infimum-web using `get_font_metrics_byte_offset()` at SYS_FONT_METRICS_FLAG_WORD).
+
+use "std/math.ifm";
+use "std/sys_mem.ifm";
+use "std/gfx.ifm";
+
+const STD_FONT_METRICS_FLAG_WORD: i64 = SYS_FONT_METRICS_FLAG_WORD;
+const STD_FONT_METRICS_TABLE_WORD: i64 = SYS_FONT_METRICS_TABLE_WORD;
+const STD_FONT_ATLAS_SLOTS: i64 = 176;
+const STD_STR_SCRATCH_WORD: i64 = SYS_STR_SCRATCH_WORD;
+
+fn codepoint_to_atlas(cp: i64) -> i64 {
+  if cp >= ' ' && cp <= '~' { cp - ' ' }
+  else if cp >= 1040 && cp <= 1071 { 96 + (cp - 1040) }
+  else if cp >= 1072 && cp <= 1103 { 128 + (cp - 1072) }
+  else if cp == 1025 { 160 }
+  else if cp == 1105 { 161 }
+  else if cp == 8362 { 162 }
+  else if cp == 10003 { 163 }
+  else if cp == 8470 { 164 }
+  else if cp == 8212 { 165 }
+  else if cp == 8226 { 166 }
+  else if cp == 8594 { 167 }
+  else if cp == 9632 { 168 }
+  else if cp == 9881 { 169 }
+  else if cp == 8364 { 170 }
+  else { -1 }
+}
+
+fn glyph_px(cp: i64, size: i64, style: i64) -[Mem]-> i64 {
+  let g_idx = codepoint_to_atlas(cp);
+  if mem_load(STD_FONT_METRICS_FLAG_WORD) == 1 && g_idx >= 0 && g_idx < STD_FONT_ATLAS_SLOTS {
+    let st = clamp_i64(style, 0, 2);
+    let adv256 = mem_load(STD_FONT_METRICS_TABLE_WORD + st * STD_FONT_ATLAS_SLOTS + g_idx);
+    (size * adv256 + 128) / 256
+  } else {
+    (size * 9) / 16
+  }
+}
+
+fn ui_glyph(x: i64, y: i64, cp: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let adv = glyph_px(cp, size, style);
+  let g_idx = codepoint_to_atlas(cp);
+  if g_idx > 0 {
+    let st = clamp_i64(style, 0, 2);
+    push_prim(x, y, size, size, 1 | ((g_idx & 255) << 4) | ((st & 3) << 12), rgba, 0, clip);
+  }
+  adv
+}
+
+fn ui_text_width(s: str, size: i64, style: i64) -[Mem]-> i64 {
+  do Mem.store_str(STD_STR_SCRATCH_WORD, s);
+  let ptr = mem_load(STD_STR_SCRATCH_WORD);
+  let n = clamp_i64(mem_load(ptr), 0, 256);
+  let mut w = 0;
+  for i in 0..n max 256 {
+    w += glyph_px(mem_load(ptr + 1 + i), size, style);
+  }
+  w
+}
+
+fn ui_text(x: i64, y: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  do Mem.store_str(STD_STR_SCRATCH_WORD, s);
+  let ptr = mem_load(STD_STR_SCRATCH_WORD);
+  let n = clamp_i64(mem_load(ptr), 0, 256);
+  let mut cx = x;
+  for i in 0..n max 256 {
+    cx += ui_glyph(cx, y, mem_load(ptr + 1 + i), size, style, rgba, clip);
+  }
+  cx - x
+}
+
+fn ui_text_centered(cx: i64, y: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let w = ui_text_width(s, size, style);
+  ui_text(cx - w / 2, y, s, size, style, rgba, clip)
+}
+
+fn ui_int(x: i64, y: i64, val: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let mut v = val;
+  let mut cx = x;
+  if v < 0 {
+    cx += ui_glyph(cx, y, '-', size, style, rgba, clip);
+    v = -v;
+  }
+  if v == 0 {
+    cx += ui_glyph(cx, y, '0', size, style, rgba, clip);
+  } else {
+    let mut d = 1;
+    while d <= v / 10 max 20 { d *= 10; }
+    while d > 0 max 20 {
+      let dig = (v / d) % 10;
+      cx += ui_glyph(cx, y, '0' + dig, size, style, rgba, clip);
+      d = d / 10;
+    }
+  }
+  cx - x
+}
+
+fn ui_int_width(val: i64, size: i64, style: i64) -[Mem]-> i64 {
+  let mut v = val;
+  let mut w = 0;
+  if v < 0 {
+    w += glyph_px('-', size, style);
+    v = -v;
+  }
+  if v == 0 {
+    w += glyph_px('0', size, style);
+  } else {
+    let mut d = 1;
+    while d <= v / 10 max 20 { d *= 10; }
+    while d > 0 max 20 {
+      let dig = (v / d) % 10;
+      w += glyph_px('0' + dig, size, style);
+      d = d / 10;
+    }
+  }
+  w
+}
+
+fn ui_int_centered(cx: i64, y: i64, val: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let w = ui_int_width(val, size, style);
+  ui_int(cx - w / 2, y, val, size, style, rgba, clip)
+}
+
+// Render deterministic Q16.16 `fixed` value with `decimals` (0..4) fractional digits (zero heap).
+fn ui_fixed(x: i64, y: i64, val: fixed, decimals: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let raw0 = fixed_raw(val);
+  let mut cx = x;
+  let raw = if raw0 < 0 {
+    cx += ui_glyph(cx, y, '-', size, style, rgba, clip);
+    -raw0
+  } else {
+    raw0
+  };
+  let dec = clamp_i64(decimals, 0, 4);
+  let scale = if dec == 0 {
+    1
+  } else if dec == 1 {
+    10
+  } else if dec == 2 {
+    100
+  } else if dec == 3 {
+    1000
+  } else {
+    10000
+  };
+  let whole0 = raw / 65536;
+  let rem = raw % 65536;
+  let frac0 = (rem * scale + 32768) / 65536;
+  let carry = if frac0 >= scale { 1 } else { 0 };
+  let whole = whole0 + carry;
+  let frac = if carry == 1 { frac0 - scale } else { frac0 };
+  cx += ui_int(cx, y, whole, size, style, rgba, clip);
+  if dec > 0 {
+    cx += ui_glyph(cx, y, '.', size, style, rgba, clip);
+    let mut d = scale / 10;
+    for _k in 0..dec max 4 {
+      let dig = if d > 0 { (frac / d) % 10 } else { 0 };
+      cx += ui_glyph(cx, y, '0' + dig, size, style, rgba, clip);
+      d = d / 10;
+    }
+  }
+  cx - x
+}
+
+fn ui_fixed_width(val: fixed, decimals: i64, size: i64, style: i64) -[Mem]-> i64 {
+  let raw0 = fixed_raw(val);
+  let mut w = 0;
+  let raw = if raw0 < 0 {
+    w += glyph_px('-', size, style);
+    -raw0
+  } else {
+    raw0
+  };
+  let dec = clamp_i64(decimals, 0, 4);
+  let scale = if dec == 0 {
+    1
+  } else if dec == 1 {
+    10
+  } else if dec == 2 {
+    100
+  } else if dec == 3 {
+    1000
+  } else {
+    10000
+  };
+  let whole0 = raw / 65536;
+  let rem = raw % 65536;
+  let frac0 = (rem * scale + 32768) / 65536;
+  let carry = if frac0 >= scale { 1 } else { 0 };
+  let whole = whole0 + carry;
+  let frac = if carry == 1 { frac0 - scale } else { frac0 };
+  w += ui_int_width(whole, size, style);
+  if dec > 0 {
+    w += glyph_px('.', size, style);
+    let mut d = scale / 10;
+    for _k in 0..dec max 4 {
+      let dig = if d > 0 { (frac / d) % 10 } else { 0 };
+      w += glyph_px('0' + dig, size, style);
+      d = d / 10;
+    }
+  }
+  w
+}

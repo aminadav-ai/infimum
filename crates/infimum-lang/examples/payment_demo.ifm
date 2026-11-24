@@ -1,0 +1,39 @@
+// Demo: Semantic Deduplication, Z3 Contract Proofs, and Transitive Security Passport
+
+// Agent A implements fee calculation using its own variable names:
+fn calc_fee_agent_a(amount: i64, rate_bps: i64) -> i64
+  req amount >= 0 && rate_bps >= 0 && rate_bps <= 5000
+  ens result >= 0 && result <= amount / 2
+{
+  let raw = amount * rate_bps;
+  raw / 10000
+}
+
+// Agent B independently writes the exact same mathematical logic with different names & spacing:
+fn compute_commission_agent_b(   sum : i64 ,   bps : i64 ) -> i64
+  req sum >= 0 && bps >= 0 && bps <= 5000
+  ens result >= 0 && result <= sum / 2
+{
+  let product = sum * bps;
+  product / 10000
+}
+
+// Leaf node with explicit scoped network capability and audit logging:
+fn send_bank_wire(token: Secret<str>, net_amount: i64) -[Net("api.mybank.com"), Audit]-> bool
+  req net_amount > 0
+  ens result == true
+{
+  do Audit.record(net_amount);
+  do Net.post(reveal("api.mybank.com", token), net_amount);
+  true
+}
+
+// High-level checkout workflow: Z3 proves modularly that `net > 0` holds before `send_bank_wire`!
+fn checkout(auth_token: Secret<str>, total: i64) -> bool
+  req total > 100
+  ens result == true
+{
+  let fee = calc_fee_agent_a(total, 250);
+  let net = total - fee;
+  send_bank_wire(auth_token, net)
+}

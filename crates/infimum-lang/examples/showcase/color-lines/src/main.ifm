@@ -1,0 +1,74 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM COLOR LINES 98 — Native .ifw Capsule Entrypoint for `infimum-web`
+// 100% Clean-Room Infimum Lang (Telos + Flux + Strata Structs) • Zero JS / Zero Chromium
+
+use "abi.ifm";
+use "logic.ifm";
+use "render.ifm";
+
+export fn init_app(seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu]-> i64 {
+  GameMem.high_score = 0;
+  GameMem.prev_r_key = 0;
+  GameMem.prev_z_key = 0;
+  GameMem.prev_y_key = 0;
+  reset_game(seed);
+  1
+}
+
+export fn step_ui(
+  vw: i64, vh: i64,
+  mx: i64, my: i64,
+  _m_down: i64, m_clicked: i64,
+  _wheel_dy: i64, key_char: i64, key_special: i64
+) -[Mem, Gpu]-> i64 {
+  let w = clamp_i64(vw, 560, 4096);
+  let h = clamp_i64(vh, 460, 2160);
+  gfx_begin_frame(w, h);
+
+  // Keyboard shortcuts: R = restart, Z / Left = undo, Y / Right = redo
+  let r_now = if key_held(KEY_R) || key_char == 'r' || key_char == 'R' { 1 } else { 0 };
+  if r_now == 1 && GameMem.prev_r_key == 0 {
+    reset_game(GameMem.rng_state + GameMem.anim_tick + 9973);
+    sfx_play(SFX_CLICK, 110, 75);
+  }
+  GameMem.prev_r_key = r_now;
+
+  let z_now = if key_held(KEY_Z) || key_char == 'z' || key_char == 'Z' || key_special == KeySpecial::ArrowLeft { 1 } else { 0 };
+  if z_now == 1 && GameMem.prev_z_key == 0 && GameMem.turn_num > 0 && GameMem.anim.mode == AnimMode::Idle {
+    rewind_to_turn(GameMem.turn_num - 1);
+  }
+  GameMem.prev_z_key = z_now;
+
+  let y_now = if key_held(KEY_Y) || key_char == 'y' || key_char == 'Y' || key_special == KeySpecial::ArrowRight { 1 } else { 0 };
+  if y_now == 1 && GameMem.prev_y_key == 0 && GameMem.turn_num < GameMem.max_saved_turn && GameMem.anim.mode == AnimMode::Idle {
+    rewind_to_turn(GameMem.turn_num + 1);
+  }
+  GameMem.prev_y_key = y_now;
+
+  tick_animations();
+  render_game_frame(w, h, mx, my, m_clicked);
+  gfx_end_frame()
+}
+
+test "init spawns initial balls and resets score" {
+  let _ = init_app(42, 1024, 768);
+  assert(GameMem.score == 0);
+  assert(GameMem.turn_num == 0);
+  assert(GameMem.game_over == 0);
+  assert(GameMem.balls_count >= 3 && GameMem.balls_count <= 9);
+}
+
+test "clear_lines removes 5 in a row and awards score" {
+  let _ = init_app(7, 1024, 768);
+  for i in 0..81 {
+    GameMem.cells[i].color = 0;
+  }
+  for c in 0..5 {
+    GameMem.cells[c].color = 3;
+  }
+  let cleared = find_marked_lines();
+  assert(cleared == 5);
+  assert(compute_line_points(5) == 10);
+}

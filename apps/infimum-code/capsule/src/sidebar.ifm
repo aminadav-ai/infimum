@@ -1,0 +1,458 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Left Sidebar built on Infimum.Forma (Z3-verified geometry + Scroll clip #3).
+
+use "abi.ifm";
+use "primitives.ifm";
+use "theme.ifm";
+use "icons.ifm";
+use "text_buf.ifm";
+
+enum SideAct {
+  None = 0,
+  Settings = 104,
+}
+
+fn handle_sidebar_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
+  if StudioMem.frame_modal_blocked == 0 {
+    let side_max = clamp_i64(StudioMem.side_max_scroll, 0, 4000);
+    let dy = forma_wheel_dy();
+    StudioMem.side_scroll_y = clamp_i64(StudioMem.side_scroll_y + dy, 0, side_max);
+  }
+}
+
+fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Net]-> unit {
+  let th = StudioMem.theme;
+  let scale = StudioMem.font_scale_pct;
+  let ui_sz = sf(13);
+  let sm_sz = sf(12);
+  let mx = StudioMem.frame_mx;
+  let my = StudioMem.frame_my;
+  let m_down = StudioMem.frame_m_down;
+  let m_clicked = StudioMem.frame_m_clicked;
+  let modal_none = StudioMem.frame_modal_blocked == 0;
+
+  let side_w = rw;
+  let plus_w = clamp_i64((22 * scale) / 100, 20, 34);
+  let play_w = clamp_i64((44 * scale) / 100, 40, 64);
+  let plus_x = rx + side_w - 16 - plus_w - 4;
+  let rm_x = plus_x - plus_w - 4;
+  let play_x = rm_x - play_w - 4;
+
+  // --- Sticky Sidebar Header (always pinned at top, never scrolls away) ---
+  let hdr_y = ry + 10;
+  let add_btn_h = clamp_i64(sm_sz + 8, 22, 34);
+  let logo_sz = clamp_i64(add_btn_h + 2, 24, 36);
+  let logo_x = rx + 12;
+  let logo_y = hdr_y - 2;
+  let logo_clickable = StudioMem.online_mode == 1;
+  let logo_hov = modal_none && logo_clickable && point_in_rect(mx, my, logo_x, logo_y, logo_sz, logo_sz);
+  if logo_hov {
+    gfx_set_cursor(CursorKind::Pointer);
+    if m_clicked == 1 {
+      StudioMem.host_action = HostAction::GoHome;
+    }
+  }
+  let logo_bg = if logo_hov { col_accent() } else { col_surf(th) };
+  ui_rect(logo_x, logo_y, logo_sz, logo_sz, 7, 1, 0, logo_bg, if logo_hov { col_accent() } else { col_border(th) }, ClipId::Root);
+  ui_icon_infimum_logo(
+    logo_x + logo_sz / 2,
+    logo_y + logo_sz / 2,
+    logo_sz - 6,
+    if logo_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) },
+    if logo_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) },
+    ClipId::Root,
+  );
+
+  let title_x = logo_x + logo_sz + 8;
+  let title_y = logo_y + (logo_sz - sm_sz) / 2;
+  ui_text(title_x, title_y, "ПРОЕКТЫ", sm_sz, 1, col_muted(th), ClipId::Root);
+  ui_int(rm_x - sf(20), title_y, StudioMem.proj_count, sm_sz, 2, col_muted(th), ClipId::Root);
+
+  let add_btn_y = logo_y + (logo_sz - add_btn_h) / 2;
+  let add_hov = modal_none && point_in_rect(mx, my, plus_x, add_btn_y, plus_w, add_btn_h);
+  if add_hov {
+    gfx_set_cursor(CursorKind::Pointer);
+    if m_clicked == 1 {
+      let added = daemon::add_project();
+      if added > 0 {
+        count_and_init_project_tree();
+        if StudioMem.proj_count > 0 {
+          StudioMem.active_proj_idx = StudioMem.proj_count - 1;
+          StudioMem.proj_expanded[StudioMem.active_proj_idx] = 1;
+          extract_active_project_to(StudioMem::active_proj_buf);
+          if StudioMem.active_conv_idx < 0 && StudioMem.msg_count <= 1 {
+            daemon::new_conv();
+          }
+        }
+      }
+    }
+  }
+  ui_rect(plus_x, add_btn_y, plus_w, add_btn_h, 5, 1, 0, if add_hov { col_accent() } else { col_surf(th) }, col_border(th), ClipId::Root);
+  ui_text(plus_x + (plus_w - sm_sz) / 2, add_btn_y + (add_btn_h - ui_sz) / 2, "+", ui_sz, 1, if add_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) }, ClipId::Root);
+
+  // Sticky Segmented Switcher: Диалоги | Файлы
+  let seg_y = logo_y + logo_sz + 8;
+  let seg_w = clamp_i64(side_w - 28, 80, 560);
+  let seg_h = clamp_i64(sm_sz + 10, 22, 34);
+  let half_w = seg_w / 2;
+  let seg_x = rx + 12;
+  let tab0_hov = modal_none && point_in_rect(mx, my, seg_x, seg_y, half_w, seg_h);
+  let tab1_hov = modal_none && point_in_rect(mx, my, seg_x + half_w, seg_y, seg_w - half_w, seg_h);
+  if tab0_hov || tab1_hov {
+    gfx_set_cursor(CursorKind::Pointer);
+    if m_clicked == 1 {
+      if tab0_hov {
+        StudioMem.side_tab = 0;
+        daemon::list_convs();
+      } else {
+        StudioMem.side_tab = 1;
+        daemon::list_files();
+      }
+    }
+  }
+  ui_rect(seg_x, seg_y, seg_w, seg_h, 6, 1, 0, col_bg(th), col_border(th), ClipId::Root);
+  if StudioMem.side_tab == 0 {
+    ui_rect(seg_x + 2, seg_y + 2, half_w - 3, seg_h - 4, 5, 0, 0, col_surf2(th), 0, ClipId::Root);
+  } else {
+    ui_rect(seg_x + half_w + 1, seg_y + 2, seg_w - half_w - 3, seg_h - 4, 5, 0, 0, col_surf2(th), 0, ClipId::Root);
+  }
+  let lbl_y = seg_y + (seg_h - sm_sz) / 2;
+  ui_text(seg_x + 12, lbl_y, "Диалоги", sm_sz, if StudioMem.side_tab == 0 { 1 } else { 0 }, if StudioMem.side_tab == 0 { col_text(th) } else { col_muted(th) }, ClipId::Root);
+  ui_text(seg_x + half_w + 14, lbl_y, "Файлы", sm_sz, if StudioMem.side_tab == 1 { 1 } else { 0 }, if StudioMem.side_tab == 1 { col_text(th) } else { col_muted(th) }, ClipId::Root);
+
+  let div_y = seg_y + seg_h + 7;
+  ui_rect(rx + 1, div_y, side_w - 2, 1, 0, 0, 0, col_border(th), 0, ClipId::Root);
+
+  // --- Scrollable Project & File/Conversation Tree ---
+  let p_top = div_y + 4;
+  let p_bot = ry + rh - 6;
+  let p_view_h = clamp_i64(p_bot - p_top, 60, 2000);
+  set_clip_rect(clip_id, rx + 8, p_top, rx + side_w - 14, p_bot);
+
+  let side_max = clamp_i64(StudioMem.side_max_scroll, 0, 4000);
+  let mut side_scr = clamp_i64(StudioMem.side_scroll_y, 0, side_max);
+
+  // Draggable Sidebar Scrollbar
+  if side_max > 0 {
+    let sb_x = rx + side_w - 10;
+    let total_p_h = p_view_h + side_max;
+    let th_h = clamp_i64((p_view_h * p_view_h) / total_p_h, 28, p_view_h);
+    let track_span = clamp_i64(p_view_h - th_h, 1, 2000);
+    if point_in_rect(mx, my, sb_x - 4, p_top, 14, p_view_h) && modal_none {
+      gfx_set_cursor(CursorKind::Pointer);
+      if m_clicked == 1 { StudioMem.drag_sb = DragScrollbar::Sidebar; }
+    }
+    if StudioMem.drag_sb == DragScrollbar::Sidebar && m_down == 1 {
+      let rel = clamp_i64(my - p_top - th_h / 2, 0, track_span);
+      side_scr = (rel * side_max) / track_span;
+    }
+    let th_y = p_top + ((side_scr * track_span) / side_max);
+    ui_rect(sb_x, p_top, 6, p_view_h, 3, 0, 0, col_bg(th), 0, ClipId::Root);
+    ui_rect(sb_x, th_y, 6, th_h, 3, 0, 0, if StudioMem.drag_sb == DragScrollbar::Sidebar { col_accent() } else { col_border(th) }, 0, ClipId::Root);
+  }
+  StudioMem.side_scroll_y = side_scr;
+
+  let row_h = clamp_i64((28 * scale) / 100, 26, 48);
+  let sub_h = clamp_i64((26 * scale) / 100, 24, 44);
+  let mut py = p_top + 2 - side_scr;
+
+  let plen = clamp_i64(mem_load(StudioMem::projects_buf), 0, 3500);
+  let clen = clamp_i64(mem_load(StudioMem::convs_buf), 0, 3500);
+  let flen = clamp_i64(mem_load(StudioMem::files_buf), 0, 3500);
+  if StudioMem.proj_count == 0 {
+    ui_text(rx + 16, py + 2, "Нажмите + выше, чтобы", sm_sz, 0, col_muted(th), clip_id);
+    py += sm_sz + 4;
+    ui_text(rx + 16, py + 2, "добавить рабочую папку", sm_sz, 0, col_muted(th), clip_id);
+    py += sm_sz + 10;
+  }
+  let mut pi = 0;
+  let mut p_idx = 0;
+
+  while pi < plen && p_idx < MAX_PROJECTS max 64 {
+    let start = pi;
+    for _ in 0..80 {
+      if pi >= plen || mem_load(StudioMem::projects_buf + 1 + pi) == '\n' { break; }
+      pi += 1;
+    }
+    let name_len = pi - start;
+    if pi < plen { pi += 1; }
+    if name_len > 0 {
+      let is_act = p_idx == StudioMem.active_proj_idx;
+      let is_exp = StudioMem.proj_expanded[p_idx] == 1;
+      let has_c = project_has_convs(start, name_len);
+      if py + row_h >= p_top && py <= p_bot {
+        let in_y = my >= p_top && my <= p_bot;
+        let row_hov = modal_none && in_y && point_in_rect(mx, my, rx + 10, py, side_w - 26, row_h);
+        let plus_hov = modal_none && in_y && point_in_rect(mx, my, plus_x, py + 2, plus_w, row_h - 4);
+        let rm_hov = modal_none && in_y && point_in_rect(mx, my, rm_x, py + 2, plus_w, row_h - 4);
+        let play_hov = modal_none && in_y && point_in_rect(mx, my, play_x, py + 2, play_w, row_h - 4);
+        if row_hov {
+          gfx_set_cursor(CursorKind::Pointer);
+          if m_clicked == 1 {
+            if play_hov {
+              StudioMem.active_proj_idx = p_idx;
+              extract_active_project_to(StudioMem::active_proj_buf);
+              daemon::play_project(StudioMem::projects_buf, start, name_len);
+            } else if plus_hov {
+              StudioMem.file_view_open = 0;
+              StudioMem.active_file_idx = -1;
+              start_new_dialog_for_project(p_idx);
+            } else if rm_hov {
+              StudioMem.confirm_del_kind = 1;
+              StudioMem.confirm_del_idx = p_idx;
+              StudioMem.frame_confirm_just_opened = 1;
+            } else if is_act {
+              StudioMem.proj_expanded[p_idx] = if is_exp { 0 } else { 1 };
+            } else {
+              StudioMem.active_proj_idx = p_idx;
+              StudioMem.proj_expanded[p_idx] = 1;
+              extract_active_project_to(StudioMem::active_proj_buf);
+              if StudioMem.active_conv_idx < 0 && StudioMem.msg_count <= 1 {
+                daemon::new_conv();
+              }
+            }
+          }
+        }
+
+        if is_act {
+          ui_rect(rx + 10, py, side_w - 26, row_h, 7, 1, 0, col_surf(th), col_border(th), clip_id);
+        } else if row_hov {
+          ui_rect(rx + 10, py, side_w - 26, row_h, 7, 0, 0, col_surf2(th), 0, clip_id);
+        }
+
+        let fold_sz = clamp_i64(ui_sz + 1, 13, 22);
+        ui_folder_icon(rx + 16, py + (row_h - fold_sz) / 2 + 1, fold_sz, is_exp, is_act || has_c, clip_id);
+
+        let max_name_x = if is_act || row_hov { play_x - 6 } else { plus_x - 6 };
+        let mut cx = rx + 16 + fold_sz + 8;
+        let name_vis = min_i64(name_len, 28);
+        for ci in 0..name_vis max 28 {
+          if cx >= max_name_x { break; }
+          let ch_p = mem_load(StudioMem::projects_buf + 1 + start + ci);
+          let st_p = if is_act { 1 } else { 0 };
+          let adv_p = glyph_px(ch_p, ui_sz, st_p);
+          if cx + adv_p <= max_name_x {
+            ui_glyph(cx, py + (row_h - ui_sz) / 2, ch_p, ui_sz, st_p, if is_act || has_c { col_text(th) } else { col_muted(th) }, clip_id);
+          }
+          cx += adv_p;
+        }
+
+        if is_act || row_hov {
+          let play_bg = if play_hov { pack_rgba(52, 211, 153, 255) } else { pack_rgba(16, 185, 129, 255) };
+          ui_rect(play_x, py + 3, play_w, row_h - 6, 5, 0, 0, play_bg, 0, clip_id);
+          ui_text(play_x + 6, py + (row_h - sm_sz) / 2, "Пуск", sm_sz, 1, pack_rgba(6, 33, 24, 255), clip_id);
+          ui_rect(rm_x, py + 3, plus_w, row_h - 6, 5, 0, 0, if rm_hov { col_red() } else { col_surf2(th) }, 0, clip_id);
+          ui_text(rm_x + (plus_w - sm_sz) / 2, py + (row_h - sm_sz) / 2, "x", sm_sz, 1, if rm_hov { pack_rgba(255, 255, 255, 255) } else { col_muted(th) }, clip_id);
+          ui_rect(plus_x, py + 3, plus_w, row_h - 6, 5, 0, 0, if plus_hov { col_accent() } else { col_surf2(th) }, 0, clip_id);
+          ui_text(plus_x + (plus_w - sm_sz) / 2, py + (row_h - ui_sz) / 2, "+", ui_sz, 1, if plus_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) }, clip_id);
+        }
+      }
+      py += row_h + 2;
+
+      // Nested items directly under this expanded project (Conversations or Files)
+      if StudioMem.proj_expanded[p_idx] == 1 && StudioMem.side_tab == 1 && flen > 0 {
+        let mut fpi = 0;
+        let mut f_idx = 0;
+        while fpi < flen && f_idx < 80 max 80 {
+          let lstart = fpi;
+          let mut tab_pos = -1;
+          for _ in 0..140 {
+            if fpi >= flen { break; }
+            let fch = mem_load(StudioMem::files_buf + 1 + fpi);
+            if fch == '\n' { break; }
+            if fch == '\t' && tab_pos < 0 { tab_pos = fpi; }
+            fpi += 1;
+          }
+          let lend = fpi;
+          if fpi < flen { fpi += 1; }
+          if tab_pos > lstart && lend > tab_pos + 1 {
+            if spans_equal(StudioMem::projects_buf, start, name_len, StudioMem::files_buf, lstart, tab_pos - lstart) {
+              let tstart = tab_pos + 1;
+              let tlen = lend - tstart;
+              let is_fact = f_idx == StudioMem.active_file_idx;
+              if py + sub_h >= p_top && py <= p_bot {
+                let in_fy = my >= p_top && my <= p_bot;
+                let f_hov = modal_none && in_fy && point_in_rect(mx, my, rx + 20, py, side_w - 36, sub_h);
+                if f_hov {
+                  gfx_set_cursor(CursorKind::Pointer);
+                  if m_clicked == 1 {
+                    StudioMem.active_proj_idx = p_idx;
+                    StudioMem.active_file_idx = f_idx;
+                    extract_active_project_to(StudioMem::active_proj_buf);
+                    daemon::open_file(StudioMem::projects_buf, start, name_len, StudioMem::files_buf, tstart, tlen);
+                  }
+                }
+                if is_fact {
+                  ui_rect(rx + 20, py, side_w - 36, sub_h, 6, 1, 0, col_surf(th), col_accent(), clip_id);
+                } else if f_hov {
+                  ui_rect(rx + 20, py, side_w - 36, sub_h, 6, 0, 0, col_surf2(th), 0, clip_id);
+                }
+                let max_tx = rx + side_w - 24;
+                let mut fcx = rx + 28;
+                let t_vis = min_i64(tlen, 38);
+                for fci in 0..t_vis max 38 {
+                  if fcx >= max_tx { break; }
+                  let fc = mem_load(StudioMem::files_buf + 1 + tstart + fci);
+                  let fst = if is_fact { 1 } else { 0 };
+                  let fadv = glyph_px(fc, sm_sz, fst);
+                  if fcx + fadv <= max_tx {
+                    ui_glyph(fcx, py + (sub_h - sm_sz) / 2, fc, sm_sz, fst, if is_fact || f_hov { col_text(th) } else { col_muted(th) }, clip_id);
+                  }
+                  fcx += fadv;
+                }
+              }
+              py += sub_h + 2;
+            }
+          }
+          f_idx += 1;
+        }
+      } else if StudioMem.proj_expanded[p_idx] == 1 && StudioMem.side_tab == 0 && clen > 0 {
+        let mut cpi = 0;
+        let mut c_idx = 0;
+        while cpi < clen && c_idx < MAX_CONVS max 60 {
+          let lstart = cpi;
+          let mut tab_pos = -1;
+          for _ in 0..140 {
+            if cpi >= clen { break; }
+            let cch = mem_load(StudioMem::convs_buf + 1 + cpi);
+            if cch == '\n' { break; }
+            if cch == '\t' && tab_pos < 0 { tab_pos = cpi; }
+            cpi += 1;
+          }
+          let lend = cpi;
+          if cpi < clen { cpi += 1; }
+          if tab_pos > lstart && lend > tab_pos + 1 {
+            if spans_equal(StudioMem::projects_buf, start, name_len, StudioMem::convs_buf, lstart, tab_pos - lstart) {
+              let tstart = tab_pos + 1;
+              let tlen = lend - tstart;
+              let is_cact = c_idx == StudioMem.active_conv_idx;
+              if py + sub_h >= p_top && py <= p_bot {
+                let in_cy = my >= p_top && my <= p_bot;
+                let c_hov = modal_none && in_cy && point_in_rect(mx, my, rx + 20, py, side_w - 36, sub_h);
+                let crm_w = clamp_i64(plus_w - 2, 18, 30);
+                let crm_x = rx + side_w - 18 - crm_w;
+                let crm_hov = modal_none && in_cy && point_in_rect(mx, my, crm_x, py + 2, crm_w, sub_h - 4);
+                if c_hov {
+                  gfx_set_cursor(CursorKind::Pointer);
+                  if m_clicked == 1 {
+                    if crm_hov {
+                      StudioMem.confirm_del_kind = 2;
+                      StudioMem.confirm_del_idx = c_idx;
+                      StudioMem.frame_confirm_just_opened = 1;
+                    } else {
+                      let loaded = daemon_load_conv(c_idx);
+                      if loaded > 0 {
+                        StudioMem.file_view_open = 0;
+                        StudioMem.active_file_idx = -1;
+                        StudioMem.msg_count = loaded;
+                        StudioMem.active_conv_idx = c_idx;
+                        StudioMem.active_proj_idx = p_idx;
+                        StudioMem.view_mode = ViewMode::Chat;
+                        StudioMem.cached_layout_col_w = 0;
+                        StudioMem.auto_scroll_bottom = 1;
+                        reset_tl_expanded();
+                        clear_msg_sel();
+                      }
+                    }
+                  }
+                }
+                if is_cact {
+                  ui_rect(rx + 20, py, side_w - 36, sub_h, 6, 1, 0, col_surf(th), col_accent(), clip_id);
+                } else if c_hov {
+                  ui_rect(rx + 20, py, side_w - 36, sub_h, 6, 0, 0, col_surf2(th), 0, clip_id);
+                }
+                let max_tx = if c_hov || is_cact { crm_x - 4 } else { rx + side_w - 24 };
+                let mut ccx = rx + 28;
+                let t_vis = min_i64(tlen, 36);
+                for cci in 0..t_vis max 36 {
+                  if ccx >= max_tx { break; }
+                  let tc = mem_load(StudioMem::convs_buf + 1 + tstart + cci);
+                  let cst = if is_cact { 1 } else { 0 };
+                  let tadv = glyph_px(tc, sm_sz, cst);
+                  if ccx + tadv <= max_tx {
+                    ui_glyph(ccx, py + (sub_h - sm_sz) / 2, tc, sm_sz, cst, if is_cact { col_text(th) } else { col_muted(th) }, clip_id);
+                  }
+                  ccx += tadv;
+                }
+                if c_hov || is_cact {
+                  ui_rect(crm_x, py + 3, crm_w, sub_h - 6, 5, 0, 0, if crm_hov { col_red() } else { col_surf2(th) }, 0, clip_id);
+                  ui_text(crm_x + (crm_w - sm_sz) / 2 + 1, py + (sub_h - sm_sz) / 2, "x", sm_sz, 1, if crm_hov { pack_rgba(255, 255, 255, 255) } else { col_muted(th) }, clip_id);
+                }
+              }
+              py += sub_h + 2;
+            }
+          }
+          c_idx += 1;
+        }
+      }
+      p_idx += 1;
+    }
+  }
+
+  let total_proj_h = (py + side_scr) - p_top + 12;
+  StudioMem.side_max_scroll = if total_proj_h > p_view_h { total_proj_h - p_view_h } else { 0 };
+}
+
+forma SidebarShell(
+  side_w: i64,
+  vh: i64,
+  foot_h: i64,
+  bg_side: i64,
+  bg_surf2: i64,
+  col_brd: i64,
+  col_txt: i64,
+  ui_sz: i64
+)
+  req side_w >= 180 && side_w <= 600 && vh >= 460 && foot_h >= 42 && foot_h <= 68 && ui_sz >= 10 && ui_sz <= 24
+  -[Mem, Net]-> i64
+{
+  Box(x: 0, y: 0, w: side_w, h: vh, bg: bg_side, border: 1, border_col: col_brd) {
+    Col(gap: 0) {
+      Scroll(id: 104, grow: 1, clip: 3) {
+        Slot(render: draw_sidebar_tree, on_wheel: handle_sidebar_wheel)
+      }
+      Box(h: foot_h, bg: bg_side, border: 1, border_col: col_brd, pad_x: 8, pad_y: 5) {
+        Button(id: 105, grow: 1, radius: 7, bg: bg_side, hover_bg: bg_surf2, on_click: SideAct::Settings) {
+          Row(pad_x: 8, gap: 6, align: center) {
+            Text("⚙ Настройки", size: ui_sz, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
+            Spacer(grow: 1)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn render_sidebar(side_w: i64, h: i64, foot_h: i64) -[Mem, Net]-> unit {
+  let th = StudioMem.theme;
+  let sw = clamp_i64(side_w, 180, 600);
+  let vh = clamp_i64(h, 460, 2160);
+  let fh = clamp_i64(foot_h, 42, 68);
+  let ui_sz = clamp_i64(sf(13), 10, 24);
+
+  // Suppress Forma pointer events on sidebar when a modal is open
+  if StudioMem.frame_modal_blocked != 0 {
+    forma_set_pointer(-1, -1, 0, 0);
+  } else {
+    forma_set_pointer(StudioMem.frame_mx, StudioMem.frame_my, StudioMem.frame_m_clicked, StudioMem.frame_wheel_dy);
+  }
+
+  let act = SidebarShell(sw, vh, fh, col_side(th), col_surf2(th), col_border(th), col_text(th), ui_sz);
+  if forma_hovered() {
+    gfx_set_cursor(CursorKind::Pointer);
+  }
+
+  match act {
+    SideAct::Settings => {
+      let next_open = if StudioMem.settings_open == 0 { 1 } else { 0 };
+      StudioMem.settings_open = next_open;
+      if next_open == 1 {
+        StudioMem.frame_settings_just_opened = 1;
+        daemon::keys_status();
+      }
+    },
+    _ => {},
+  }
+}

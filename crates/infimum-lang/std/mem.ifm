@@ -1,0 +1,197 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/mem.ifm
+// Z3-verified memory management primitives over linear memory:
+//   1. host_ret     — reads the return code of the last `do <Effect>.call(...)` (word 62).
+//   2. FrameScratch — zero-overhead per-frame bump arena (auto-reset in gfx_begin_frame).
+//   3. Arena        — linear bump allocator over any `words[N]` buffer in a `layout`.
+//   4. Pool         — O(1)-free fixed-slot allocator over a `flags: words[N]` array in a `layout`.
+//
+// Unified error convention: all allocating functions return `-1` on invalid size / exhaustion.
+
+use "std/math.ifm";
+use "std/sys_mem.ifm";
+
+/// Read the return code of the most recent `do <Effect>.call(...)` host capability call (stored in word 62).
+fn host_ret() -[Mem]-> i64 {
+  mem_load(SYS_HOST_RET_WORD)
+}
+
+// ============================================================================
+// 1. FrameScratch (Per-Frame Bump Arena: words 4096..65535, ~240 KiB)
+// ============================================================================
+
+/// Reset the per-frame scratch arena cursor to 0 (called automatically by `gfx_begin_frame`).
+fn scratch_reset() -[Mem]-> unit {
+  mem_store(SYS_SCRATCH_CURSOR_WORD, 0);
+}
+
+/// Number of words currently allocated in the per-frame scratch arena.
+fn scratch_used() -[Mem]-> i64
+  ens result >= 0 && result <= SYS_SCRATCH_CAP_WORDS
+{
+  clamp_i64(mem_load(SYS_SCRATCH_CURSOR_WORD), 0, SYS_SCRATCH_CAP_WORDS)
+}
+
+/// Remaining free words in the per-frame scratch arena.
+fn scratch_remaining() -[Mem]-> i64
+  ens result >= 0 && result <= SYS_SCRATCH_CAP_WORDS
+{
+  SYS_SCRATCH_CAP_WORDS - scratch_used()
+}
+
+/// Allocate `words` temporary words from the per-frame scratch arena.
+/// Returns a valid word address in `4096..65535`, or `-1` on invalid size / exhaustion.
+fn scratch_alloc(words: i64) -[Mem]-> i64
+  ens result == -1 || (result >= SYS_SCRATCH_BASE_WORD && result < SYS_SCRATCH_BASE_WORD + SYS_SCRATCH_CAP_WORDS)
+{
+  if words <= 0 {
+    -1
+  } else {
+    let cur = clamp_i64(mem_load(SYS_SCRATCH_CURSOR_WORD), 0, SYS_SCRATCH_CAP_WORDS);
+    if words <= SYS_SCRATCH_CAP_WORDS - cur {
+      mem_store(SYS_SCRATCH_CURSOR_WORD, cur + words);
+      SYS_SCRATCH_BASE_WORD + cur
+    } else {
+      -1
+    }
+  }
+}
+
+/// Allocate and zero-initialize `words` temporary words (`1..=4096`) from FrameScratch.
+/// Returns a valid word address, or `-1` if `words <= 0`, `words > 4096`, or out of space.
+fn scratch_calloc(words: i64) -[Mem]-> i64
+  ens result == -1 || (result >= SYS_SCRATCH_BASE_WORD && result < SYS_SCRATCH_BASE_WORD + SYS_SCRATCH_CAP_WORDS)
+{
+  if words <= 0 || words > 4096 {
+    -1
+  } else {
+    let ptr = scratch_alloc(words);
+    if ptr >= 0 {
+      for i in 0..words max 4096 {
+        mem_store(ptr + i, 0);
+      }
+    }
+    ptr
+  }
+}
+
+// ============================================================================
+// 2. Arena (Static Linear Bump Region over any `layout` buffer)
+// ============================================================================
+
+/// Reset a user arena cursor to 0.
+fn arena_reset(cursor_addr: i64) -[Mem]-> unit {
+  mem_store(cursor_addr, 0);
+}
+
+/// Number of words currently used in a user arena.
+fn arena_used(cursor_addr: i64, cap: i64) -[Mem]-> i64
+  ens result >= 0 && result <= 16777216
+{
+  let safe_cap = clamp_i64(cap, 0, 16777216);
+  clamp_i64(mem_load(cursor_addr), 0, safe_cap)
+}
+
+/// Remaining free words in a user arena.
+fn arena_remaining(cursor_addr: i64, cap: i64) -[Mem]-> i64
+  ens result >= 0 && result <= 16777216
+{
+  let safe_cap = clamp_i64(cap, 0, 16777216);
+  safe_cap - clamp_i64(mem_load(cursor_addr), 0, safe_cap)
+}
+
+/// Bump-allocate `words` from `[base .. base + cap)` tracked by `cursor_addr`.
+/// Returns the allocated word address, or `-1` if `words <= 0`, `cap <= 0`, or capacity is exceeded.
+fn arena_alloc(base: i64, cap: i64, cursor_addr: i64, words: i64) -[Mem]-> i64
+  req base >= 0
+  ens result == -1 || result >= base
+{
+  if words <= 0 || cap <= 0 {
+    -1
+  } else {
+    let safe_cap = clamp_i64(cap, 1, 16777216);
+    let cur = clamp_i64(mem_load(cursor_addr), 0, safe_cap);
+    if words <= safe_cap - cur {
+      mem_store(cursor_addr, cur + words);
+      base + cur
+    } else {
+      -1
+    }
+  }
+}
+
+/// Copy a length-prefixed UTF-32 string/slice (`src[0] = len`, `src[1..=len]`) into an arena.
+/// Returns the word address of the stored copy, or `-1` if out of space.
+fn arena_push_strbuf(base: i64, cap: i64, cursor_addr: i64, src_ptr: i64, max_chars: i64) -[Mem]-> i64
+  req base >= 0
+  ens result == -1 || result >= base
+{
+  let lim = clamp_i64(max_chars, 0, 8192);
+  let len = clamp_i64(mem_load(src_ptr), 0, lim);
+  let dst = arena_alloc(base, cap, cursor_addr, len + 1);
+  if dst >= 0 {
+    mem_store(dst, len);
+    for i in 0..len max 8192 {
+      mem_store(dst + 1 + i, mem_load(src_ptr + 1 + i));
+    }
+  }
+  dst
+}
+
+// ============================================================================
+// 3. Pool (Fixed-Slot Allocator over `flags: words[N]` in a `layout`)
+// ============================================================================
+
+/// Initialize (clear) all `cap` occupancy flags in a slot pool (max 1024 slots).
+fn pool_init(flags_addr: i64, cap: i64) -[Mem]-> unit {
+  let n = clamp_i64(cap, 0, 1024);
+  for i in 0..n max 1024 {
+    mem_store(flags_addr + i, 0);
+  }
+}
+
+/// Allocate the first free slot index in `0..cap`. Marks it occupied and returns its index, or `-1` if full.
+fn pool_alloc(flags_addr: i64, cap: i64) -[Mem]-> i64
+  ens result >= -1 && result < 1024
+{
+  let n = clamp_i64(cap, 0, 1024);
+  let mut found = -1;
+  for i in 0..n max 1024 {
+    if mem_load(flags_addr + i) == 0 {
+      mem_store(flags_addr + i, 1);
+      found = i;
+      break;
+    }
+  }
+  found
+}
+
+/// Release slot `idx` back to the pool in O(1).
+fn pool_free(flags_addr: i64, idx: i64, cap: i64) -[Mem]-> unit {
+  let n = clamp_i64(cap, 0, 1024);
+  if idx >= 0 && idx < n {
+    mem_store(flags_addr + idx, 0);
+  }
+}
+
+/// Check whether slot `idx` is currently allocated.
+fn pool_is_alive(flags_addr: i64, idx: i64, cap: i64) -[Mem]-> bool {
+  let n = clamp_i64(cap, 0, 1024);
+  idx >= 0 && idx < n && mem_load(flags_addr + idx) != 0
+}
+
+/// Count currently allocated slots in the pool.
+fn pool_count(flags_addr: i64, cap: i64) -[Mem]-> i64
+  ens result >= 0 && result <= 1024
+{
+  let n = clamp_i64(cap, 0, 1024);
+  let mut c = 0;
+  for i in 0..n max 1024 {
+    if mem_load(flags_addr + i) != 0 {
+      c += 1;
+    }
+  }
+  c
+}

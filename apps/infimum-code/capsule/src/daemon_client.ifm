@@ -1,0 +1,491 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Pure-HTTP Client for `infimum-agentd` over `infimum-web`'s universal `CAP_NET`
+// (`HostOp::NetHttpRequest` + `HostOp::CapArgGet`).
+//
+// Zero filesystem or process effects inside `infimum_code.ifw`: all developer
+// operations are authenticated via Bearer token to `127.0.0.1:<port>`.
+
+use "abi.ifm";
+use "primitives.ifm";
+use "std/buf.ifm";
+
+mod daemon {
+  // --- String Buffer Builders (UTF-32 word-addressed: [len, cp0, cp1, ...]) ---
+
+  pub fn buf_append_buf(dst: i64, max_cap: i64, src: i64) -[Mem]-> unit {
+    let slen = clamp_i64(mem_load(src), 0, 32768);
+    for i in 0..slen max 32768 {
+      buf_push_cp(dst, max_cap, mem_load(src + 1 + i));
+    }
+  }
+
+  pub fn buf_append_lit(dst: i64, max_cap: i64, s: str) -[Mem]-> unit {
+    do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
+    buf_append_buf(dst, max_cap, mem_load(SYS_STR_SCRATCH_WORD));
+  }
+
+  pub fn buf_copy_slice(dst: i64, max_cap: i64, src: i64, start: i64, count: i64) -[Mem]-> unit {
+    let slen = clamp_i64(mem_load(src), 0, 65536);
+    let actual = clamp_i64(count, 0, max_cap);
+    let mut written = 0;
+    for i in 0..actual max 33000 {
+      if start + i >= slen { break; }
+      mem_store(dst + 1 + written, mem_load(src + 1 + start + i));
+      written += 1;
+    }
+    mem_store(dst, written);
+  }
+
+  // --- Parsing Helpers (cursor stored in word `StudioMem::http_key_tmp`) ---
+
+  fn skip_spaces(buf: i64) -[Mem]-> unit {
+    let n = clamp_i64(mem_load(buf), 0, 65536);
+    let mut p = mem_load(StudioMem::http_key_tmp);
+    while p < n max 1024 {
+      let ch = mem_load(buf + 1 + p);
+      if ch == ' ' || ch == '\t' || ch == '\r' {
+        p += 1;
+      } else {
+        break;
+      }
+    }
+    mem_store(StudioMem::http_key_tmp, p);
+  }
+
+  pub fn parse_i64(buf: i64) -[Mem]-> i64 {
+    skip_spaces(buf);
+    let n = clamp_i64(mem_load(buf), 0, 65536);
+    let mut p = mem_load(StudioMem::http_key_tmp);
+    let mut neg = false;
+    if p < n && mem_load(buf + 1 + p) == '-' {
+      neg = true;
+      p += 1;
+    }
+    let mut acc = 0;
+    while p < n max 24 {
+      let ch = mem_load(buf + 1 + p);
+      if ch >= '0' && ch <= '9' {
+        acc = acc * 10 + (ch - '0');
+        p += 1;
+      } else {
+        break;
+      }
+    }
+    mem_store(StudioMem::http_key_tmp, p);
+    if neg { 0 - acc } else { acc }
+  }
+
+  pub fn parse_skip_to_next_line(buf: i64) -[Mem]-> unit {
+    let n = clamp_i64(mem_load(buf), 0, 65536);
+    let mut p = mem_load(StudioMem::http_key_tmp);
+    while p < n max 65536 {
+      let ch = mem_load(buf + 1 + p);
+      p += 1;
+      if ch == '\n' { break; }
+    }
+    mem_store(StudioMem::http_key_tmp, p);
+  }
+
+  pub fn parse_line_into(buf: i64, dst: i64, max_cap: i64) -[Mem]-> unit {
+    let n = clamp_i64(mem_load(buf), 0, 65536);
+    let mut p = mem_load(StudioMem::http_key_tmp);
+    let mut w = 0;
+    while p < n max 4096 {
+      let ch = mem_load(buf + 1 + p);
+      p += 1;
+      if ch == '\n' {
+        break;
+      } else if ch != '\r' && w < max_cap {
+        mem_store(dst + 1 + w, ch);
+        w += 1;
+      }
+    }
+    mem_store(dst, w);
+    mem_store(StudioMem::http_key_tmp, p);
+  }
+
+  pub fn parse_timeline_words(buf: i64, count: i64) -[Mem]-> unit {
+    let capped = clamp_i64(count, 0, LIVE_TIMELINE_MAX_WORDS);
+    for i in 0..capped max 9000 {
+      mem_store(StudioMem::live_timeline_buf + i, parse_i64(buf));
+    }
+    StudioMem.live_timeline_words = capped;
+    parse_skip_to_next_line(buf);
+  }
+
+  // --- Daemon Connection Init & HTTP Transport ---
+
+  pub fn init() -[Mem, Net]-> unit {
+    buf_clear(StudioMem::agent_url_buf);
+    buf_clear(StudioMem::agent_tok_buf);
+
+    // Load AGENT_URL from explicit --cap-arg=AGENT_URL=...
+    do Mem.store_str(SYS_STR_SCRATCH_WORD, "AGENT_URL");
+    do Net.call(HostOp::CapArgGet, mem_load(SYS_STR_SCRATCH_WORD), StudioMem::agent_url_buf, 250);
+    if host_ret() <= 0 {
+      buf_clear(StudioMem::agent_url_buf);
+      buf_append_lit(StudioMem::agent_url_buf, 250, "http://127.0.0.1:43210");
+    }
+
+    // Load AGENT_TOKEN from explicit --cap-arg=AGENT_TOKEN=... -> "Bearer <tok>"
+    do Mem.store_str(SYS_STR_SCRATCH_WORD, "AGENT_TOKEN");
+    do Net.call(HostOp::CapArgGet, mem_load(SYS_STR_SCRATCH_WORD), StudioMem::http_body_tmp, 200);
+    if host_ret() > 0 {
+      buf_append_lit(StudioMem::agent_tok_buf, 250, "Bearer ");
+      buf_append_buf(StudioMem::agent_tok_buf, 250, StudioMem::http_body_tmp);
+    }
+
+    // Detect Online Infimum Code mode (--cap-arg=ONLINE_MODE=1 -> show only Gemini + OpenRouter)
+    do Mem.store_str(SYS_STR_SCRATCH_WORD, "ONLINE_MODE");
+    do Net.call(HostOp::CapArgGet, mem_load(SYS_STR_SCRATCH_WORD), StudioMem::http_body_tmp, 16);
+    StudioMem.online_mode = if host_ret() > 0 && mem_load(StudioMem::http_body_tmp + 1) == '1' { 1 } else { 0 };
+  }
+
+  pub fn http(method: str, path_q: str, body_ptr: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_req_buf);
+    buf_append_lit(StudioMem::http_req_buf, 35900, method);
+    buf_push_cp(StudioMem::http_req_buf, 35900, '\n');
+    buf_append_buf(StudioMem::http_req_buf, 35900, StudioMem::agent_url_buf);
+    buf_append_lit(StudioMem::http_req_buf, 35900, path_q);
+    buf_push_cp(StudioMem::http_req_buf, 35900, '\n');
+    buf_append_buf(StudioMem::http_req_buf, 35900, StudioMem::agent_tok_buf);
+    buf_push_cp(StudioMem::http_req_buf, 35900, '\n');
+    buf_append_lit(StudioMem::http_req_buf, 35900, "text/plain");
+    buf_push_cp(StudioMem::http_req_buf, 35900, '\n');
+    if body_ptr > 0 {
+      buf_append_buf(StudioMem::http_req_buf, 35900, body_ptr);
+    }
+    buf_clear(StudioMem::http_resp_buf);
+    do Net.call(HostOp::NetHttpRequest, StudioMem::http_req_buf, StudioMem::http_resp_buf, 65500);
+    host_ret()
+  }
+
+  // --- High-Level Studio Daemon API ---
+
+  pub fn settings_load() -[Mem, Net]-> i64 {
+    let code = http("GET", "/settings?format=ifm", 0);
+    if code != 200 {
+      0
+    } else {
+      mem_store(StudioMem::http_key_tmp, 0);
+      let found = parse_i64(StudioMem::http_resp_buf);
+      if found == 1 {
+        StudioMem.settings_theme = parse_i64(StudioMem::http_resp_buf);
+        StudioMem.settings_scale = parse_i64(StudioMem::http_resp_buf);
+        StudioMem.settings_currency = parse_i64(StudioMem::http_resp_buf);
+        StudioMem.settings_model = parse_i64(StudioMem::http_resp_buf);
+        1
+      } else {
+        0
+      }
+    }
+  }
+
+  pub fn settings_save() -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_body_tmp);
+    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_theme);
+    buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
+    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_scale);
+    buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
+    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_currency);
+    buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
+    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_model);
+    let code = http("PUT", "/settings?format=ifm", StudioMem::http_body_tmp);
+    if code == 200 { 1 } else { 0 }
+  }
+
+  pub fn list_projects() -[Mem, Net]-> i64 {
+    let code = http("GET", "/workspaces?format=ifm", 0);
+    if code == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 3500);
+      buf_copy_slice(StudioMem::projects_buf, 3500, StudioMem::http_resp_buf, 0, n);
+      n
+    } else {
+      0
+    }
+  }
+
+  pub fn add_project() -[Mem, Net]-> i64 {
+    let code = http("POST", "/workspaces?format=ifm", 0);
+    if code == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 3500);
+      if n > 0 {
+        buf_copy_slice(StudioMem::projects_buf, 3500, StudioMem::http_resp_buf, 0, n);
+      }
+      n
+    } else {
+      0
+    }
+  }
+
+  pub fn remove_project(idx: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_req_buf);
+    buf_append_lit(StudioMem::http_req_buf, 35900, "DELETE\n");
+    buf_append_buf(StudioMem::http_req_buf, 35900, StudioMem::agent_url_buf);
+    buf_append_lit(StudioMem::http_req_buf, 35900, "/workspaces/");
+    buf_push_int(StudioMem::http_req_buf, 35900, idx);
+    buf_append_lit(StudioMem::http_req_buf, 35900, "?format=ifm\n");
+    buf_append_buf(StudioMem::http_req_buf, 35900, StudioMem::agent_tok_buf);
+    buf_append_lit(StudioMem::http_req_buf, 35900, "\ntext/plain\n");
+    buf_clear(StudioMem::http_resp_buf);
+    do Net.call(HostOp::NetHttpRequest, StudioMem::http_req_buf, StudioMem::http_resp_buf, 65500);
+    if host_ret() == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 3500);
+      buf_copy_slice(StudioMem::projects_buf, 3500, StudioMem::http_resp_buf, 0, n);
+      n
+    } else {
+      0
+    }
+  }
+
+  pub fn list_convs() -[Mem, Net]-> i64 {
+    let code = http("GET", "/conversations?format=ifm", 0);
+    if code == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 3500);
+      buf_copy_slice(StudioMem::convs_buf, 3500, StudioMem::http_resp_buf, 0, n);
+      n
+    } else {
+      0
+    }
+  }
+
+  pub fn list_files() -[Mem, Net]-> i64 {
+    let code = http("GET", "/files?format=ifm", 0);
+    if code == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 3500);
+      buf_copy_slice(StudioMem::files_buf, 3500, StudioMem::http_resp_buf, 0, n);
+      n
+    } else {
+      0
+    }
+  }
+
+  pub fn fetch_file_window(start_line: i64, max_lines: i64) -[Mem, Net]-> i64 {
+    let req_len = clamp_i64(mem_load(StudioMem::file_view_req_buf), 0, 250);
+    if req_len <= 0 {
+      0
+    } else {
+      buf_clear(StudioMem::http_body_tmp);
+      for i in 0..req_len max 250 {
+        buf_push_cp(StudioMem::http_body_tmp, 1024, mem_load(StudioMem::file_view_req_buf + 1 + i));
+      }
+      buf_push_cp(StudioMem::http_body_tmp, 1024, '\n');
+      buf_push_int(StudioMem::http_body_tmp, 1024, max_i64(0, start_line));
+      buf_push_cp(StudioMem::http_body_tmp, 1024, ' ');
+      buf_push_int(StudioMem::http_body_tmp, 1024, clamp_i64(max_lines, 50, 400));
+      let code = http("POST", "/files/open?format=ifm", StudioMem::http_body_tmp);
+      if code == 200 {
+        mem_store(StudioMem::http_key_tmp, 0);
+        let total_l = clamp_i64(parse_i64(StudioMem::http_resp_buf), 1, 2000000);
+        let win_s = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, total_l);
+        let win_c = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, 400);
+        parse_skip_to_next_line(StudioMem::http_resp_buf);
+        let body_start = mem_load(StudioMem::http_key_tmp);
+        let resp_len = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 65500);
+        let rem = clamp_i64(resp_len - body_start, 0, 65000);
+        buf_copy_slice(StudioMem::file_view_buf, 65000, StudioMem::http_resp_buf, body_start, rem);
+        StudioMem.file_view_lines = total_l;
+        StudioMem.file_view_win_start = win_s;
+        StudioMem.file_view_win_count = win_c;
+        1
+      } else {
+        0
+      }
+    }
+  }
+
+  pub fn open_file(proj_buf: i64, pstart: i64, plen: i64, fbuf: i64, fstart: i64, flen: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::file_view_req_buf);
+    buf_clear(StudioMem::file_view_path_buf);
+    let p_vis = clamp_i64(plen, 0, 120);
+    for i in 0..p_vis max 120 {
+      let ch = mem_load(proj_buf + 1 + pstart + i);
+      buf_push_cp(StudioMem::file_view_req_buf, 250, ch);
+      buf_push_cp(StudioMem::file_view_path_buf, 250, ch);
+    }
+    buf_push_cp(StudioMem::file_view_req_buf, 250, '\n');
+    buf_append_lit(StudioMem::file_view_path_buf, 250, " / ");
+    let f_vis = clamp_i64(flen, 0, 120);
+    for i in 0..f_vis max 120 {
+      let ch = mem_load(fbuf + 1 + fstart + i);
+      buf_push_cp(StudioMem::file_view_req_buf, 250, ch);
+      buf_push_cp(StudioMem::file_view_path_buf, 250, ch);
+    }
+    let ok = fetch_file_window(0, 250);
+    if ok == 1 {
+      StudioMem.file_view_scroll_y = 0;
+      StudioMem.file_view_open = 1;
+      1
+    } else {
+      0
+    }
+  }
+
+  pub fn play_project(proj_buf: i64, pstart: i64, plen: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_body_tmp);
+    let p_vis = clamp_i64(plen, 0, 200);
+    for i in 0..p_vis max 200 {
+      buf_push_cp(StudioMem::http_body_tmp, 1024, mem_load(proj_buf + 1 + pstart + i));
+    }
+    let code = http("POST", "/apps/play_project?format=ifm", StudioMem::http_body_tmp);
+    if code == 200 { 1 } else { 0 }
+  }
+
+  pub fn delete_conv(idx: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_body_tmp);
+    buf_push_int(StudioMem::http_body_tmp, 64, idx);
+    let code = http("POST", "/conversations/delete?format=ifm", StudioMem::http_body_tmp);
+    if code == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 3500);
+      buf_copy_slice(StudioMem::convs_buf, 3500, StudioMem::http_resp_buf, 0, n);
+      n
+    } else {
+      0
+    }
+  }
+
+  pub fn keys_status() -[Mem, Net]-> i64 {
+    let code = http("GET", "/keys/status?format=ifm", 0);
+    if code == 200 {
+      mem_store(StudioMem::http_key_tmp, 0);
+      let mask = parse_i64(StudioMem::http_resp_buf);
+      StudioMem.keys_status_mask = mask;
+      mask
+    } else {
+      StudioMem.keys_status_mask
+    }
+  }
+
+  pub fn keys_save(prov_idx: i64, key_buf_ptr: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_body_tmp);
+    buf_push_int(StudioMem::http_body_tmp, 512, prov_idx);
+    buf_push_cp(StudioMem::http_body_tmp, 512, '\n');
+    buf_append_buf(StudioMem::http_body_tmp, 512, key_buf_ptr);
+    let code = http("POST", "/keys/save?format=ifm", StudioMem::http_body_tmp);
+    if code == 200 {
+      mem_store(StudioMem::http_key_tmp, 0);
+      let mask = parse_i64(StudioMem::http_resp_buf);
+      StudioMem.keys_status_mask = mask;
+      1
+    } else {
+      0
+    }
+  }
+
+  pub fn keys_test(prov_idx: i64, out_buf_ptr: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_body_tmp);
+    buf_push_int(StudioMem::http_body_tmp, 64, prov_idx);
+    let code = http("POST", "/keys/test?format=ifm", StudioMem::http_body_tmp);
+    if code == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 150);
+      buf_copy_slice(out_buf_ptr, 150, StudioMem::http_resp_buf, 0, n);
+      StudioMem.keys_test_ok = if n >= 2 && mem_load(out_buf_ptr + 1) == 'O' && mem_load(out_buf_ptr + 2) == 'K' { 1 } else { 2 };
+      n
+    } else {
+      StudioMem.keys_test_ok = 2;
+      0
+    }
+  }
+
+  pub fn new_conv() -[Mem, Net]-> i64 {
+    let code = http("POST", "/conversations/new?format=ifm", StudioMem::active_proj_buf);
+    if code == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 200);
+      buf_copy_slice(StudioMem::active_hdr_buf, 200, StudioMem::http_resp_buf, 0, n);
+      1
+    } else {
+      0
+    }
+  }
+
+  pub fn agent_start(prompt_ptr: i64, model_ptr: i64, proj_ptr: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_body_tmp);
+    buf_append_buf(StudioMem::http_body_tmp, 15900, model_ptr);
+    buf_push_cp(StudioMem::http_body_tmp, 15900, '\n');
+    buf_append_buf(StudioMem::http_body_tmp, 15900, proj_ptr);
+    buf_push_cp(StudioMem::http_body_tmp, 15900, '\n');
+    buf_append_buf(StudioMem::http_body_tmp, 15900, prompt_ptr);
+    StudioMem.live_timeline_words = 0;
+    StudioMem.live_cmd_killing = 0;
+    let code = http("POST", "/agent/start?format=ifm", StudioMem::http_body_tmp);
+    if code == 200 { 1 } else { 0 }
+  }
+
+  pub fn agent_poll(reply_ptr: i64, status_ptr: i64) -[Mem, Net]-> i64 {
+    let code = http("GET", "/agent/poll?format=ifm", 0);
+    if code != 200 {
+      0
+    } else {
+      mem_store(StudioMem::http_key_tmp, 0);
+      let st = parse_i64(StudioMem::http_resp_buf);
+      if st == 1 {
+        StudioMem.async_elapsed_tenths = parse_i64(StudioMem::http_resp_buf);
+        StudioMem.live_cmd_killing = parse_i64(StudioMem::http_resp_buf);
+        let tl_n = parse_i64(StudioMem::http_resp_buf);
+        parse_skip_to_next_line(StudioMem::http_resp_buf);
+        parse_line_into(StudioMem::http_resp_buf, status_ptr, 240);
+        parse_timeline_words(StudioMem::http_resp_buf, tl_n);
+        1
+      } else if st == 2 {
+        StudioMem.async_elapsed_tenths = parse_i64(StudioMem::http_resp_buf);
+        StudioMem.async_cost_milli_ils = parse_i64(StudioMem::http_resp_buf);
+        StudioMem.async_total_tokens = parse_i64(StudioMem::http_resp_buf);
+        let tl_n = parse_i64(StudioMem::http_resp_buf);
+        parse_skip_to_next_line(StudioMem::http_resp_buf);
+        parse_line_into(StudioMem::http_resp_buf, StudioMem::active_hdr_buf, 200);
+        parse_timeline_words(StudioMem::http_resp_buf, tl_n);
+        StudioMem.live_cmd_killing = 0;
+        let total_len = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 65536);
+        let pos = mem_load(StudioMem::http_key_tmp);
+        let rem = clamp_i64(total_len - pos, 0, MAX_MSG_CHARS);
+        buf_copy_slice(reply_ptr, MAX_MSG_CHARS, StudioMem::http_resp_buf, pos, rem);
+        2
+      } else {
+        0
+      }
+    }
+  }
+
+  pub fn agent_cancel() -[Mem, Net]-> i64 {
+    let code = http("POST", "/agent/cancel?format=ifm", 0);
+    if code == 200 { 1 } else { 0 }
+  }
+
+  pub fn agent_kill_cmd() -[Mem, Net]-> i64 {
+    let code = http("POST", "/agent/kill-cmd?format=ifm", 0);
+    if code == 200 && mem_load(StudioMem::http_resp_buf) > 0 && mem_load(StudioMem::http_resp_buf + 1) == '1' {
+      StudioMem.live_cmd_killing = 1;
+      1
+    } else {
+      0
+    }
+  }
+
+  pub fn play_app(proj_ptr: i64, app_name_ptr: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_body_tmp);
+    buf_append_buf(StudioMem::http_body_tmp, 1024, proj_ptr);
+    buf_push_cp(StudioMem::http_body_tmp, 1024, '\n');
+    buf_append_buf(StudioMem::http_body_tmp, 1024, app_name_ptr);
+    let code = http("POST", "/apps/play?format=ifm", StudioMem::http_body_tmp);
+    if code == 200 { 1 } else { 0 }
+  }
+}
+
+test "daemon::parse_i64 parses signed integers across whitespace" {
+  let b = StudioMem::http_body_tmp;
+  buf_clear(b);
+  buf_push_cp(b, 64, ' ');
+  buf_push_cp(b, 64, '-');
+  buf_push_cp(b, 64, '4');
+  buf_push_cp(b, 64, '2');
+  buf_push_cp(b, 64, ' ');
+  buf_push_cp(b, 64, '1');
+  buf_push_cp(b, 64, '3');
+  buf_push_cp(b, 64, '3');
+  buf_push_cp(b, 64, '7');
+  mem_store(StudioMem::http_key_tmp, 0);
+  assert(daemon::parse_i64(b) == -42);
+  assert(daemon::parse_i64(b) == 1337);
+}

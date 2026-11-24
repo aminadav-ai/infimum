@@ -1,0 +1,19 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/prelude.ifm
+// Single-import convenience prelude for Infimum Lang + infimum-web applications.
+
+use "std/math.ifm";
+use "std/color.ifm";
+use "std/sys_mem.ifm";
+use "std/mem.ifm";
+use "std/buf.ifm";
+use "std/gfx.ifm";
+use "std/text.ifm";
+use "std/audio.ifm";
+use "std/input.ifm";
+use "std/fmt.ifm";
+use "std/theme.ifm";
+use "std/icons.ifm";
+use "std/ui.ifm";

@@ -1,0 +1,1098 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// CERES DRIFT — Native Vulkan/wgpu 3D Dark Sci-Fi PBR Renderer (1K Poly Haven CC0)
+// Seamless World-Scale UV Tiling (Zero Stretch), Dark Industrial Metal/Steel/Grate/Concrete PBR,
+// Corrugated Octagonal Tubes, Dynamic Lights, 3D Techno-Metal Cockpit & Multi-Deck Radar HUD
+
+use "abi.ifm";
+use "maze.ifm";
+use "logic.ifm";
+
+// --- 1K PBR Material & Dark Sci-Fi Ceres Palette per Chamber Theme ---
+
+fn theme_wall_mat(theme: i64) -> i64 {
+  if theme == 6 {
+    PBR_REACTOR_ARMOR    // Зал Реактора — rusty_metal_grid (тяжёлая бронерешётка реактора)
+  } else if theme == 2 || theme == 5 || theme == 8 {
+    PBR_INDUSTRIAL_WALL  // Склад Оружия, Охранный Пост, Палуба 3 — painted_metal_shutter (тёмные ребристые панели)
+  } else if theme == 7 {
+    PBR_CEILING_STEEL    // Палуба 1: Рудная Шахта — rusty_metal_03 (тёмные изношенные стальные плиты)
+  } else {
+    PBR_STATION_WALL     // Шлюз Альфа, Атриум, Генераторы, Крио — blue_metal_plate (тёмные космические бронеплиты)
+  }
+}
+
+fn theme_ceil_mat(theme: i64) -> i64 {
+  if theme == 6 {
+    PBR_REACTOR_ARMOR    // Потолок Зала Реактора — rusty_metal_grid
+  } else if theme == 1 || theme == 3 || theme == 4 {
+    PBR_STATION_WALL     // Потолок Атриума / Генераторов / Крио — blue_metal_plate
+  } else {
+    PBR_CEILING_STEEL    // Тёмный индустриальный металл на потолках — rusty_metal_03
+  }
+}
+
+fn theme_floor_mat(theme: i64) -> i64 {
+  if theme == 0 || theme == 7 {
+    PBR_CONCRETE_FLOOR   // Шлюз Альфа и Нижняя Палуба 1: грубый тёмный ангарный бетон (hangar_concrete_floor)
+  } else {
+    PBR_GRATE_FLOOR      // Основные и верхние палубы: промышленная металлическая решётка (metal_grate_rusty)
+  }
+}
+
+// Dark, moody sci-fi metal tints (120..185) so dynamic headlamp, plasma & neon trims pop!
+fn theme_wall_color(theme: i64) -> i64 {
+  if theme == 0 {
+    pack_rgba(154, 172, 192, 255) // Шлюз Альфа — холодная тёмная сталь
+  } else if theme == 1 {
+    pack_rgba(148, 174, 196, 255) // Главный Атриум — тёмно-стальные бронеплиты
+  } else if theme == 2 {
+    pack_rgba(176, 152, 132, 255) // Склад Оружия — оружейная тёмная бронза
+  } else if theme == 3 {
+    pack_rgba(158, 168, 188, 255) // Зал Генераторов — индустриальная электросталь
+  } else if theme == 4 {
+    pack_rgba(136, 184, 194, 255) // Крио-Сектор — холодный циановый металл
+  } else if theme == 5 {
+    pack_rgba(182, 138, 144, 255) // Охранный Пост — тёмная багровая броня
+  } else if theme == 6 {
+    pack_rgba(178, 136, 128, 255) // Ядро Реактора — тёмная реакторная сталь
+  } else if theme == 7 {
+    pack_rgba(164, 142, 124, 255) // Нижняя палуба (П1) — тёмная рудная сталь
+  } else {
+    pack_rgba(156, 146, 186, 255) // Верхняя палуба (П3) — командный тёмно-графитовый металл
+  }
+}
+
+fn theme_ceil_color(theme: i64) -> i64 {
+  if theme == 6 {
+    pack_rgba(144, 114, 110, 255)
+  } else if theme == 7 {
+    pack_rgba(138, 124, 112, 255)
+  } else if theme == 8 {
+    pack_rgba(136, 130, 162, 255)
+  } else {
+    pack_rgba(132, 146, 164, 255)
+  }
+}
+
+fn theme_floor_color(theme: i64) -> i64 {
+  if theme == 0 {
+    pack_rgba(126, 134, 144, 255) // Шлюз Альфа — грубый тёмный бетон
+  } else if theme == 7 {
+    pack_rgba(138, 126, 116, 255) // Палуба 1 — тёмный изношенный бетон
+  } else if theme == 6 {
+    pack_rgba(158, 128, 122, 255) // Реактор — тёмная металлическая решётка
+  } else if theme == 8 {
+    pack_rgba(138, 136, 166, 255) // Палуба 3 — графитовая решётка
+  } else {
+    pack_rgba(138, 152, 168, 255) // Палуба 2 — тёмная промышленная решётка
+  }
+}
+
+fn theme_trim_color(theme: i64, is_escape: bool, tick: i64) -> i64 {
+  if is_escape {
+    let pulse = 150 + abs_i64(sin_1024(tick * 96)) / 9;
+    pack_rgba(clamp_byte(pulse), 36, 40, 255)
+  } else if theme == 0 {
+    pack_rgba(78, 212, 255, 255)
+  } else if theme == 1 {
+    pack_rgba(56, 232, 255, 255)
+  } else if theme == 2 {
+    pack_rgba(255, 172, 48, 255)
+  } else if theme == 3 {
+    pack_rgba(255, 214, 72, 255)
+  } else if theme == 4 {
+    pack_rgba(72, 248, 224, 255)
+  } else if theme == 5 {
+    pack_rgba(255, 78, 86, 255)
+  } else if theme == 6 {
+    pack_rgba(255, 112, 42, 255)
+  } else if theme == 7 {
+    pack_rgba(255, 162, 52, 255)
+  } else {
+    pack_rgba(196, 114, 255, 255)
+  }
+}
+
+// --- Continuous World-Space UV Projection (Zero Stretching & Zero Doorway Seams!) ---
+
+fn uv_w(mm: i64) -> i64 {
+  clamp_i64(((mm + 16000) * 1024) / PBR_TILE_MM, 0, 32768)
+}
+
+fn quad_in_nz(x0: i64, x1: i64, y0: i64, y1: i64, z: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  if x1 > x0 && y1 > y0 {
+    let u0 = uv_w(x0);
+    let u1 = uv_w(x1);
+    let v0 = uv_w(y1);
+    let v1 = uv_w(y0);
+    mesh3d_quad(0, x0, y1, z, u0, v0, x1, y1, z, u1, v0, x1, y0, z, u1, v1, x0, y0, z, u0, v1, 0, 0, 127, mat, col, ao, em);
+  }
+}
+
+fn quad_in_pz(x0: i64, x1: i64, y0: i64, y1: i64, z: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  if x1 > x0 && y1 > y0 {
+    let u0 = uv_w(x1);
+    let u1 = uv_w(x0);
+    let v0 = uv_w(y1);
+    let v1 = uv_w(y0);
+    mesh3d_quad(0, x1, y1, z, u0, v0, x0, y1, z, u1, v0, x0, y0, z, u1, v1, x1, y0, z, u0, v1, 0, 0, -127, mat, col, ao, em);
+  }
+}
+
+fn quad_in_nx(z0: i64, z1: i64, y0: i64, y1: i64, x: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  if z1 > z0 && y1 > y0 {
+    let u0 = uv_w(z1);
+    let u1 = uv_w(z0);
+    let v0 = uv_w(y1);
+    let v1 = uv_w(y0);
+    mesh3d_quad(0, x, y1, z1, u0, v0, x, y1, z0, u1, v0, x, y0, z0, u1, v1, x, y0, z1, u0, v1, 127, 0, 0, mat, col, ao, em);
+  }
+}
+
+fn quad_in_px(z0: i64, z1: i64, y0: i64, y1: i64, x: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  if z1 > z0 && y1 > y0 {
+    let u0 = uv_w(z0);
+    let u1 = uv_w(z1);
+    let v0 = uv_w(y1);
+    let v1 = uv_w(y0);
+    mesh3d_quad(0, x, y1, z0, u0, v0, x, y1, z1, u1, v0, x, y0, z1, u1, v1, x, y0, z0, u0, v1, -127, 0, 0, mat, col, ao, em);
+  }
+}
+
+fn quad_in_ny(x0: i64, x1: i64, z0: i64, z1: i64, y: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  if x1 > x0 && z1 > z0 {
+    let u0 = uv_w(x0);
+    let u1 = uv_w(x1);
+    let v0 = uv_w(z0);
+    let v1 = uv_w(z1);
+    mesh3d_quad(0, x0, y, z0, u0, v0, x1, y, z0, u1, v0, x1, y, z1, u1, v1, x0, y, z1, u0, v1, 0, 127, 0, mat, col, ao, em);
+  }
+}
+
+fn quad_in_py(x0: i64, x1: i64, z0: i64, z1: i64, y: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  if x1 > x0 && z1 > z0 {
+    let u0 = uv_w(x0);
+    let u1 = uv_w(x1);
+    let v0 = uv_w(z1);
+    let v1 = uv_w(z0);
+    mesh3d_quad(0, x0, y, z1, u0, v0, x1, y, z1, u1, v0, x1, y, z0, u1, v1, x0, y, z0, u0, v1, 0, -127, 0, mat, col, ao, em);
+  }
+}
+
+// --- Wall Faces with Watertight Octagonal Tube Cutouts (Seamless World-UV Corner Bevels) ---
+
+fn emit_wall_nz_open(x0: i64, x1: i64, y0: i64, y1: i64, z: i64, cx: i64, cy: i64, mat: i64, col: i64, trim: i64) -[Mem]-> unit {
+  let r = TUBE_HALF;
+  let f = TUBE_FLAT;
+  quad_in_nz(x0, x1, cy + r, y1, z, mat, col, 236, 0);
+  quad_in_nz(x0, x1, y0, cy - r, z, mat, col, 236, 0);
+  quad_in_nz(x0, cx - r, cy - r, cy + r, z, mat, col, 236, 0);
+  quad_in_nz(cx + r, x1, cy - r, cy + r, z, mat, col, 236, 0);
+  // 4 Octagon corner triangles with exact matching world UVs
+  mesh3d_quad(0, cx - r, cy + r, z, uv_w(cx - r), uv_w(cy + r), cx - f, cy + r, z, uv_w(cx - f), uv_w(cy + r), cx - r, cy + f, z, uv_w(cx - r), uv_w(cy + f), cx - r, cy + f, z, uv_w(cx - r), uv_w(cy + f), 0, 0, 127, mat, col, 226, 0);
+  mesh3d_quad(0, cx + f, cy + r, z, uv_w(cx + f), uv_w(cy + r), cx + r, cy + r, z, uv_w(cx + r), uv_w(cy + r), cx + r, cy + f, z, uv_w(cx + r), uv_w(cy + f), cx + r, cy + f, z, uv_w(cx + r), uv_w(cy + f), 0, 0, 127, mat, col, 226, 0);
+  mesh3d_quad(0, cx + r, cy - f, z, uv_w(cx + r), uv_w(cy - f), cx + r, cy - r, z, uv_w(cx + r), uv_w(cy - r), cx + f, cy - r, z, uv_w(cx + f), uv_w(cy - r), cx + f, cy - r, z, uv_w(cx + f), uv_w(cy - r), 0, 0, 127, mat, col, 226, 0);
+  mesh3d_quad(0, cx - r, cy - f, z, uv_w(cx - r), uv_w(cy - f), cx - f, cy - r, z, uv_w(cx - f), uv_w(cy - r), cx - r, cy - r, z, uv_w(cx - r), uv_w(cy - r), cx - r, cy - r, z, uv_w(cx - r), uv_w(cy - r), 0, 0, 127, mat, col, 226, 0);
+  let zf = z + 35;
+  quad_in_nz(cx - f, cx + f, cy + r, cy + r + 130, zf, MAT_GLOW, trim, 255, 1);
+  quad_in_nz(cx - f, cx + f, cy - r - 130, cy - r, zf, MAT_GLOW, trim, 255, 1);
+  quad_in_nz(cx - r - 130, cx - r, cy - f, cy + f, zf, MAT_GLOW, trim, 255, 1);
+  quad_in_nz(cx + r, cx + r + 130, cy - f, cy + f, zf, MAT_GLOW, trim, 255, 1);
+}
+
+fn emit_wall_pz_open(x0: i64, x1: i64, y0: i64, y1: i64, z: i64, cx: i64, cy: i64, mat: i64, col: i64, trim: i64) -[Mem]-> unit {
+  let r = TUBE_HALF;
+  let f = TUBE_FLAT;
+  quad_in_pz(x0, x1, cy + r, y1, z, mat, col, 236, 0);
+  quad_in_pz(x0, x1, y0, cy - r, z, mat, col, 236, 0);
+  quad_in_pz(x0, cx - r, cy - r, cy + r, z, mat, col, 236, 0);
+  quad_in_pz(cx + r, x1, cy - r, cy + r, z, mat, col, 236, 0);
+  mesh3d_quad(0, cx - f, cy + r, z, uv_w(cx - f), uv_w(cy + r), cx - r, cy + r, z, uv_w(cx - r), uv_w(cy + r), cx - r, cy + f, z, uv_w(cx - r), uv_w(cy + f), cx - r, cy + f, z, uv_w(cx - r), uv_w(cy + f), 0, 0, -127, mat, col, 226, 0);
+  mesh3d_quad(0, cx + r, cy + r, z, uv_w(cx + r), uv_w(cy + r), cx + f, cy + r, z, uv_w(cx + f), uv_w(cy + r), cx + r, cy + f, z, uv_w(cx + r), uv_w(cy + f), cx + r, cy + f, z, uv_w(cx + r), uv_w(cy + f), 0, 0, -127, mat, col, 226, 0);
+  mesh3d_quad(0, cx + r, cy - r, z, uv_w(cx + r), uv_w(cy - r), cx + r, cy - f, z, uv_w(cx + r), uv_w(cy - f), cx + f, cy - r, z, uv_w(cx + f), uv_w(cy - r), cx + f, cy - r, z, uv_w(cx + f), uv_w(cy - r), 0, 0, -127, mat, col, 226, 0);
+  mesh3d_quad(0, cx - f, cy - r, z, uv_w(cx - f), uv_w(cy - r), cx - r, cy - f, z, uv_w(cx - r), uv_w(cy - f), cx - r, cy - r, z, uv_w(cx - r), uv_w(cy - r), cx - r, cy - r, z, uv_w(cx - r), uv_w(cy - r), 0, 0, -127, mat, col, 226, 0);
+  let zf = z - 35;
+  quad_in_pz(cx - f, cx + f, cy + r, cy + r + 130, zf, MAT_GLOW, trim, 255, 1);
+  quad_in_pz(cx - f, cx + f, cy - r - 130, cy - r, zf, MAT_GLOW, trim, 255, 1);
+  quad_in_pz(cx - r - 130, cx - r, cy - f, cy + f, zf, MAT_GLOW, trim, 255, 1);
+  quad_in_pz(cx + r, cx + r + 130, cy - f, cy + f, zf, MAT_GLOW, trim, 255, 1);
+}
+
+fn emit_wall_nx_open(z0: i64, z1: i64, y0: i64, y1: i64, x: i64, cz: i64, cy: i64, mat: i64, col: i64, trim: i64) -[Mem]-> unit {
+  let r = TUBE_HALF;
+  let f = TUBE_FLAT;
+  quad_in_nx(z0, z1, cy + r, y1, x, mat, col, 236, 0);
+  quad_in_nx(z0, z1, y0, cy - r, x, mat, col, 236, 0);
+  quad_in_nx(z0, cz - r, cy - r, cy + r, x, mat, col, 236, 0);
+  quad_in_nx(cz + r, z1, cy - r, cy + r, x, mat, col, 236, 0);
+  mesh3d_quad(0, x, cy + r, cz + r, uv_w(cz + r), uv_w(cy + r), x, cy + r, cz + f, uv_w(cz + f), uv_w(cy + r), x, cy + f, cz + r, uv_w(cz + r), uv_w(cy + f), x, cy + f, cz + r, uv_w(cz + r), uv_w(cy + f), 127, 0, 0, mat, col, 226, 0);
+  mesh3d_quad(0, x, cy + r, cz - f, uv_w(cz - f), uv_w(cy + r), x, cy + r, cz - r, uv_w(cz - r), uv_w(cy + r), x, cy + f, cz - r, uv_w(cz - r), uv_w(cy + f), x, cy + f, cz - r, uv_w(cz - r), uv_w(cy + f), 127, 0, 0, mat, col, 226, 0);
+  mesh3d_quad(0, x, cy - f, cz - r, uv_w(cz - r), uv_w(cy - f), x, cy - r, cz - r, uv_w(cz - r), uv_w(cy - r), x, cy - r, cz - f, uv_w(cz - f), uv_w(cy - r), x, cy - r, cz - f, uv_w(cz - f), uv_w(cy - r), 127, 0, 0, mat, col, 226, 0);
+  mesh3d_quad(0, x, cy - f, cz + r, uv_w(cz + r), uv_w(cy - f), x, cy - r, cz + f, uv_w(cz + f), uv_w(cy - r), x, cy - r, cz + r, uv_w(cz + r), uv_w(cy - r), x, cy - r, cz + r, uv_w(cz + r), uv_w(cy - r), 127, 0, 0, mat, col, 226, 0);
+  let xf = x + 35;
+  quad_in_nx(cz - f, cz + f, cy + r, cy + r + 130, xf, MAT_GLOW, trim, 255, 1);
+  quad_in_nx(cz - f, cz + f, cy - r - 130, cy - r, xf, MAT_GLOW, trim, 255, 1);
+  quad_in_nx(cz - r - 130, cz - r, cy - f, cy + f, xf, MAT_GLOW, trim, 255, 1);
+  quad_in_nx(cz + r, cz + r + 130, cy - f, cy + f, xf, MAT_GLOW, trim, 255, 1);
+}
+
+fn emit_wall_px_open(z0: i64, z1: i64, y0: i64, y1: i64, x: i64, cz: i64, cy: i64, mat: i64, col: i64, trim: i64) -[Mem]-> unit {
+  let r = TUBE_HALF;
+  let f = TUBE_FLAT;
+  quad_in_px(z0, z1, cy + r, y1, x, mat, col, 236, 0);
+  quad_in_px(z0, z1, y0, cy - r, x, mat, col, 236, 0);
+  quad_in_px(z0, cz - r, cy - r, cy + r, x, mat, col, 236, 0);
+  quad_in_px(cz + r, z1, cy - r, cy + r, x, mat, col, 236, 0);
+  mesh3d_quad(0, x, cy + r, cz - r, uv_w(cz - r), uv_w(cy + r), x, cy + r, cz - f, uv_w(cz - f), uv_w(cy + r), x, cy + f, cz - r, uv_w(cz - r), uv_w(cy + f), x, cy + f, cz - r, uv_w(cz - r), uv_w(cy + f), -127, 0, 0, mat, col, 226, 0);
+  mesh3d_quad(0, x, cy + r, cz + f, uv_w(cz + f), uv_w(cy + r), x, cy + r, cz + r, uv_w(cz + r), uv_w(cy + r), x, cy + f, cz + r, uv_w(cz + r), uv_w(cy + f), x, cy + f, cz + r, uv_w(cz + r), uv_w(cy + f), -127, 0, 0, mat, col, 226, 0);
+  mesh3d_quad(0, x, cy - f, cz + r, uv_w(cz + r), uv_w(cy - f), x, cy - r, cz + r, uv_w(cz + r), uv_w(cy - r), x, cy - r, cz + f, uv_w(cz + f), uv_w(cy - r), x, cy - r, cz + f, uv_w(cz + f), uv_w(cy - r), -127, 0, 0, mat, col, 226, 0);
+  mesh3d_quad(0, x, cy - f, cz - r, uv_w(cz - r), uv_w(cy - f), x, cy - r, cz - f, uv_w(cz - f), uv_w(cy - r), x, cy - r, cz - r, uv_w(cz - r), uv_w(cy - r), x, cy - r, cz - r, uv_w(cz - r), uv_w(cy - r), -127, 0, 0, mat, col, 226, 0);
+  let xf = x - 35;
+  quad_in_px(cz - f, cz + f, cy + r, cy + r + 130, xf, MAT_GLOW, trim, 255, 1);
+  quad_in_px(cz - f, cz + f, cy - r - 130, cy - r, xf, MAT_GLOW, trim, 255, 1);
+  quad_in_px(cz - r - 130, cz - r, cy - f, cy + f, xf, MAT_GLOW, trim, 255, 1);
+  quad_in_px(cz + r, cz + r + 130, cy - f, cy + f, xf, MAT_GLOW, trim, 255, 1);
+}
+
+fn emit_wall_ny_open(x0: i64, x1: i64, z0: i64, z1: i64, y: i64, cx: i64, cz: i64, mat: i64, col: i64, trim: i64) -[Mem]-> unit {
+  let r = TUBE_HALF;
+  let f = TUBE_FLAT;
+  quad_in_ny(x0, x1, z0, cz - r, y, mat, col, 232, 0);
+  quad_in_ny(x0, x1, cz + r, z1, y, mat, col, 232, 0);
+  quad_in_ny(x0, cx - r, cz - r, cz + r, y, mat, col, 232, 0);
+  quad_in_ny(cx + r, x1, cz - r, cz + r, y, mat, col, 232, 0);
+  mesh3d_quad(0, cx - r, y, cz - r, uv_w(cx - r), uv_w(cz - r), cx - f, y, cz - r, uv_w(cx - f), uv_w(cz - r), cx - r, y, cz - f, uv_w(cx - r), uv_w(cz - f), cx - r, y, cz - f, uv_w(cx - r), uv_w(cz - f), 0, 127, 0, mat, col, 224, 0);
+  mesh3d_quad(0, cx + f, y, cz - r, uv_w(cx + f), uv_w(cz - r), cx + r, y, cz - r, uv_w(cx + r), uv_w(cz - r), cx + r, y, cz - f, uv_w(cx + r), uv_w(cz - f), cx + r, y, cz - f, uv_w(cx + r), uv_w(cz - f), 0, 127, 0, mat, col, 224, 0);
+  mesh3d_quad(0, cx + r, y, cz + f, uv_w(cx + r), uv_w(cz + f), cx + r, y, cz + r, uv_w(cx + r), uv_w(cz + r), cx + f, y, cz + r, uv_w(cx + f), uv_w(cz + r), cx + f, y, cz + r, uv_w(cx + f), uv_w(cz + r), 0, 127, 0, mat, col, 224, 0);
+  mesh3d_quad(0, cx - r, y, cz + f, uv_w(cx - r), uv_w(cz + f), cx - f, y, cz + r, uv_w(cx - f), uv_w(cz + r), cx - r, y, cz + r, uv_w(cx - r), uv_w(cz + r), cx - r, y, cz + r, uv_w(cx - r), uv_w(cz + r), 0, 127, 0, mat, col, 224, 0);
+  let yf = y + 35;
+  quad_in_ny(cx - f, cx + f, cz - r - 140, cz - r, yf, MAT_GLOW, trim, 255, 1);
+  quad_in_ny(cx - f, cx + f, cz + r, cz + r + 140, yf, MAT_GLOW, trim, 255, 1);
+  quad_in_ny(cx - r - 140, cx - r, cz - f, cz + f, yf, MAT_GLOW, trim, 255, 1);
+  quad_in_ny(cx + r, cx + r + 140, cz - f, cz + f, yf, MAT_GLOW, trim, 255, 1);
+}
+
+fn emit_wall_py_open(x0: i64, x1: i64, z0: i64, z1: i64, y: i64, cx: i64, cz: i64, mat: i64, col: i64, trim: i64) -[Mem]-> unit {
+  let r = TUBE_HALF;
+  let f = TUBE_FLAT;
+  quad_in_py(x0, x1, z0, cz - r, y, mat, col, 232, 0);
+  quad_in_py(x0, x1, cz + r, z1, y, mat, col, 232, 0);
+  quad_in_py(x0, cx - r, cz - r, cz + r, y, mat, col, 232, 0);
+  quad_in_py(cx + r, x1, cz - r, cz + r, y, mat, col, 232, 0);
+  mesh3d_quad(0, cx - r, y, cz + r, uv_w(cx - r), uv_w(cz + r), cx - f, y, cz + r, uv_w(cx - f), uv_w(cz + r), cx - r, y, cz + f, uv_w(cx - r), uv_w(cz + f), cx - r, y, cz + f, uv_w(cx - r), uv_w(cz + f), 0, -127, 0, mat, col, 224, 0);
+  mesh3d_quad(0, cx + f, y, cz + r, uv_w(cx + f), uv_w(cz + r), cx + r, y, cz + r, uv_w(cx + r), uv_w(cz + r), cx + r, y, cz + f, uv_w(cx + r), uv_w(cz + f), cx + r, y, cz + f, uv_w(cx + r), uv_w(cz + f), 0, -127, 0, mat, col, 224, 0);
+  mesh3d_quad(0, cx + r, y, cz - f, uv_w(cx + r), uv_w(cz - f), cx + r, y, cz - r, uv_w(cx + r), uv_w(cz - r), cx + f, y, cz - r, uv_w(cx + f), uv_w(cz - r), cx + f, y, cz - r, uv_w(cx + f), uv_w(cz - r), 0, -127, 0, mat, col, 224, 0);
+  mesh3d_quad(0, cx - r, y, cz - f, uv_w(cx - r), uv_w(cz - f), cx - f, y, cz - r, uv_w(cx - f), uv_w(cz - r), cx - r, y, cz - r, uv_w(cx - r), uv_w(cz - r), cx - r, y, cz - r, uv_w(cx - r), uv_w(cz - r), 0, -127, 0, mat, col, 224, 0);
+  let yf = y - 35;
+  quad_in_py(cx - f, cx + f, cz - r - 140, cz - r, yf, MAT_GLOW, trim, 255, 1);
+  quad_in_py(cx - f, cx + f, cz + r, cz + r + 140, yf, MAT_GLOW, trim, 255, 1);
+  quad_in_py(cx - r - 140, cx - r, cz - f, cz + f, yf, MAT_GLOW, trim, 255, 1);
+  quad_in_py(cx + r, cx + r + 140, cz - f, cz + f, yf, MAT_GLOW, trim, 255, 1);
+}
+
+// --- 1. Render All 11 Handcrafted Distinct Chambers + Corrugated Steel Landmarks ---
+
+fn emit_room_landmarks(id: i64, is_esc: bool, tick: i64) -[Mem]-> unit {
+  let i = clamp_i64(id, 0, 10);
+  let x0 = GameMem.rooms[i].x0;
+  let y0 = GameMem.rooms[i].y0;
+  let z0 = GameMem.rooms[i].z0;
+  let x1 = GameMem.rooms[i].x1;
+  let y1 = GameMem.rooms[i].y1;
+  let z1 = GameMem.rooms[i].z1;
+  let cx = (x0 + x1) / 2;
+  let cy = (y0 + y1) / 2;
+  let cz = (z0 + z1) / 2;
+  let theme = GameMem.rooms[i].theme;
+  let trim = theme_trim_color(theme, is_esc, tick);
+  let mask = GameMem.rooms[i].open_mask;
+
+  // 4 Flush Corner Structural Columns — corrugated steel / rusted steel (ZERO wood!)
+  let col_mat = if (theme % 2) == 0 { PBR_TUBE_CORR } else { PBR_RIB_RUST };
+  let col_c = if theme == 7 { pack_rgba(148, 132, 118, 255) } else { pack_rgba(136, 148, 164, 255) };
+  let pw = 280;
+  mesh3d_box(0, x0, y0, z0, x0 + pw, y1, z0 + pw, col_mat, col_c, 228, 0, 1100);
+  mesh3d_box(0, x1 - pw, y0, z0, x1, y1, z0 + pw, col_mat, col_c, 228, 0, 1100);
+  mesh3d_box(0, x0, y0, z1 - pw, x0 + pw, y1, z1, col_mat, col_c, 228, 0, 1100);
+  mesh3d_box(0, x1 - pw, y0, z1 - pw, x1, y1, z1, col_mat, col_c, 228, 0, 1100);
+
+  // Glowing horizontal accent bands on the 4 corner columns
+  let by0 = cy - 90;
+  let by1 = cy + 90;
+  mesh3d_box(0, x0, by0, z0, x0 + pw + 24, by1, z0 + pw + 24, MAT_GLOW, trim, 255, 1, 400);
+  mesh3d_box(0, x1 - pw - 24, by0, z0, x1, by1, z0 + pw + 24, MAT_GLOW, trim, 255, 1, 400);
+  mesh3d_box(0, x0, by0, z1 - pw - 24, x0 + pw + 24, by1, z1, MAT_GLOW, trim, 255, 1, 400);
+  mesh3d_box(0, x1 - pw - 24, by0, z1 - pw - 24, x1, by1, z1, MAT_GLOW, trim, 255, 1, 400);
+
+  // Overhead glowing ceiling light cross-panel (if ceiling has no vertical shaft)
+  if (mask & DIR_PY) == 0 {
+    mesh3d_box(0, cx - 900, y1 - 75, cz - 240, cx + 900, y1, cz + 240, MAT_GLOW, trim, 255, 1, 600);
+    mesh3d_box(0, cx - 240, y1 - 75, cz - 900, cx + 240, y1, cz + 900, MAT_GLOW, trim, 255, 1, 600);
+  }
+
+  // Room-Specific Signature Landmarks
+  if id == ROOM_START {
+    // Airlock blast ribs (corrugated rusted steel + dark techno-metal portal frame)
+    let ez = z1 - 35;
+    let portal_col = if is_esc || GameMem.phase == GamePhase::Victory {
+      pack_rgba(116, 255, 212, 255)
+    } else {
+      pack_rgba(88, 152, 244, 255)
+    };
+    let fr_col = pack_rgba(148, 158, 174, 255);
+    let rib_col = pack_rgba(132, 142, 154, 255);
+    mesh3d_box(0, cx - 1250, cy - 1150, ez - 110, cx - 1030, cy + 1150, z1, PBR_RIB_RUST, fr_col, 236, 0, 900);
+    mesh3d_box(0, cx + 1030, cy - 1150, ez - 110, cx + 1250, cy + 1150, z1, PBR_RIB_RUST, fr_col, 236, 0, 900);
+    mesh3d_box(0, cx - 1250, cy + 950, ez - 110, cx + 1250, cy + 1150, z1, PBR_TUBE_CORR, rib_col, 236, 0, 900);
+    mesh3d_box(0, cx - 1250, cy - 1150, ez - 110, cx + 1250, cy - 950, z1, PBR_TUBE_CORR, rib_col, 236, 0, 900);
+    // Side airlock structural ribs along the launch bay walls
+    mesh3d_box(0, x0, y0, cz - 140, x0 + 200, y1, cz + 140, PBR_RIB_RUST, rib_col, 224, 0, 900);
+    mesh3d_box(0, x1 - 200, y0, cz - 140, x1, y1, cz + 140, PBR_RIB_RUST, rib_col, 224, 0, 900);
+    quad_in_pz(cx - 1030, cx + 1030, cy - 950, cy + 950, ez - 10, MAT_PORTAL, portal_col, 255, 1);
+    quad_in_ny(cx - 120, cx + 120, z0 + 250, z1 - 1200, y0 + 25, MAT_GLOW, trim, 240, 1);
+  } else if id == ROOM_ATRIUM {
+    let warn_c = if is_esc { pack_rgba(255, 68, 56, 255) } else { pack_rgba(255, 148, 48, 255) };
+    mesh3d_box(0, cx - 1500, cy - 140, z0, cx + 1500, cy + 140, z0 + 110, PBR_REACTOR_ARMOR, pack_rgba(164, 144, 138, 255), 232, 0, 900);
+    quad_in_nz(cx - 1250, cx + 1250, cy - 55, cy + 55, z0 + 125, MAT_GLOW, warn_c, 255, 1);
+    quad_in_nz(cx - 650, cx + 650, cy + 280, cy + 360, z0 + 45, MAT_GLOW, warn_c, 230, 1);
+    quad_in_nz(cx - 650, cx + 650, cy - 360, cy - 280, z0 + 45, MAT_GLOW, warn_c, 230, 1);
+  } else if id == ROOM_ARMORY {
+    let rack_c = pack_rgba(255, 152, 42, 255);
+    mesh3d_box(0, x0, y0 + 500, cz - 1400, x0 + 240, y1 - 500, cz - 700, PBR_WEAPON_METAL, pack_rgba(156, 142, 128, 255), 236, 0, 800);
+    mesh3d_box(0, x0, y0 + 500, cz + 700, x0 + 240, y1 - 500, cz + 1400, PBR_WEAPON_METAL, pack_rgba(156, 142, 128, 255), 236, 0, 800);
+    quad_in_nx(cz - 1300, cz - 800, cy - 140, cy + 140, x0 + 260, MAT_GLOW, rack_c, 255, 1);
+    quad_in_nx(cz + 800, cz + 1300, cy - 140, cy + 140, x0 + 260, MAT_GLOW, rack_c, 255, 1);
+  } else if id == ROOM_GEN {
+    let coil_c = pack_rgba(255, 224, 72, 255);
+    mesh3d_box(0, x1 - 260, y0 + 350, cz - 1250, x1, y1 - 350, cz - 650, PBR_WEAPON_METAL, pack_rgba(142, 158, 178, 255), 238, 0, 800);
+    mesh3d_box(0, x1 - 260, y0 + 350, cz + 650, x1, y1 - 350, cz + 1250, PBR_WEAPON_METAL, pack_rgba(142, 158, 178, 255), 238, 0, 800);
+    quad_in_px(cz - 1150, cz - 750, y0 + 550, y1 - 550, x1 - 280, MAT_GLOW, coil_c, 255, 1);
+    quad_in_px(cz + 750, cz + 1150, y0 + 550, y1 - 550, x1 - 280, MAT_GLOW, coil_c, 255, 1);
+  } else if id == ROOM_CRYO {
+    let cryo_c = pack_rgba(88, 255, 236, 255);
+    quad_in_nz(cx - 1400, cx - 1150, y0 + 400, y1 - 400, z0 + 45, MAT_GLOW, cryo_c, 255, 1);
+    quad_in_nz(cx - 150, cx + 150, y0 + 400, y1 - 400, z0 + 45, MAT_GLOW, cryo_c, 255, 1);
+    quad_in_nz(cx + 1150, cx + 1400, y0 + 400, y1 - 400, z0 + 45, MAT_GLOW, cryo_c, 255, 1);
+  } else if id == ROOM_GUARD {
+    let red_c = pack_rgba(255, 72, 78, 255);
+    quad_in_nz(x0 + 500, x1 - 500, cy + 450, cy + 590, z0 + 45, MAT_GLOW, red_c, 255, 1);
+    quad_in_nz(x0 + 500, x1 - 500, cy - 590, cy - 450, z0 + 45, MAT_GLOW, red_c, 255, 1);
+    quad_in_px(z0 + 500, z1 - 500, cy - 110, cy + 110, x1 - 45, MAT_GLOW, red_c, 255, 1);
+  }
+}
+
+fn emit_all_rooms() -[Mem]-> unit {
+  let is_esc = GameMem.phase == GamePhase::Escape;
+  let tick = GameMem.tick;
+
+  for r in 0..11 {
+    let x0 = GameMem.rooms[r].x0;
+    let y0 = GameMem.rooms[r].y0;
+    let z0 = GameMem.rooms[r].z0;
+    let x1 = GameMem.rooms[r].x1;
+    let y1 = GameMem.rooms[r].y1;
+    let z1 = GameMem.rooms[r].z1;
+    let cx = (x0 + x1) / 2;
+    let cy = (y0 + y1) / 2;
+    let cz = (z0 + z1) / 2;
+    let theme = GameMem.rooms[r].theme;
+    let mask = GameMem.rooms[r].open_mask;
+    let wmat = theme_wall_mat(theme);
+    let cmat = theme_ceil_mat(theme);
+    let fmat = theme_floor_mat(theme);
+    let wcol = theme_wall_color(theme);
+    let ccol = theme_ceil_color(theme);
+    let fcol = theme_floor_color(theme);
+    let trim = theme_trim_color(theme, is_esc, tick);
+
+    let dn_trim = if is_esc { trim } else { pack_rgba(255, 174, 52, 255) };
+    let up_trim = if is_esc { trim } else { pack_rgba(196, 114, 255, 255) };
+
+    if (mask & DIR_NZ) != 0 {
+      emit_wall_nz_open(x0, x1, y0, y1, z0, cx, cy, wmat, wcol, trim);
+    } else {
+      quad_in_nz(x0, x1, y0, y1, z0, wmat, wcol, 236, 0);
+    }
+
+    if (mask & DIR_PZ) != 0 {
+      emit_wall_pz_open(x0, x1, y0, y1, z1, cx, cy, wmat, wcol, trim);
+    } else {
+      quad_in_pz(x0, x1, y0, y1, z1, wmat, wcol, 236, 0);
+    }
+
+    if (mask & DIR_NX) != 0 {
+      emit_wall_nx_open(z0, z1, y0, y1, x0, cz, cy, wmat, wcol, trim);
+    } else {
+      quad_in_nx(z0, z1, y0, y1, x0, wmat, wcol, 236, 0);
+    }
+
+    if (mask & DIR_PX) != 0 {
+      emit_wall_px_open(z0, z1, y0, y1, x1, cz, cy, wmat, wcol, trim);
+    } else {
+      quad_in_px(z0, z1, y0, y1, x1, wmat, wcol, 236, 0);
+    }
+
+    if (mask & DIR_NY) != 0 {
+      emit_wall_ny_open(x0, x1, z0, z1, y0, cx, cz, fmat, fcol, dn_trim);
+    } else {
+      quad_in_ny(x0, x1, z0, z1, y0, fmat, fcol, 232, 0);
+    }
+
+    if (mask & DIR_PY) != 0 {
+      emit_wall_py_open(x0, x1, z0, z1, y1, cx, cz, cmat, ccol, up_trim);
+    } else {
+      quad_in_py(x0, x1, z0, z1, y1, cmat, ccol, 232, 0);
+    }
+
+    emit_room_landmarks(r, is_esc, tick);
+  }
+}
+
+// --- 2. Render All 13 Octagonal Corrugated PBR Tubes (Proportional Zero-Stretch UV Tiling!) ---
+
+fn emit_oct_seg_z(xa: i64, ya: i64, xb: i64, yb: i64, z0: i64, z1: i64, uw: i64, nx: i64, ny: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  let uz = clamp_i64(((z1 - z0) * 1024) / PBR_TILE_MM, 64, 32768);
+  mesh3d_quad(0, xa, ya, z1, 0, 0, xb, yb, z1, uw, 0, xb, yb, z0, uw, uz, xa, ya, z0, 0, uz, nx, ny, 0, mat, col, ao, em);
+}
+
+fn emit_oct_seg_x(za: i64, ya: i64, zb: i64, yb: i64, x0: i64, x1: i64, uw: i64, ny: i64, nz: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  let ux = clamp_i64(((x1 - x0) * 1024) / PBR_TILE_MM, 64, 32768);
+  mesh3d_quad(0, x0, ya, za, 0, 0, x0, yb, zb, uw, 0, x1, yb, zb, uw, ux, x1, ya, za, 0, ux, 0, ny, nz, mat, col, ao, em);
+}
+
+fn emit_oct_seg_y(xa: i64, za: i64, xb: i64, zb: i64, y0: i64, y1: i64, uw: i64, nx: i64, nz: i64, mat: i64, col: i64, ao: i64, em: i64) -[Mem]-> unit {
+  let uy = clamp_i64(((y1 - y0) * 1024) / PBR_TILE_MM, 64, 32768);
+  mesh3d_quad(0, xa, y1, za, 0, 0, xb, y1, zb, uw, 0, xb, y0, zb, uw, uy, xa, y0, za, 0, uy, nx, 0, nz, mat, col, ao, em);
+}
+
+// Flat octagon side = 1600 mm -> uw = 1024; 45-degree bevel = 566 mm -> uw = 362 (1:1 world scale!)
+fn emit_oct_shell_z(cx: i64, cy: i64, z0: i64, z1: i64, r: i64, f: i64, m_flat: i64, m_bev: i64, c_flat: i64, c_bev: i64, em: i64) -[Mem]-> unit {
+  emit_oct_seg_z(cx - f, cy + r, cx + f, cy + r, z0, z1, 1024, 0, -127, m_flat, c_flat, 236, em);
+  emit_oct_seg_z(cx + f, cy + r, cx + r, cy + f, z0, z1, 362, -90, -90, m_bev, c_bev, 220, em);
+  emit_oct_seg_z(cx + r, cy + f, cx + r, cy - f, z0, z1, 1024, -127, 0, m_flat, c_flat, 236, em);
+  emit_oct_seg_z(cx + r, cy - f, cx + f, cy - r, z0, z1, 362, -90, 90, m_bev, c_bev, 220, em);
+  emit_oct_seg_z(cx + f, cy - r, cx - f, cy - r, z0, z1, 1024, 0, 127, m_flat, c_flat, 236, em);
+  emit_oct_seg_z(cx - f, cy - r, cx - r, cy - f, z0, z1, 362, 90, 90, m_bev, c_bev, 220, em);
+  emit_oct_seg_z(cx - r, cy - f, cx - r, cy + f, z0, z1, 1024, 127, 0, m_flat, c_flat, 236, em);
+  emit_oct_seg_z(cx - r, cy + f, cx - f, cy + r, z0, z1, 362, 90, -90, m_bev, c_bev, 220, em);
+}
+
+fn emit_oct_shell_x(cy: i64, cz: i64, x0: i64, x1: i64, r: i64, f: i64, m_flat: i64, m_bev: i64, c_flat: i64, c_bev: i64, em: i64) -[Mem]-> unit {
+  emit_oct_seg_x(cz - f, cy + r, cz + f, cy + r, x0, x1, 1024, -127, 0, m_flat, c_flat, 236, em);
+  emit_oct_seg_x(cz + f, cy + r, cz + r, cy + f, x0, x1, 362, -90, -90, m_bev, c_bev, 220, em);
+  emit_oct_seg_x(cz + r, cy + f, cz + r, cy - f, x0, x1, 1024, 0, -127, m_flat, c_flat, 236, em);
+  emit_oct_seg_x(cz + r, cy - f, cz + f, cy - r, x0, x1, 362, 90, -90, m_bev, c_bev, 220, em);
+  emit_oct_seg_x(cz + f, cy - r, cz - f, cy - r, x0, x1, 1024, 127, 0, m_flat, c_flat, 236, em);
+  emit_oct_seg_x(cz - f, cy - r, cz - r, cy - f, x0, x1, 362, 90, 90, m_bev, c_bev, 220, em);
+  emit_oct_seg_x(cz - r, cy - f, cz - r, cy + f, x0, x1, 1024, 0, 127, m_flat, c_flat, 236, em);
+  emit_oct_seg_x(cz - r, cy + f, cz - f, cy + r, x0, x1, 362, -90, 90, m_bev, c_bev, 220, em);
+}
+
+fn emit_oct_shell_y(cx: i64, cz: i64, y0: i64, y1: i64, r: i64, f: i64, m_flat: i64, m_bev: i64, c_flat: i64, c_bev: i64, em: i64) -[Mem]-> unit {
+  emit_oct_seg_y(cx - f, cz - r, cx + f, cz - r, y0, y1, 1024, 0, 127, m_flat, c_flat, 236, em);
+  emit_oct_seg_y(cx + f, cz - r, cx + r, cz - f, y0, y1, 362, -90, 90, m_bev, c_bev, 220, em);
+  emit_oct_seg_y(cx + r, cz - f, cx + r, cz + f, y0, y1, 1024, -127, 0, m_flat, c_flat, 236, em);
+  emit_oct_seg_y(cx + r, cz + f, cx + f, cz + r, y0, y1, 362, -90, -90, m_bev, c_bev, 220, em);
+  emit_oct_seg_y(cx + f, cz + r, cx - f, cz + r, y0, y1, 1024, 0, -127, m_flat, c_flat, 236, em);
+  emit_oct_seg_y(cx - f, cz + r, cx - r, cz + f, y0, y1, 362, 90, -90, m_bev, c_bev, 220, em);
+  emit_oct_seg_y(cx - r, cz + f, cx - r, cz - f, y0, y1, 1024, 127, 0, m_flat, c_flat, 236, em);
+  emit_oct_seg_y(cx - r, cz - f, cx - f, cz - r, y0, y1, 362, 90, 90, m_bev, c_bev, 220, em);
+}
+
+fn emit_all_tubes() -[Mem]-> unit {
+  let is_esc = GameMem.phase == GamePhase::Escape;
+  let tick = GameMem.tick;
+  // Dark corrugated industrial steel & rusted rib bevels
+  let c_flat = pack_rgba(148, 160, 176, 255);
+  let c_bev = pack_rgba(122, 134, 148, 255);
+
+  for t in 0..13 {
+    let ax = GameMem.tubes[t].axis;
+    let cx = GameMem.tubes[t].cx;
+    let cy = GameMem.tubes[t].cy;
+    let cz = GameMem.tubes[t].cz;
+    let a0 = GameMem.tubes[t].a0;
+    let a1 = GameMem.tubes[t].a1;
+    let theme = GameMem.tubes[t].theme;
+    let trim = theme_trim_color(theme, is_esc, tick);
+
+    if ax == AXIS_Z {
+      let mf = if theme == 7 { PBR_CEILING_STEEL } else { PBR_TUBE_CORR };
+      let cf = if theme == 7 { pack_rgba(154, 136, 120, 255) } else { c_flat };
+      emit_oct_shell_z(cx, cy, a0, a1, TUBE_HALF, TUBE_FLAT, mf, PBR_RIB_RUST, cf, c_bev, 0);
+      for k in 1..=3 {
+        let rm = a0 + ((a1 - a0) * k) / 4;
+        emit_oct_shell_z(cx, cy, rm - 65, rm + 65, TUBE_HALF - 32, TUBE_FLAT - 22, MAT_GLOW, MAT_GLOW, trim, trim, 1);
+      }
+    } else if ax == AXIS_X {
+      emit_oct_shell_x(cy, cz, a0, a1, TUBE_HALF, TUBE_FLAT, PBR_TUBE_CORR, PBR_RIB_RUST, c_flat, c_bev, 0);
+      for k in 1..=3 {
+        let rm = a0 + ((a1 - a0) * k) / 4;
+        emit_oct_shell_x(cy, cz, rm - 65, rm + 65, TUBE_HALF - 32, TUBE_FLAT - 22, MAT_GLOW, MAT_GLOW, trim, trim, 1);
+      }
+    } else {
+      let v_flat = pack_rgba(142, 152, 168, 255);
+      let v_bev = pack_rgba(118, 128, 142, 255);
+      emit_oct_shell_y(cx, cz, a0, a1, TUBE_HALF, TUBE_FLAT, PBR_RIB_RUST, PBR_TUBE_CORR, v_flat, v_bev, 0);
+      for k in 1..=2 {
+        let rm = a0 + ((a1 - a0) * k) / 3;
+        emit_oct_shell_y(cx, cz, rm - 75, rm + 75, TUBE_HALF - 32, TUBE_FLAT - 22, MAT_GLOW, MAT_GLOW, trim, trim, 1);
+      }
+    }
+  }
+}
+
+// --- 3. Central Reactor Core in Room 6 (0, 10000, -2000) ---
+
+fn emit_reactor_core() -[Mem]-> unit {
+  let (rx, ry, rz) = reactor_center_xyz();
+  let tick = GameMem.tick;
+  let spin1 = (tick * 28) & 4095;
+  let spin2 = (4096 - ((tick * 42) & 4095)) & 4095;
+
+  let pylon_col = pack_rgba(146, 154, 168, 255);
+  mesh3d_box(0, rx - 240, ry - 240, rz - 3700, rx + 240, ry + 240, rz - 780, PBR_RIB_RUST, pylon_col, 232, 0, 900);
+  mesh3d_box(0, rx - 240, ry - 240, rz + 780, rx + 240, ry + 240, rz + 3700, PBR_RIB_RUST, pylon_col, 232, 0, 900);
+
+  if GameMem.reactor_hp > 0 {
+    let fl = GameMem.reactor_flash;
+    let pulse = 540 + (sin_1024(tick * 64) * 55) / 1024;
+    let core_col = if fl > 0 {
+      pack_rgba(255, 255, 230, 255)
+    } else if GameMem.reactor_hp < 100 {
+      pack_rgba(255, 74, 48, 255)
+    } else {
+      pack_rgba(255, 138, 42, 255)
+    };
+    mesh3d_limb(rx, ry, rz, spin1, -pulse, -pulse, -pulse, pulse, pulse, pulse, MAT_LAVA, core_col, 255, 1);
+
+    let ring_col = if fl > 0 { pack_rgba(255, 224, 208, 255) } else { pack_rgba(164, 174, 192, 255) };
+    let glow_r = pack_rgba(255, 68, 164, 255);
+    mesh3d_limb(rx, ry, rz, spin1, -960, -140, -140, 960, 140, 140, PBR_WEAPON_METAL, ring_col, 240, 0);
+    mesh3d_limb(rx, ry, rz, spin1, -140, -140, -960, 140, 140, 960, PBR_WEAPON_METAL, ring_col, 240, 0);
+    mesh3d_limb(rx, ry, rz, spin2, -820, 340, -110, 820, 480, 110, MAT_GLOW, glow_r, 255, 1);
+    mesh3d_limb(rx, ry, rz, spin2, -820, -480, -110, 820, -340, 110, MAT_GLOW, glow_r, 255, 1);
+  } else {
+    mesh3d_limb(rx, ry, rz, spin1 / 3, -380, -320, -380, 380, 320, 380, PBR_REACTOR_ARMOR, pack_rgba(112, 102, 106, 255), 195, 0);
+    mesh3d_box(0, rx - 210, ry - 210, rz - 210, rx + 210, ry + 210, rz + 210, MAT_GLOW, pack_rgba(255, 42, 32, 255), 255, 1, 300);
+  }
+}
+
+// --- 4. Articulated 3D Dark Techno-Metal Enemy Drones ---
+
+fn draw_drone_3d(idx: i64) -[Mem]-> unit {
+  let i = clamp_i64(idx, 0, 17);
+  if GameMem.drones[i].alive == 1 {
+    let ex = GameMem.drones[i].x;
+    let ey = GameMem.drones[i].y;
+    let ez = GameMem.drones[i].z;
+    let yaw = GameMem.drones[i].yaw;
+    let kind = GameMem.drones[i].kind;
+    let fl = GameMem.drones[i].flash;
+    let anim = GameMem.drones[i].anim;
+    let bob = (sin_1024(anim * 44) * 55) / 1024;
+    let dy = ey + bob;
+
+    if kind == DroneKind::Guardian {
+      let hull = if fl > 0 { pack_rgba(255, 232, 224, 255) } else { pack_rgba(154, 92, 108, 255) };
+      let trim = if fl > 0 { pack_rgba(255, 246, 232, 255) } else { pack_rgba(218, 86, 98, 255) };
+      let spin = (anim * 36) & 4095;
+      mesh3d_limb(ex, dy, ez, yaw, -340, -340, -340, 340, 340, 340, PBR_WEAPON_METAL, hull, 240, 0);
+      mesh3d_limb(ex, dy, ez, spin, -640, -160, -90, -380, 160, 90, PBR_RIB_RUST, trim, 242, 0);
+      mesh3d_limb(ex, dy, ez, spin, 380, -160, -90, 640, 160, 90, PBR_RIB_RUST, trim, 242, 0);
+      mesh3d_limb(ex, dy, ez, spin, -90, -160, -640, 90, 160, -380, PBR_RIB_RUST, trim, 242, 0);
+      mesh3d_limb(ex, dy, ez, spin, -90, -160, 380, 90, 160, 640, PBR_RIB_RUST, trim, 242, 0);
+      mesh3d_limb(ex, dy, ez, yaw, -160, -120, 310, 160, 120, 410, MAT_GLOW, pack_rgba(255, 214, 58, 255), 255, 1);
+      mesh3d_limb(ex, dy, ez, yaw, -320, -240, 220, -210, -120, 540, PBR_WEAPON_METAL, pack_rgba(176, 188, 204, 255), 245, 0);
+      mesh3d_limb(ex, dy, ez, yaw, 210, -240, 220, 320, -120, 540, PBR_WEAPON_METAL, pack_rgba(176, 188, 204, 255), 245, 0);
+    } else if kind == DroneKind::Vulcan {
+      let steel = if fl > 0 { pack_rgba(255, 236, 222, 255) } else { pack_rgba(156, 172, 156, 255) };
+      let dark = if fl > 0 { pack_rgba(255, 210, 198, 255) } else { pack_rgba(116, 128, 142, 255) };
+      mesh3d_limb(ex, dy, ez, yaw, -280, -240, -300, 280, 240, 300, PBR_WEAPON_METAL, steel, 240, 0);
+      mesh3d_limb(ex, dy, ez, yaw, -560, -160, -220, -300, 160, 240, PBR_RIB_RUST, dark, 234, 0);
+      mesh3d_limb(ex, dy, ez, yaw, 300, -160, -220, 560, 160, 240, PBR_RIB_RUST, dark, 234, 0);
+      mesh3d_limb(ex, dy, ez, yaw, -470, -60, 200, -380, 60, 560, PBR_WEAPON_METAL, pack_rgba(174, 182, 198, 255), 245, 0);
+      mesh3d_limb(ex, dy, ez, yaw, 380, -60, 200, 470, 60, 560, PBR_WEAPON_METAL, pack_rgba(174, 182, 198, 255), 245, 0);
+      mesh3d_limb(ex, dy, ez, yaw, -190, -50, 280, 190, 90, 360, MAT_GLOW, pack_rgba(255, 142, 42, 255), 255, 1);
+      mesh3d_limb(ex, dy, ez, yaw, -120, -90, -360, 120, 90, -290, MAT_GLOW, pack_rgba(84, 196, 255, 255), 255, 1);
+    } else {
+      let body = if fl > 0 { pack_rgba(255, 232, 224, 255) } else { pack_rgba(128, 158, 198, 255) };
+      let wing = if fl > 0 { pack_rgba(255, 214, 204, 255) } else { pack_rgba(196, 98, 112, 255) };
+      mesh3d_limb(ex, dy, ez, yaw, -210, -180, -280, 210, 180, 280, PBR_WEAPON_METAL, body, 242, 0);
+      mesh3d_limb(ex, dy, ez, yaw, -540, -65, -180, -190, 65, 120, PBR_TUBE_CORR, wing, 236, 0);
+      mesh3d_limb(ex, dy, ez, yaw, 190, -65, -180, 540, 65, 120, PBR_TUBE_CORR, wing, 236, 0);
+      mesh3d_limb(ex, dy, ez, yaw, -45, 160, -220, 45, 340, 80, PBR_WEAPON_METAL, wing, 238, 0);
+      mesh3d_limb(ex, dy, ez, yaw, -120, -65, 260, 120, 65, 340, MAT_GLOW, pack_rgba(255, 58, 72, 255), 255, 1);
+      mesh3d_limb(ex, dy, ez, yaw, -95, -75, -340, 95, 75, -260, MAT_GLOW, pack_rgba(72, 218, 255, 255), 255, 1);
+    }
+  }
+}
+
+// --- 5. Pickups, Energy Bolts, Particles & Dynamic Point Lights ---
+
+fn emit_pickups_bolts_particles() -[Mem]-> unit {
+  let spin = (GameMem.tick * 36) & 4095;
+
+  // Rotating 3D Powerups
+  for pk in 0..16 {
+    if GameMem.pickups[pk].active == 1 {
+      let ix = GameMem.pickups[pk].x;
+      let iy = GameMem.pickups[pk].y + (sin_1024(GameMem.tick * 48 + pk * 256) * 55) / 1024;
+      let iz = GameMem.pickups[pk].z;
+      let k = GameMem.pickups[pk].kind;
+      if k == PickupKind::Shield {
+        mesh3d_limb(ix, iy, iz, spin, -170, -170, -170, 170, 170, 170, PBR_WEAPON_METAL, pack_rgba(92, 186, 255, 255), 245, 0);
+        mesh3d_limb(ix, iy, iz, spin, -210, -55, -55, 210, 55, 55, MAT_GLOW, pack_rgba(72, 234, 255, 255), 255, 1);
+      } else if k == PickupKind::Energy {
+        mesh3d_limb(ix, iy, iz, spin, -150, -190, -150, 150, 190, 150, MAT_GLOW, pack_rgba(255, 214, 62, 255), 255, 1);
+        mesh3d_limb(ix, iy, iz, spin, -180, -45, -180, 180, 45, 180, PBR_WEAPON_METAL, pack_rgba(142, 152, 168, 255), 240, 0);
+      } else {
+        mesh3d_limb(ix, iy, iz, spin, -180, -110, -210, 180, 110, 210, PBR_WEAPON_METAL, pack_rgba(176, 102, 86, 255), 240, 0);
+        mesh3d_limb(ix, iy, iz, spin, -75, -75, 170, 75, 75, 260, MAT_GLOW, pack_rgba(255, 118, 48, 255), 255, 1);
+      }
+    }
+  }
+
+  // Flying Plasma Lasers, Homing Missiles & Enemy Bolts (+ dynamic point lights)
+  let mut bolt_lights = 0;
+  for b in 0..40 {
+    if GameMem.bolts[b].life > 0 {
+      let bx = GameMem.bolts[b].x;
+      let by = GameMem.bolts[b].y;
+      let bz = GameMem.bolts[b].z;
+      let k = GameMem.bolts[b].kind;
+      if k == BoltKind::PlayerLaser {
+        mesh3d_box(0, bx - 60, by - 60, bz - 60, bx + 60, by + 60, bz + 60, MAT_GLOW, pack_rgba(84, 248, 255, 255), 255, 1, 200);
+        if bolt_lights < 5 {
+          mesh3d_add_light(bx, by, bz, 3600, 68, 232, 255, 260);
+          bolt_lights += 1;
+        }
+      } else if k == BoltKind::PlayerMissile {
+        mesh3d_box(0, bx - 115, by - 115, bz - 115, bx + 115, by + 115, bz + 115, MAT_GLOW, pack_rgba(255, 188, 62, 255), 255, 1, 200);
+        if bolt_lights < 5 {
+          mesh3d_add_light(bx, by, bz, 4800, 255, 152, 48, 340);
+          bolt_lights += 1;
+        }
+      } else {
+        mesh3d_box(0, bx - 85, by - 85, bz - 85, bx + 85, by + 85, bz + 85, MAT_GLOW, pack_rgba(255, 74, 62, 255), 255, 1, 200);
+        if bolt_lights < 5 {
+          mesh3d_add_light(bx, by, bz, 3400, 255, 68, 56, 230);
+          bolt_lights += 1;
+        }
+      }
+    }
+  }
+
+  // 3D Explosion Spark Particles
+  for p in 0..48 {
+    if GameMem.particles[p].life > 0 {
+      let px = GameMem.particles[p].x;
+      let py = GameMem.particles[p].y;
+      let pz = GameMem.particles[p].z;
+      let sz = clamp_i64(GameMem.particles[p].size, 24, 140);
+      mesh3d_box(0, px - sz, py - sz, pz - sz, px + sz, py + sz, pz + sz, MAT_GLOW, GameMem.particles[p].col, 255, 1, 200);
+    }
+  }
+}
+
+fn emit_station_lights() -[Mem]-> unit {
+  let is_esc = GameMem.phase == GamePhase::Escape;
+  let tick = GameMem.tick;
+
+  // 1. Ship Forward Headlamp + Cockpit Muzzle Flash (always bright & responsive!)
+  let fwd = ship_forward_vec(GameMem.yaw, GameMem.pitch);
+  let hx = GameMem.ship_x + fixed_to_int(fwd.x * 1650);
+  let hy = GameMem.ship_y + fixed_to_int(fwd.y * 1650);
+  let hz = GameMem.ship_z + fixed_to_int(fwd.z * 1650);
+  mesh3d_add_light(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z, 5400, 175, 205, 235, 215);
+  mesh3d_add_light(hx, hy, hz, 8200, 210, 228, 255, 275);
+
+  if GameMem.muzzle_t > 0 {
+    mesh3d_add_light(GameMem.ship_x + fixed_to_int(fwd.x * 650), GameMem.ship_y - 90, GameMem.ship_z + fixed_to_int(fwd.z * 650), 5200, 72, 240, 255, 360);
+  }
+
+  // 2. Reactor Core Intense Dynamic Light
+  let (rx, ry, rz) = reactor_center_xyz();
+  if GameMem.reactor_hp > 0 {
+    let rp = 290 + abs_i64(sin_1024(tick * 54)) / 12;
+    mesh3d_add_light(rx, ry, rz, 9800, 255, 128, 52, rp);
+  } else {
+    let ep = 220 + abs_i64(sin_1024(tick * 110)) / 7;
+    mesh3d_add_light(rx, ry, rz, 9800, 255, 42, 36, ep);
+  }
+
+  // 3. Per-Chamber Atmospheric Lights (10 remaining rooms, total <= 14 lights leaving room for bolts)
+  for r in 0..11 {
+    if r == ROOM_REACTOR { continue; }
+    let (cx, cy, cz) = room_center_xyz(r);
+    let th = GameMem.rooms[r].theme;
+    if is_esc {
+      let pulse = 180 + abs_i64(sin_1024(tick * 90 + r * 200)) / 8;
+      mesh3d_add_light(cx, cy + 750, cz, 8600, 255, 48, 44, pulse);
+    } else if th == 0 {
+      mesh3d_add_light(cx, cy + 700, cz, 8200, 118, 204, 255, 225);
+    } else if th == 1 {
+      mesh3d_add_light(cx, cy + 950, cz, 9600, 96, 218, 255, 245);
+    } else if th == 2 {
+      mesh3d_add_light(cx, cy + 700, cz, 8200, 255, 174, 76, 220);
+    } else if th == 3 {
+      mesh3d_add_light(cx, cy + 700, cz, 8200, 255, 212, 92, 225);
+    } else if th == 4 {
+      mesh3d_add_light(cx, cy + 700, cz, 8200, 86, 244, 232, 225);
+    } else if th == 5 {
+      mesh3d_add_light(cx, cy + 700, cz, 8200, 255, 88, 92, 220);
+    } else if th == 7 {
+      mesh3d_add_light(cx, cy + 700, cz, 8400, 255, 162, 74, 225);
+    } else {
+      mesh3d_add_light(cx, cy + 700, cz, 8400, 198, 128, 255, 225);
+    }
+  }
+}
+
+// --- 6. True 3D Dark Techno-Metal Twin-Cannon Cockpit Viewmodel (ZERO Marble!) ---
+
+fn draw_cockpit_vm() -[Mem]-> unit {
+  let bk = GameMem.bank_vis;
+  let bob = (sin_1024(GameMem.tick * 24) * 6) / 1024;
+  let rl = GameMem.recoil_l * 16;
+  let rr = GameMem.recoil_r * 16;
+
+  // Dark gunmetal techno-metal (`PBR_WEAPON_METAL` = slot 3 `metal_plate`, uv_scale = 240 for crisp detail)
+  let gun_dark = pack_rgba(88, 98, 114, 255);
+  let gun_mid = pack_rgba(124, 138, 156, 255);
+  let gun_rib = pack_rgba(104, 114, 128, 255);
+  let plasma = pack_rgba(72, 236, 255, 255);
+  let warn_o = pack_rgba(255, 154, 48, 255);
+
+  // Left Wing Plasma Cannon
+  let lx = -258 - bk / 2;
+  let ly = -182 + bob + bk / 2;
+  let lz = -340 + rl;
+  mesh3d_box(1, lx - 54, ly - 38, lz - 240, lx + 54, ly + 46, lz + 150, PBR_WEAPON_METAL, gun_dark, 236, 0, 240);
+  mesh3d_box(1, lx - 34, ly - 16, lz - 540, lx + 34, ly + 36, lz - 220, PBR_WEAPON_METAL, gun_mid, 245, 0, 240);
+  mesh3d_box(1, lx - 42, ly + 28, lz - 460, lx + 42, ly + 46, lz - 240, PBR_TUBE_CORR, gun_rib, 232, 0, 220);
+  mesh3d_box(1, lx - 12, ly + 38, lz - 535, lx + 12, ly + 50, lz - 250, MAT_GLOW, plasma, 255, 1, 200);
+  mesh3d_box(1, lx - 20, ly - 8, lz - 555, lx + 20, ly + 28, lz - 532, MAT_GLOW, plasma, 255, 1, 160);
+
+  // Right Wing Plasma Cannon
+  let rx = 258 - bk / 2;
+  let ry = -182 + bob - bk / 2;
+  let rz = -340 + rr;
+  mesh3d_box(1, rx - 54, ry - 38, rz - 240, rx + 54, ry + 46, rz + 150, PBR_WEAPON_METAL, gun_dark, 236, 0, 240);
+  mesh3d_box(1, rx - 34, ry - 16, rz - 540, rx + 34, ry + 36, rz - 220, PBR_WEAPON_METAL, gun_mid, 245, 0, 240);
+  mesh3d_box(1, rx - 42, ry + 28, rz - 460, rx + 42, ry + 46, rz - 240, PBR_TUBE_CORR, gun_rib, 232, 0, 220);
+  mesh3d_box(1, rx - 12, ry + 38, rz - 535, rx + 12, ry + 50, rz - 250, MAT_GLOW, plasma, 255, 1, 200);
+  mesh3d_box(1, rx - 20, ry - 8, rz - 555, rx + 20, ry + 28, rz - 532, MAT_GLOW, plasma, 255, 1, 160);
+
+  // Lower Cockpit Dash Nose & Missile Pod Frame (dark techno-metal)
+  mesh3d_box(1, -185, -245 + bob, -280, 185, -192 + bob, -110, PBR_WEAPON_METAL, gun_dark, 224, 0, 280);
+  mesh3d_box(1, -92, -196 + bob, -270, 92, -186 + bob, -252, MAT_GLOW, if GameMem.missiles > 0 { warn_o } else { pack_rgba(92, 98, 108, 255) }, 255, 1, 160);
+
+  // Muzzle Flash on Firing Barrel
+  if GameMem.muzzle_t > 0 {
+    let fr = 42 + GameMem.muzzle_t * 14;
+    if GameMem.recoil_l >= GameMem.recoil_r {
+      mesh3d_box(1, lx - fr, ly + 10 - fr, lz - 610, lx + fr, ly + 10 + fr, lz - 545, MAT_GLOW, pack_rgba(148, 252, 255, 255), 255, 1, 180);
+    }
+    if GameMem.recoil_r >= GameMem.recoil_l {
+      mesh3d_box(1, rx - fr, ry + 10 - fr, rz - 610, rx + fr, ry + 10 + fr, rz - 545, MAT_GLOW, pack_rgba(148, 252, 255, 255), 255, 1, 180);
+    }
+  }
+}
+
+// --- 7. Multi-Deck Room-and-Tube Tactical 3D Radar (Top-Right) ---
+
+fn radar_x(wx: i64, rx0: i64, rw: i64) -> i64 {
+  rx0 + 10 + ((wx + 15000) * (rw - 20)) / 30000
+}
+
+fn radar_y(wz: i64, ry0: i64, rh: i64) -> i64 {
+  ry0 + 24 + ((wz + 7000) * (rh - 34)) / 31000
+}
+
+fn draw_mine_radar(vw: i64) -[Mem]-> unit {
+  let rw = 166;
+  let rh = 194;
+  let rx0 = vw - rw - 16;
+  let ry0 = 14;
+  let cur_deck = world_to_deck(GameMem.ship_y);
+  let is_esc = GameMem.phase == GamePhase::Escape;
+
+  let brd = if is_esc { pack_rgba(255, 76, 68, 235) } else { pack_rgba(72, 198, 240, 215) };
+  ui_rect(rx0, ry0, rw, rh, 10, 2, 8, pack_rgba(10, 14, 22, 228), brd, 0);
+  ui_fmt(rx0 + 10, ry0 + 6, "RADAR  D{cur_deck + 1}/3", 11, 1, pack_rgba(138, 222, 255, 255), 0);
+
+  // Deck indicator pills P1..P3
+  for d in 0..3 {
+    let px = rx0 + rw - 58 + d * 17;
+    let act = d == cur_deck;
+    let dc = if act {
+      if d == 0 { pack_rgba(255, 174, 52, 255) } else if d == 1 { pack_rgba(68, 232, 255, 255) } else { pack_rgba(196, 118, 255, 255) }
+    } else {
+      pack_rgba(44, 56, 74, 200)
+    };
+    ui_rect(px, ry0 + 6, 13, 12, 3, 0, 0, dc, 0, 0);
+  }
+
+  // Draw horizontal tubes first
+  for t in 0..13 {
+    let ax = GameMem.tubes[t].axis;
+    if ax == AXIS_Y { continue; }
+    let t_deck = world_to_deck(GameMem.tubes[t].cy);
+    let col = if t_deck == cur_deck { pack_rgba(86, 134, 168, 225) } else { pack_rgba(42, 54, 72, 105) };
+    if ax == AXIS_Z {
+      let x = radar_x(GameMem.tubes[t].cx, rx0, rw);
+      let y0 = radar_y(GameMem.tubes[t].a0, ry0, rh);
+      let y1 = radar_y(GameMem.tubes[t].a1, ry0, rh);
+      ui_rect(x - 3, y0, 6, clamp_i64(y1 - y0, 2, rh), 1, 0, 0, col, 0, 0);
+    } else {
+      let x0 = radar_x(GameMem.tubes[t].a0, rx0, rw);
+      let x1 = radar_x(GameMem.tubes[t].a1, rx0, rw);
+      let y = radar_y(GameMem.tubes[t].cz, ry0, rh);
+      ui_rect(x0, y - 3, clamp_i64(x1 - x0, 2, rw), 6, 1, 0, 0, col, 0, 0);
+    }
+  }
+
+  // Draw 11 Chambers (bright on active deck, ghosted on other decks)
+  for r in 0..11 {
+    let dk = GameMem.rooms[r].deck;
+    let x0 = radar_x(GameMem.rooms[r].x0, rx0, rw);
+    let x1 = radar_x(GameMem.rooms[r].x1, rx0, rw);
+    let y0 = radar_y(GameMem.rooms[r].z0, ry0, rh);
+    let y1 = radar_y(GameMem.rooms[r].z1, ry0, rh);
+    let w = clamp_i64(x1 - x0, 4, rw);
+    let h = clamp_i64(y1 - y0, 4, rh);
+    if dk == cur_deck {
+      let fill = if r == ROOM_START {
+        pack_rgba(32, 92, 132, 230)
+      } else if r == ROOM_REACTOR {
+        pack_rgba(128, 46, 38, 230)
+      } else {
+        pack_rgba(34, 58, 84, 220)
+      };
+      let rim = if r == ROOM_START && is_esc {
+        pack_rgba(92, 255, 198, 255)
+      } else if r == ROOM_REACTOR && GameMem.reactor_hp > 0 {
+        pack_rgba(255, 142, 52, 255)
+      } else {
+        pack_rgba(92, 152, 196, 210)
+      };
+      ui_rect(x0, y0, w, h, 3, 1, 0, fill, rim, 0);
+    } else {
+      ui_rect(x0, y0, w, h, 2, 1, 0, pack_rgba(24, 34, 48, 70), pack_rgba(68, 84, 108, 95), 0);
+    }
+  }
+
+  // Vertical shaft markers (amber = down, violet = up)
+  for t in 0..13 {
+    if GameMem.tubes[t].axis == AXIS_Y {
+      let sx = radar_x(GameMem.tubes[t].cx, rx0, rw);
+      let sy = radar_y(GameMem.tubes[t].cz, ry0, rh);
+      let is_up = GameMem.tubes[t].a1 > 13000;
+      let sc = if is_up { pack_rgba(196, 118, 255, 225) } else { pack_rgba(255, 174, 52, 225) };
+      ui_rect(sx - 3, sy - 3, 6, 6, 3, 0, 0, sc, 0, 0);
+    }
+  }
+
+  // Reactor Core blip
+  if GameMem.reactor_hp > 0 {
+    let (rcx, _rcy, rcz) = reactor_center_xyz();
+    let rx = radar_x(rcx, rx0, rw);
+    let ry = radar_y(rcz, ry0, rh);
+    ui_rect(rx - 4, ry - 4, 8, 8, 4, 1, 0, pack_rgba(255, 138, 42, 255), pack_rgba(255, 246, 180, 255), 0);
+  }
+
+  // Active Drone blips
+  for d in 0..18 {
+    if GameMem.drones[d].alive == 1 {
+      let dx = radar_x(GameMem.drones[d].x, rx0, rw);
+      let dy = radar_y(GameMem.drones[d].z, ry0, rh);
+      let same_d = world_to_deck(GameMem.drones[d].y) == cur_deck;
+      let dc = if same_d { pack_rgba(255, 68, 74, 255) } else { pack_rgba(220, 72, 78, 110) };
+      ui_rect(dx - 2, dy - 2, 4, 4, 2, 0, 0, dc, 0, 0);
+    }
+  }
+
+  // Ship Position + Heading Tick
+  let px = radar_x(GameMem.ship_x, rx0, rw);
+  let py = radar_y(GameMem.ship_z, ry0, rh);
+  let fx = px + fixed_to_int(fixed_sin(GameMem.yaw) * 8.0);
+  let fy = py - fixed_to_int(fixed_cos(GameMem.yaw) * 8.0);
+  ui_line(px, py, fx, fy, 2, pack_rgba(116, 255, 198, 255), 0);
+  ui_rect(px - 3, py - 3, 6, 6, 3, 1, 0, pack_rgba(88, 248, 168, 255), pack_rgba(255, 255, 255, 235), 0);
+}
+
+fn draw_sector_label(x: i64, y: i64) -[Mem]-> unit {
+  let rid = find_current_room(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z);
+  let col = pack_rgba(138, 234, 255, 255);
+  if rid == ROOM_START {
+    ui_text(x, y, "SECTOR: AIRLOCK ALPHA (EXIT)", 13, 1, col, 0);
+  } else if rid == ROOM_ATRIUM {
+    ui_text(x, y, "SECTOR: CENTRAL ATRIUM (D2)", 13, 1, col, 0);
+  } else if rid == ROOM_ARMORY {
+    ui_text(x, y, "SECTOR: WEST ARMORY", 13, 1, pack_rgba(255, 194, 96, 255), 0);
+  } else if rid == ROOM_GEN {
+    ui_text(x, y, "SECTOR: EAST GENERATOR HALL", 13, 1, pack_rgba(255, 224, 112, 255), 0);
+  } else if rid == ROOM_CRYO {
+    ui_text(x, y, "SECTOR: CRYO COOLANT BAY (NW)", 13, 1, pack_rgba(96, 252, 236, 255), 0);
+  } else if rid == ROOM_GUARD {
+    ui_text(x, y, "SECTOR: SECURITY OUTPOST (NE)", 13, 1, pack_rgba(255, 122, 126, 255), 0);
+  } else if rid == ROOM_REACTOR {
+    ui_text(x, y, "SECTOR: REACTOR CORE CHAMBER!", 13, 1, pack_rgba(255, 148, 72, 255), 0);
+  } else if rid == ROOM_MINE {
+    ui_text(x, y, "SECTOR: LOWER ORE MINE (DECK 1)", 13, 1, pack_rgba(255, 186, 92, 255), 0);
+  } else if rid == ROOM_COOLER {
+    ui_text(x, y, "SECTOR: LOWER COOLER (DECK 1)", 13, 1, pack_rgba(255, 186, 92, 255), 0);
+  } else if rid == ROOM_BRIDGE {
+    ui_text(x, y, "SECTOR: COMMAND BRIDGE (DECK 3)", 13, 1, pack_rgba(210, 146, 255, 255), 0);
+  } else if rid == ROOM_DOME {
+    ui_text(x, y, "SECTOR: REACTOR DOME (DECK 3)", 13, 1, pack_rgba(210, 146, 255, 255), 0);
+  } else {
+    let tid = find_current_tube(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z);
+    if tid >= 0 && GameMem.tubes[tid].axis == AXIS_Y {
+      ui_text(x, y, "VERTICAL ELEVATOR SHAFT", 13, 1, pack_rgba(220, 168, 255, 255), 0);
+    } else {
+      ui_text(x, y, "OCTAGONAL TRANSIT TUBE", 13, 1, pack_rgba(172, 214, 242, 255), 0);
+    }
+  }
+}
+
+// --- 8. Main Frame Renderer ---
+
+fn render_ceres_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
+  req vw >= 640 && vh >= 480
+{
+  set_clip_rect(0, 0, 0, vw, vh);
+
+  let is_esc = GameMem.phase == GamePhase::Escape;
+  let fog_mode = if is_esc { FOG_RED } else { FOG_DARK };
+
+  // Pass 1: Native Vulkan/wgpu 3D PBR World + Dynamic Point Lights + 3D Cockpit
+  mesh3d_begin(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z, GameMem.yaw, GameMem.pitch, 80, 0, fog_mode);
+  emit_station_lights();
+  emit_all_rooms();
+  emit_all_tubes();
+  emit_reactor_core();
+  for d in 0..18 {
+    draw_drone_3d(d);
+  }
+  emit_pickups_bolts_particles();
+  draw_cockpit_vm();
+
+  // Pass 2: 2D Sci-Fi Cockpit HUD Overlay
+  if GameMem.hurt_t > 0 {
+    ui_rect(0, 0, vw, vh, 0, 0, 0, pack_rgba(230, 32, 32, clamp_i64(GameMem.hurt_t * 9, 0, 108)), 0, 0);
+  } else if GameMem.pickup_t > 0 {
+    ui_rect(0, 0, vw, vh, 0, 0, 0, pack_rgba(72, 236, 255, clamp_i64(GameMem.pickup_t * 6, 0, 60)), 0, 0);
+  }
+
+  // Center Reticle + Auto Target Lock Diamond
+  let cx = vw / 2;
+  let cy = vh / 2;
+  let ch_col = if GameMem.lock_active == 1 { pack_rgba(255, 86, 72, 245) } else { pack_rgba(78, 242, 255, 225) };
+  ui_rect(cx - 14, cy - 1, 9, 2, 0, 0, 0, ch_col, 0, 0);
+  ui_rect(cx + 5, cy - 1, 9, 2, 0, 0, 0, ch_col, 0, 0);
+  ui_rect(cx - 1, cy - 14, 2, 9, 0, 0, 0, ch_col, 0, 0);
+  ui_rect(cx - 1, cy + 5, 2, 9, 0, 0, 0, ch_col, 0, 0);
+  ui_rect(cx - 1, cy - 1, 2, 2, 0, 0, 0, pack_rgba(255, 255, 255, 235), 0, 0);
+
+  if GameMem.lock_active == 1 {
+    let r = 20;
+    ui_line(cx, cy - r, cx + r, cy, 2, ch_col, 0);
+    ui_line(cx + r, cy, cx, cy + r, 2, ch_col, 0);
+    ui_line(cx, cy + r, cx - r, cy, 2, ch_col, 0);
+    ui_line(cx - r, cy, cx, cy - r, 2, ch_col, 0);
+    let dist_m = GameMem.lock_dist / 100;
+    ui_fmt_centered(cx, cy + 26, "LOCK {dist_m / 10}.{dist_m % 10}m", 11, 1, pack_rgba(255, 128, 96, 255), 0);
+  }
+
+  // Top-Left Sector & Mission Panel
+  let locked = pointer_locked();
+  let top_brd = if is_esc { pack_rgba(255, 76, 68, 235) } else { pack_rgba(72, 198, 240, 210) };
+  ui_rect(16, 14, 466, 62, 10, 1, 6, pack_rgba(10, 14, 22, 226), top_brd, 0);
+  draw_sector_label(30, 22);
+  if is_esc {
+    let esec = GameMem.escape_ticks / 60;
+    ui_fmt(30, 44, "SELF-DESTRUCT: {esec}s • ESCAPE TO AIRLOCK ALPHA!", 12, 1, pack_rgba(255, 96, 84, 255), 0);
+  } else if locked {
+    ui_fmt(30, 44, "OBJ: DESTROY REACTOR (HP {GameMem.reactor_hp}/300) • ESC UNLOCK", 12, 0, pack_rgba(218, 232, 246, 235), 0);
+  } else {
+    ui_text(30, 44, "CLICK: LOOK • WASD+SPACE/SHIFT: 6-DOF • LMB/E: FIRE", 12, 0, pack_rgba(196, 216, 234, 235), 0);
+  }
+
+  // Escape Self-Destruct Countdown Banner / Alerts
+  if is_esc {
+    let esec = GameMem.escape_ticks / 60;
+    ui_rect(cx - 180, 14, 360, 44, 10, 2, 8, pack_rgba(46, 10, 12, 235), pack_rgba(255, 68, 62, 255), 0);
+    ui_fmt_centered(cx, 26, "REACTOR CRITICAL — ESCAPE: {esec} SEC", 15, 1, pack_rgba(255, 226, 132, 255), 0);
+  } else if GameMem.msg_timer > 0 {
+    ui_rect(cx - 175, 82, 350, 34, 8, 1, 6, pack_rgba(12, 18, 28, 232), pack_rgba(255, 168, 62, 235), 0);
+    if GameMem.msg_code == 1 {
+      ui_fmt_centered(cx, 91, "REACTOR CORE DAMAGED: {GameMem.reactor_hp}/300", 13, 1, pack_rgba(255, 198, 86, 255), 0);
+    } else if GameMem.msg_code == 3 {
+      ui_text_centered(cx, 91, "WARNING: SHIELD CRITICAL!", 13, 1, pack_rgba(255, 86, 86, 255), 0);
+    } else if GameMem.msg_code == 4 {
+      ui_text_centered(cx, 91, "OUT OF HOMING MISSILES!", 13, 1, pack_rgba(255, 168, 82, 255), 0);
+    }
+  }
+
+  // Multi-Deck Tactical Radar
+  draw_mine_radar(vw);
+
+  // Bottom Cockpit Status Bar
+  let hud_y = vh - 68;
+  ui_rect(16, hud_y, vw - 32, 54, 10, 2, 8, pack_rgba(10, 14, 22, 232), top_brd, 0);
+
+  let sh_col = if GameMem.shield > 35 { pack_rgba(88, 224, 255, 255) } else { pack_rgba(255, 74, 74, 255) };
+  ui_text(32, hud_y + 8, "SHIELD", 11, 1, pack_rgba(154, 178, 202, 255), 0);
+  ui_fmt(32, hud_y + 24, "{GameMem.shield}%", 19, 1, sh_col, 0);
+
+  ui_text(122, hud_y + 8, "ENERGY", 11, 1, pack_rgba(154, 178, 202, 255), 0);
+  ui_fmt(122, hud_y + 24, "{GameMem.energy}%", 19, 1, pack_rgba(255, 218, 76, 255), 0);
+
+  ui_text(222, hud_y + 8, "MISSILES [E]", 11, 1, pack_rgba(154, 178, 202, 255), 0);
+  ui_int(222, hud_y + 24, GameMem.missiles, 19, 1, pack_rgba(255, 148, 68, 255), 0);
+
+  ui_text(328, hud_y + 8, "DRONES", 11, 1, pack_rgba(154, 178, 202, 255), 0);
+  ui_fmt(328, hud_y + 24, "{GameMem.kills}/18", 19, 1, pack_rgba(116, 246, 174, 255), 0);
+
+  ui_text(426, hud_y + 8, "SCORE", 11, 1, pack_rgba(154, 178, 202, 255), 0);
+  ui_int(426, hud_y + 24, GameMem.score, 19, 1, pack_rgba(232, 242, 255, 255), 0);
+
+  let rst_x = vw - 154;
+  let rst_y = hud_y + 10;
+  let hov_r = point_in_rect(mx, my, rst_x, rst_y, 124, 34);
+  if hov_r { gfx_set_cursor(1); }
+  ui_rect(rst_x, rst_y, 124, 34, 8, 1, 2, if hov_r { pack_rgba(32, 54, 78, 255) } else { pack_rgba(20, 32, 48, 255) }, pack_rgba(88, 198, 242, 235), 0);
+  if GameMem.phase == GamePhase::Dead {
+    ui_text_centered(rst_x + 62, rst_y + 10, "Restart [R]", 13, 1, pack_rgba(232, 246, 255, 255), 0);
+  } else {
+    ui_text_centered(rst_x + 62, rst_y + 10, "Restart", 13, 1, pack_rgba(232, 246, 255, 255), 0);
+  }
+  if hov_r && m_clicked == 1 {
+    reset_ceres();
+    set_pointer_lock(true);
+    sfx_click();
+  }
+
+  // Victory / Game Over Modal
+  if GameMem.phase == GamePhase::Victory || GameMem.phase == GamePhase::Dead {
+    let bx = cx - 230;
+    let by = cy - 96;
+    let accent = if GameMem.phase == GamePhase::Victory { pack_rgba(88, 248, 184, 255) } else { pack_rgba(255, 76, 72, 255) };
+    ui_rect(bx, by, 460, 192, 14, 2, 18, pack_rgba(10, 14, 22, 244), accent, 0);
+    if GameMem.phase == GamePhase::Victory {
+      ui_text_centered(cx, by + 24, "MISSION COMPLETE! CERES-1 CLEARED!", 16, 1, pack_rgba(116, 255, 204, 255), 0);
+    } else {
+      ui_text_centered(cx, by + 24, "SHIP DESTROYED", 19, 1, pack_rgba(255, 108, 98, 255), 0);
+    }
+    ui_fmt_centered(cx, by + 66, "FINAL SCORE: {GameMem.score}  •  DRONES: {GameMem.kills}/18", 16, 1, pack_rgba(246, 236, 168, 255), 0);
+    if GameMem.phase == GamePhase::Dead {
+      ui_text_centered(cx, by + 114, "Press [R] or click Restart to fly again", 13, 0, pack_rgba(186, 210, 232, 255), 0);
+    } else {
+      ui_text_centered(cx, by + 114, "Click Restart to fly again", 13, 0, pack_rgba(186, 210, 232, 255), 0);
+    }
+  }
+}

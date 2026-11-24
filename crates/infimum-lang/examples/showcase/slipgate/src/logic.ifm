@@ -1,0 +1,457 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM SLIPGATE — Z3-Verified FPS Combat, 3D Collision, Gold Key Gate, Enemy AI & Audio
+
+use "abi.ifm";
+use "world.ifm";
+
+// --- Z3-Verified Pure Telos Kernels ---
+
+fn clamp_stat(v: i64, max_v: i64) -> i64
+  req max_v >= 0
+  ens result >= 0 && result <= max_v
+{
+  if v < 0 { 0 } else if v > max_v { max_v } else { v }
+}
+
+fn clamp_pitch(p: i64) -> i64
+  ens result >= -260 && result <= 260
+{
+  if p < -260 { -260 } else if p > 260 { 260 } else { p }
+}
+
+fn compute_fps_score(kills: i64, hp_left: i64, slipgate_bonus: i64) -> i64
+  req kills >= 0 && kills <= 16 && hp_left >= 0 && hp_left <= 100 && slipgate_bonus >= 0 && slipgate_bonus <= 1500
+  ens result >= 0 && result <= 6000
+{
+  kills * 250 + hp_left * 5 + slipgate_bonus
+}
+
+fn next_rand() -[Mem]-> i64 {
+  let s = FpsMem.rng_state;
+  let nxt = (s * 1103515245 + 12345) & 2147483647;
+  let safe = if nxt == 0 { 19960622 } else { nxt };
+  FpsMem.rng_state = safe;
+  safe
+}
+
+// --- 3D Collision & Elevation Helpers ---
+
+fn hits_wall_3d(px: i64, foot_y: i64, pz: i64, rad: i64) -[Mem]-> bool {
+  let n = clamp_i64(FpsMem.wall_cnt, 0, 112);
+  let mut hit = false;
+  for i in 0..n max 112 {
+    let x0 = FpsMem.walls[i].x0 - rad;
+    let z0 = FpsMem.walls[i].z0 - rad;
+    let x1 = FpsMem.walls[i].x1 + rad;
+    let z1 = FpsMem.walls[i].z1 + rad;
+    let y0 = FpsMem.walls[i].y0;
+    let y1 = FpsMem.walls[i].y1;
+    if px >= x0 && px <= x1 && pz >= z0 && pz <= z1 && foot_y + 1100 > y0 && foot_y < y1 - 60 {
+      hit = true;
+      break;
+    }
+  }
+  // Locked Sanctum Iron Gate at Z = -14800..-14200, X = -1900..1900 until raised!
+  if !hit && FpsMem.gate_y < 2100 {
+    if px >= -1900 - rad && px <= 1900 + rad && pz >= -14800 - rad && pz <= -14200 + rad && foot_y < 2500 {
+      hit = true;
+    }
+  }
+  hit
+}
+
+fn enemy_radius(kind: i64) -> i64 {
+  if kind == 3 { 440 } else { 320 }
+}
+
+fn hits_enemy_3d(px: i64, foot_y: i64, pz: i64, rad: i64, skip_idx: i64) -[Mem]-> bool {
+  let mut hit = false;
+  for e in 0..16 {
+    if e == skip_idx || FpsMem.enemies[e].state == 2 { continue; }
+    let er = enemy_radius(FpsMem.enemies[e].kind);
+    let eh = if FpsMem.enemies[e].kind == 3 { 2000 } else { 1500 };
+    let ex = FpsMem.enemies[e].x;
+    let ey = FpsMem.enemies[e].y;
+    let ez = FpsMem.enemies[e].z;
+    if abs_i64(px - ex) < er + rad
+      && abs_i64(pz - ez) < er + rad
+      && foot_y + 1100 > ey
+      && foot_y < ey + eh
+    {
+      hit = true;
+      break;
+    }
+  }
+  hit
+}
+
+fn find_floor_below(px: i64, foot_y: i64, pz: i64) -[Mem]-> i64 {
+  let n = clamp_i64(FpsMem.sector_cnt, 0, 40);
+  let mut best = 0;
+  for i in 0..n max 40 {
+    let x0 = FpsMem.sectors[i].x0;
+    let z0 = FpsMem.sectors[i].z0;
+    let x1 = FpsMem.sectors[i].x1;
+    let z1 = FpsMem.sectors[i].z1;
+    let fy = FpsMem.sectors[i].fy;
+    if px >= x0 && px <= x1 && pz >= z0 && pz <= z1 && fy <= foot_y + 320 && fy > best {
+      best = fy;
+    }
+  }
+  best
+}
+
+// 16-step 3D line-of-sight ray check against solid wall boxes
+fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> bool {
+  let mut clear = true;
+  for s in 1..16 {
+    let px = x0 + ((x1 - x0) * s) / 16;
+    let py = y0 + ((y1 - y0) * s) / 16;
+    let pz = z0 + ((z1 - z0) * s) / 16;
+    if hits_wall_3d(px, py - 400, pz, 40) {
+      clear = false;
+      break;
+    }
+  }
+  clear
+}
+
+// --- 3D Particles ---
+
+fn spawn_particles(wx: i64, wy: i64, wz: i64, is_blood: i64) -[Mem]-> unit {
+  let mut spawned = 0;
+  for i in 0..32 {
+    if spawned >= 6 { break; }
+    if FpsMem.particles[i].life <= 0 {
+      let r1 = next_rand();
+      let r2 = next_rand();
+      FpsMem.particles[i].x = wx;
+      FpsMem.particles[i].y = wy;
+      FpsMem.particles[i].z = wz;
+      FpsMem.particles[i].vx = ((r1 & 127) - 64) * 2;
+      FpsMem.particles[i].vy = 45 + ((r1 >> 7) & 63);
+      FpsMem.particles[i].vz = ((r2 & 127) - 64) * 2;
+      let col = if is_blood == 1 { pack_rgba(220, 28, 32, 255) } else { pack_rgba(255, 206, 88, 255) };
+      FpsMem.particles[i].col = col;
+      FpsMem.particles[i].life = 18 + (r2 & 7);
+      spawned += 1;
+    }
+  }
+}
+
+fn step_particles() -[Mem]-> unit {
+  for i in 0..32 {
+    let life = FpsMem.particles[i].life;
+    if life > 0 {
+      FpsMem.particles[i].x += FpsMem.particles[i].vx;
+      FpsMem.particles[i].y += FpsMem.particles[i].vy;
+      FpsMem.particles[i].z += FpsMem.particles[i].vz;
+      FpsMem.particles[i].vy -= 8;
+      FpsMem.particles[i].life = life - 1;
+    }
+  }
+}
+
+// --- Full Level Reset ---
+
+fn reset_slipgate(seed: i64) -[Mem]-> unit {
+  FpsMem.tick = 0;
+  FpsMem.cam_x = 0;
+  FpsMem.foot_y = 0;
+  FpsMem.cam_y = 1080;
+  FpsMem.cam_z = 6900;
+  FpsMem.yaw = 0;
+  FpsMem.pitch = 0;
+  FpsMem.vel_y = 0;
+  FpsMem.on_ground = 1;
+  FpsMem.health = 100;
+  FpsMem.armor = 50;
+  FpsMem.ammo = 28;
+  FpsMem.kills = 0;
+  FpsMem.score = 0;
+  FpsMem.muzzle_t = 0;
+  FpsMem.recoil_t = 0;
+  FpsMem.hurt_t = 0;
+  FpsMem.pickup_t = 0;
+  FpsMem.bob_t = 0;
+  FpsMem.game_state = GameState::Playing;
+  FpsMem.has_key = 0;
+  FpsMem.gate_y = 0;
+  FpsMem.msg_timer = 0;
+  FpsMem.rng_state = if seed == 0 { 19960622 } else { abs_i64(seed) };
+
+  for p in 0..32 {
+    FpsMem.particles[p].life = 0;
+  }
+  build_citadel_world();
+}
+
+fn damage_player(raw_dmg: i64) -[Mem, Gpu]-> unit {
+  let arm = FpsMem.armor;
+  let absorb = if arm > 0 { (raw_dmg * 3) / 5 } else { 0 };
+  let act = if absorb > arm { arm } else { absorb };
+  let loss = raw_dmg - act;
+  FpsMem.armor = arm - act;
+  let nhp = clamp_stat(FpsMem.health - loss, 100);
+  FpsMem.health = nhp;
+  FpsMem.hurt_t = 12;
+  sfx_play(SFX_PLAYER_HURT, 100, 90);
+  if nhp <= 0 {
+    FpsMem.game_state = GameState::Dead;
+    sfx_play(SFX_MONSTER_DIE, 65, 95);
+  }
+}
+
+fn fire_super_shotgun() -[Mem, Gpu]-> unit {
+  if FpsMem.ammo > 0 && FpsMem.recoil_t == 0 && FpsMem.game_state == GameState::Playing {
+    FpsMem.ammo -= 1;
+    FpsMem.muzzle_t = 6;
+    FpsMem.recoil_t = 15;
+    sfx_play(SFX_SHOTGUN, 98, 95);
+
+    let cx = FpsMem.cam_x;
+    let cy = FpsMem.cam_y;
+    let cz = FpsMem.cam_z;
+    let yaw = FpsMem.yaw;
+    let dx = fixed_sin(yaw);
+    let dz = -fixed_cos(yaw);
+
+    let mut best_e = -1;
+    let mut best_t = 14000;
+    for e in 0..16 {
+      if FpsMem.enemies[e].state != 2 {
+        let ex = FpsMem.enemies[e].x;
+        let ey = FpsMem.enemies[e].y + 700;
+        let ez = FpsMem.enemies[e].z;
+        let rx = fixed(ex - cx);
+        let rz = fixed(ez - cz);
+        let t_proj = fixed_to_int(rx * dx + rz * dz);
+        if t_proj > 180 && t_proj < best_t {
+          let perp = abs_i64(fixed_to_int(rx * dz - rz * dx));
+          let spread = (if FpsMem.enemies[e].kind == 3 { 820 } else { 560 }) + t_proj / 14;
+          if perp < spread && has_los_3d(cx, cy, cz, ex, ey, ez) {
+            best_t = t_proj;
+            best_e = e;
+          }
+        }
+      }
+    }
+
+    if best_e >= 0 && best_e < 16 {
+      let dmg = clamp_i64(76 - best_t / 240, 28, 76);
+      let nhp = FpsMem.enemies[best_e].hp - dmg;
+      FpsMem.enemies[best_e].flash = 8;
+      FpsMem.enemies[best_e].state = 1;
+      spawn_particles(FpsMem.enemies[best_e].x, FpsMem.enemies[best_e].y + 800, FpsMem.enemies[best_e].z, 1);
+      if nhp <= 0 {
+        FpsMem.enemies[best_e].hp = 0;
+        FpsMem.enemies[best_e].state = 2;
+        FpsMem.kills = clamp_i64(FpsMem.kills + 1, 0, 16);
+        let mk = FpsMem.enemies[best_e].kind;
+        let die_pit = if mk == 3 { 66 } else if mk == 2 { 88 } else { 112 };
+        sfx_play(SFX_MONSTER_DIE, die_pit, 92);
+      } else {
+        FpsMem.enemies[best_e].hp = nhp;
+        sfx_play(SFX_MONSTER_HIT, 100, 82);
+      }
+    } else {
+      let spx = cx + fixed_to_int(dx * 2200.0);
+      let spz = cz + fixed_to_int(dz * 2200.0);
+      spawn_particles(spx, cy - 120, spz, 0);
+    }
+  }
+}
+
+fn step_enemies_and_pickups() -[Mem, Gpu]-> unit {
+  let px = FpsMem.cam_x;
+  let py = FpsMem.foot_y;
+  let pz = FpsMem.cam_z;
+
+  // 1. Collect nearby pickups (1=Medkit, 2=Shells, 3=Armor, 4=GOLD KEY!)
+  for it in 0..16 {
+    if FpsMem.items[it].active == 1 {
+      let dx = abs_i64(px - FpsMem.items[it].x);
+      let dz = abs_i64(pz - FpsMem.items[it].z);
+      let dy = abs_i64(py - FpsMem.items[it].y);
+      if dx < 520 && dz < 520 && dy < 480 {
+        let ik = FpsMem.items[it].kind;
+        let mut took = false;
+        if ik == 1 && FpsMem.health < 100 {
+          FpsMem.health = clamp_stat(FpsMem.health + 30, 100);
+          took = true;
+        } else if ik == 2 && FpsMem.ammo < 64 {
+          FpsMem.ammo = clamp_stat(FpsMem.ammo + 12, 64);
+          took = true;
+        } else if ik == 3 && FpsMem.armor < 100 {
+          FpsMem.armor = clamp_stat(FpsMem.armor + 35, 100);
+          took = true;
+        } else if ik == 4 {
+          FpsMem.has_key = 1;
+          FpsMem.msg_timer = 210;
+          took = true;
+          sfx_win();
+          sfx_play(SFX_GATE, 100, 90);
+        }
+        if took {
+          FpsMem.items[it].active = 0;
+          FpsMem.pickup_t = 12;
+          if ik != 4 { sfx_spawn(); }
+        }
+      }
+    }
+  }
+
+  // Raise Sanctum Iron Gate smoothly once Gold Key is collected!
+  if FpsMem.has_key == 1 && FpsMem.gate_y < 2500 {
+    FpsMem.gate_y = clamp_i64(FpsMem.gate_y + 28, 0, 2500);
+  }
+
+  // 2. Step 16 3D Enemies
+  for e in 0..16 {
+    let st = FpsMem.enemies[e].state;
+    if st != 2 {
+      let ex = FpsMem.enemies[e].x;
+      let ey = FpsMem.enemies[e].y;
+      let ez = FpsMem.enemies[e].z;
+      let kind = FpsMem.enemies[e].kind;
+      let fl = FpsMem.enemies[e].flash;
+      if fl > 0 { FpsMem.enemies[e].flash = fl - 1; }
+      FpsMem.enemies[e].anim = (FpsMem.enemies[e].anim + 1) & 1023;
+
+      let dx = px - ex;
+      let dz = pz - ez;
+      let dist = abs_i64(dx) + abs_i64(dz);
+      if st == 0 && dist < 5600 && has_los_3d(ex, ey + 700, ez, px, py + 700, pz) {
+        FpsMem.enemies[e].state = 1;
+      }
+      if FpsMem.enemies[e].state == 1 {
+        if dist > 980 && dist < 11000 {
+          let spd = if kind == 3 { 36 } else if kind == 2 { 48 } else { 40 };
+          let vx = (dx * spd) / (dist + 1);
+          let vz = (dz * spd) / (dist + 1);
+          let nx = ex + vx;
+          let nz = ez + vz;
+          let er = enemy_radius(kind);
+          let hit_p_x = abs_i64(nx - px) < er + 280 && abs_i64(ez - pz) < er + 280 && abs_i64(ey - py) < 1200;
+          if !hit_p_x && !hits_wall_3d(nx, ey, ez, er) && !hits_enemy_3d(nx, ey, ez, er, e) && abs_i64(nx) < 10100 {
+            FpsMem.enemies[e].x = nx;
+          }
+          let cur_x = FpsMem.enemies[e].x;
+          let hit_p_z = abs_i64(cur_x - px) < er + 280 && abs_i64(nz - pz) < er + 280 && abs_i64(ey - py) < 1200;
+          if !hit_p_z && !hits_wall_3d(cur_x, ey, nz, er) && !hits_enemy_3d(cur_x, ey, nz, er, e) && nz > -20100 && nz < 8100 {
+            FpsMem.enemies[e].z = nz;
+          }
+        }
+        let cd = FpsMem.enemies[e].cd - 1;
+        if cd <= 0 {
+          if dist < 5200 && has_los_3d(FpsMem.enemies[e].x, ey + 700, FpsMem.enemies[e].z, px, py + 700, pz) {
+            let dmg = if kind == 3 { 16 } else if kind == 2 { 11 } else { 8 };
+            damage_player(dmg);
+            FpsMem.enemies[e].cd = if kind == 3 { 52 } else { 64 };
+          } else {
+            FpsMem.enemies[e].cd = 18;
+          }
+        } else {
+          FpsMem.enemies[e].cd = cd;
+        }
+      }
+    }
+  }
+}
+
+fn step_fps_sim(fwd: i64, strafe: i64, turn: i64, jump: i64, fire: i64) -[Mem, Gpu]-> unit {
+  if FpsMem.game_state == GameState::Playing {
+    let tick = FpsMem.tick + 1;
+    FpsMem.tick = tick;
+    if FpsMem.muzzle_t > 0 { FpsMem.muzzle_t -= 1; }
+    if FpsMem.recoil_t > 0 { FpsMem.recoil_t -= 1; }
+    if FpsMem.hurt_t > 0 { FpsMem.hurt_t -= 1; }
+    if FpsMem.pickup_t > 0 { FpsMem.pickup_t -= 1; }
+    if FpsMem.msg_timer > 0 { FpsMem.msg_timer -= 1; }
+
+    let yaw = (FpsMem.yaw + turn + 4096) & 4095;
+    FpsMem.yaw = yaw;
+
+    let fwd_x = fixed_sin(yaw);
+    let fwd_z = -fixed_cos(yaw);
+    let right_x = fixed_cos(yaw);
+    let right_z = fixed_sin(yaw);
+
+    let spd = 195.0;
+    let vx = fixed_to_int((fwd_x * fwd + right_x * strafe) * spd);
+    let vz = fixed_to_int((fwd_z * fwd + right_z * strafe) * spd);
+
+    let mut px = FpsMem.cam_x;
+    let mut pz = FpsMem.cam_z;
+    let mut foot_y = FpsMem.foot_y;
+    let mut vy = FpsMem.vel_y;
+
+    if jump > 0 && FpsMem.on_ground == 1 {
+      vy = 175;
+      FpsMem.on_ground = 0;
+      sfx_play(SFX_JUMP, 100, 74);
+    }
+
+    let nx = px + vx;
+    if !hits_wall_3d(nx, foot_y, pz, 280) && !hits_enemy_3d(nx, foot_y, pz, 280, -1) { px = nx; }
+    let nz = pz + vz;
+    if !hits_wall_3d(px, foot_y, nz, 280) && !hits_enemy_3d(px, foot_y, nz, 280, -1) { pz = nz; }
+
+    let floor_h = find_floor_below(px, foot_y, pz);
+    foot_y += vy;
+    if foot_y <= floor_h {
+      foot_y = floor_h;
+      vy = 0;
+      FpsMem.on_ground = 1;
+    } else {
+      vy -= 14;
+      FpsMem.on_ground = 0;
+    }
+
+    FpsMem.cam_x = px;
+    FpsMem.cam_z = pz;
+    FpsMem.foot_y = foot_y;
+    FpsMem.vel_y = vy;
+
+    if fwd != 0 || strafe != 0 {
+      FpsMem.bob_t = (FpsMem.bob_t + 36) & 4095;
+      if FpsMem.on_ground == 1 && (tick % 18) == 0 {
+        let sp = if (tick & 32) == 0 { 92 } else { 108 };
+        sfx_play(SFX_STEP, sp, 36);
+      }
+    }
+    let bob = if FpsMem.on_ground == 1 && (fwd != 0 || strafe != 0) {
+      fixed_to_int(fixed_sin(FpsMem.bob_t) * 28.0)
+    } else {
+      0
+    };
+    FpsMem.cam_y = foot_y + 1080 + bob;
+
+    // Molten Lava Trenches flanking the Lava Bridge (Zone 5: Z = -14000..-7200, |X| = 1950..5150)
+    if foot_y <= 20 && pz > -14000 && pz < -7200 && abs_i64(px) > 1950 && abs_i64(px) < 5150 && (tick & 15) == 0 {
+      damage_player(9);
+    }
+
+    if fire == 1 {
+      fire_super_shotgun();
+    }
+
+    step_enemies_and_pickups();
+    step_particles();
+
+    let safe_kills = clamp_i64(FpsMem.kills, 0, 16);
+    let safe_hp = clamp_i64(FpsMem.health, 0, 100);
+    FpsMem.score = compute_fps_score(safe_kills, safe_hp, 0);
+
+    // Entering the glowing North SlipGate Portal -> Victory!
+    if pz < -18900 && abs_i64(px) < 1150 {
+      FpsMem.game_state = GameState::Victory;
+      FpsMem.score = compute_fps_score(safe_kills, safe_hp, 1500);
+      sfx_win();
+    }
+  } else {
+    step_particles();
+  }
+}

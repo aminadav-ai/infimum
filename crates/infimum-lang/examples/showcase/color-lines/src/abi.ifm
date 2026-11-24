@@ -1,0 +1,84 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM COLOR LINES 98 — Shared Typed ABI, Structs & Memory Layout (Z3-Verified)
+
+use "std/prelude.ifm";
+
+const BOARD_N: i64 = 9;
+const BOARD_CELLS: i64 = 81;
+const MAX_TURNS: i64 = 128;
+
+enum AnimMode {
+  Idle = 0,
+  Hopping = 1,
+  Exploding = 2,
+}
+
+enum CursorKind {
+  Default = 0,
+  Pointer = 1,
+}
+
+struct Cell {
+  color: word inv 0..=7,
+  clear_mark: word,
+  bfs_vis: word,
+  bfs_par: word,
+}
+
+struct AnimState {
+  mode: word inv 0..=2,
+  hop_color: word inv 0..=7,
+  path_len: word,
+  hop_step: word,
+  hop_sub: word,
+  explode_timer: word,
+  blocked_idx: word,
+  blocked_timer: word,
+  last_clear_pts: word,
+  last_clear_timer: word,
+}
+
+struct SnapMeta {
+  score: word,
+  turn_num: word,
+  game_over: word inv 0..=1,
+  rng_state: word,
+  next0: word inv 0..=7,
+  next1: word inv 0..=7,
+  next2: word inv 0..=7,
+}
+
+// Auto-placed non-overlapping linear memory layout (compiler safely places at word 705536+)
+layout GameMem {
+  score: word,
+  high_score: word,
+  turn_num: word,
+  selected_idx: word,
+  status_code: word,
+  game_over: word inv 0..=1,
+  rng_state: word,
+  anim_tick: word,
+  balls_count: word inv 0..=81,
+  hover_idx: word,
+  max_saved_turn: word,
+  prev_r_key: word,
+  prev_z_key: word,
+  prev_y_key: word,
+
+  next_colors: words[3] inv 0..=7,
+  anim: AnimState,
+
+  // 9x9 typed board cells (81 * 4 = 324 words)
+  cells: Cell[81],
+
+  // BFS queue, empty cell picker & reconstructed path
+  bfs_q: words[81],
+  empty_list: words[81],
+  path: words[82],
+
+  // 128-turn Time-Travel snapshots: typed metadata + board states (128 * 81 = 10368 words)
+  snap_meta: SnapMeta[128],
+  snap_boards: words[10368] inv 0..=7,
+}

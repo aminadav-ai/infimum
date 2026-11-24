@@ -1,0 +1,145 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Z3-Verified Agent Logic Core (`cores/agent_core.ifm`):
+//   1. Exact integer token-cost accounting (`calc_cost_milli_ils_ifm`) across all 22 models.
+//   2. Zero-allocation JSON API error message extractor (`extract_api_error_ifm`) via `std/json.ifm`.
+//   Zero magic addresses: auto-placed `layout AgentMem` with dynamic word-offset exports.
+
+use "std/math.ifm";
+use "std/buf.ifm";
+use "std/json.ifm";
+
+layout AgentMem {
+  prov_buf: words[68],      // max 64 chars
+  model_buf: words[132],    // max 128 chars
+  key_buf: words[68],       // scratch key buffer (max 64 chars)
+  json_in: words[16400],    // max 16384 chars
+  json_out: words[2060],    // max 2048 chars
+}
+
+export fn get_prov_buf_word() -> i64 { AgentMem::prov_buf }
+export fn get_model_buf_word() -> i64 { AgentMem::model_buf }
+export fn get_json_in_word() -> i64 { AgentMem::json_in }
+export fn get_json_out_word() -> i64 { AgentMem::json_out }
+
+// Per-1M-token rates in milli-USD (e.g. $0.15 -> 150, $0.003 -> 3).
+struct Rates {
+  inp: i64,
+  cache: i64,
+  out: i64,
+}
+
+fn buf_to_lower(ptr: i64, max_len: i64) -[Mem]-> unit {
+  let n = buf_len(ptr, max_len);
+  for i in 0..n max 128 {
+    let c = mem_load(ptr + 1 + i);
+    if c >= 'A' && c <= 'Z' {
+      mem_store(ptr + 1 + i, c + 32);
+    }
+  }
+}
+
+fn resolve_model_rates() -[Mem]-> Rates {
+  buf_to_lower(AgentMem::prov_buf, 64);
+  buf_to_lower(AgentMem::model_buf, 128);
+  let is_free = buf_ends_with(AgentMem::model_buf, ":free")
+    || buf_eq_str(AgentMem::prov_buf, "groq")
+    || buf_eq_str(AgentMem::prov_buf, "nvidia")
+    || buf_eq_str(AgentMem::prov_buf, "cerebras");
+  if is_free {
+    Rates { inp: 0, cache: 0, out: 0 }
+  } else if buf_has_str(AgentMem::model_buf, "qwen3") {
+    Rates { inp: 300, cache: 100, out: 1000 }
+  } else if buf_has_str(AgentMem::model_buf, "v4-flash") {
+    Rates { inp: 44, cache: 35, out: 300 }
+  } else if buf_eq_str(AgentMem::prov_buf, "deepseek") || buf_has_str(AgentMem::model_buf, "deepseek") {
+    Rates { inp: 150, cache: 3, out: 600 }
+  } else if buf_eq_str(AgentMem::prov_buf, "openrouter") && buf_has_str(AgentMem::model_buf, "glm-") {
+    Rates { inp: 40, cache: 30, out: 78 }
+  } else if buf_eq_str(AgentMem::prov_buf, "zai") || buf_has_str(AgentMem::model_buf, "glm-") {
+    Rates { inp: 120, cache: 34, out: 420 }
+  } else if buf_eq_str(AgentMem::prov_buf, "mistral")
+    || buf_has_str(AgentMem::model_buf, "codes")
+    || buf_has_str(AgentMem::model_buf, "mistr")
+  {
+    Rates { inp: 300, cache: 30, out: 900 }
+  } else if buf_has_str(AgentMem::model_buf, "lite") {
+    Rates { inp: 100, cache: 10, out: 400 }
+  } else if buf_has_str(AgentMem::model_buf, "o4-m") {
+    Rates { inp: 1100, cache: 275, out: 4400 }
+  } else if buf_has_str(AgentMem::model_buf, "gpt-") && buf_has_str(AgentMem::model_buf, "mini") {
+    Rates { inp: 400, cache: 100, out: 1600 }
+  } else if buf_has_str(AgentMem::model_buf, "gpt-") || buf_eq_str(AgentMem::prov_buf, "openai") {
+    Rates { inp: 2000, cache: 500, out: 8000 }
+  } else if buf_has_str(AgentMem::model_buf, "flash") {
+    Rates { inp: 750, cache: 75, out: 3750 }
+  } else if buf_has_str(AgentMem::model_buf, "hydrogen") {
+    Rates { inp: 1500, cache: 75, out: 7500 }
+  } else {
+    Rates { inp: 2000, cache: 100, out: 10000 }
+  }
+}
+
+// Compute exact request cost in milli-ILS (1000 = 1.00 ILS, USD->ILS = 3.65).
+// Z3-proved non-negative.
+export fn calc_cost_milli_ils_ifm(in_tok: i64, cached_tok: i64, out_tok: i64) -[Mem]-> i64
+  ens result >= 0
+{
+  let rates = resolve_model_rates();
+  let ti = clamp_i64(in_tok, 0, 50000000);
+  let tc = clamp_i64(cached_tok, 0, 50000000);
+  let to = clamp_i64(out_tok, 0, 50000000);
+  let total_u = (ti * rates.inp) / 1000 + (tc * rates.cache) / 1000 + (to * rates.out) / 1000;
+  let milli_ils = (total_u * 365 + 50000) / 100000;
+  max_i64(milli_ils, 0)
+}
+
+fn find_json_key_str(pos: i64, n: i64, key: str) -[Mem]-> i64 {
+  buf_set_str(AgentMem::key_buf, 64, key);
+  json_find_key(AgentMem::json_in, pos, n, AgentMem::key_buf, 64)
+}
+
+// Extract `.error.message` from either `{ "error": { "message": "..." } }` or
+// `[{ "error": { "message": "..." } }]` using `std/json.ifm`.
+export fn extract_api_error_ifm(raw_len: i64) -[Mem]-> i64 {
+  let n = clamp_i64(raw_len, 0, 16384);
+  buf_clear(AgentMem::json_out);
+  let mut obj_pos = json_skip_ws(AgentMem::json_in, 0, n);
+  if obj_pos < n && mem_load(AgentMem::json_in + 1 + obj_pos) == '[' {
+    obj_pos = json_skip_ws(AgentMem::json_in, obj_pos + 1, n);
+  }
+  let err_val = find_json_key_str(obj_pos, n, "error");
+  if err_val >= 0 {
+    if mem_load(AgentMem::json_in + 1 + err_val) == '"' {
+      json_decode_string(AgentMem::json_in, err_val, n, AgentMem::json_out, 2048)
+    } else {
+      let msg_val = find_json_key_str(err_val, n, "message");
+      if msg_val >= 0 {
+        json_decode_string(AgentMem::json_in, msg_val, n, AgentMem::json_out, 2048)
+      } else {
+        0
+      }
+    }
+  } else {
+    0
+  }
+}
+
+test "groq is free, deepseek and openai gpt-4.1-mini have distinct non-zero rates" {
+  buf_set_str(AgentMem::prov_buf, 64, "Groq");
+  buf_clear(AgentMem::model_buf);
+  assert(calc_cost_milli_ils_ifm(100000, 0, 50000) == 0);
+
+  buf_set_str(AgentMem::prov_buf, 64, "deepseek");
+  buf_clear(AgentMem::model_buf);
+  let ds_cost = calc_cost_milli_ils_ifm(1000000, 0, 1000000);
+  assert(ds_cost > 0);
+
+  buf_set_str(AgentMem::prov_buf, 64, "openai");
+  buf_set_str(AgentMem::model_buf, 128, "gpt-4.1-mini");
+  let mini_cost = calc_cost_milli_ils_ifm(1000000, 0, 1000000);
+  buf_set_str(AgentMem::model_buf, 128, "gpt-4.1");
+  let full_cost = calc_cost_milli_ils_ifm(1000000, 0, 1000000);
+  assert(mini_cost > ds_cost && full_cost > mini_cost);
+}
