@@ -1199,7 +1199,8 @@ pub(super) fn describe_tool_step(name: &str, args: &Value) -> (i64, String, Stri
     }
 }
 
-pub(super) const EMBEDDED_INFIMUM_GUIDE: &str = include_str!("../../../docs/INFIMUM_LANG_GUIDE.md");
+pub(super) const EMBEDDED_INFIMUM_GUIDE: &str =
+    include_str!("../../../../../crates/infimum-lang/docs/INFIMUM_LANG_GUIDE.md");
 
 pub(super) fn studio_root_candidates() -> Vec<PathBuf> {
     let mut roots = Vec::new();
@@ -1227,10 +1228,12 @@ pub(super) fn studio_root_candidates() -> Vec<PathBuf> {
 
 pub(super) fn read_canonical_infimum_guide() -> String {
     for root in studio_root_candidates() {
-        let p = root.join("docs/INFIMUM_LANG_GUIDE.md");
-        if let Ok(text) = fs::read_to_string(&p) {
-            if !text.trim().is_empty() {
-                return text;
+        if let Some(mono) = root.parent().and_then(|p| p.parent()) {
+            let p = mono.join("crates/infimum-lang/docs/INFIMUM_LANG_GUIDE.md");
+            if let Ok(text) = fs::read_to_string(&p) {
+                if !text.trim().is_empty() {
+                    return text;
+                }
             }
         }
     }

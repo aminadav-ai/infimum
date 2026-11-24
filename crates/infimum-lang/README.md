@@ -74,7 +74,7 @@ cargo build --release
 cargo test
 ```
 
-See [`INFIMUM_LANG_GUIDE.md`](https://github.com/aminadav-ai/infimum-code/blob/main/docs/INFIMUM_LANG_GUIDE.md) in `infimum-code` for the complete language reference.
+See [`docs/INFIMUM_LANG_GUIDE.md`](docs/INFIMUM_LANG_GUIDE.md) for the complete language reference.
 
 ---
 
