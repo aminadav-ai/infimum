@@ -11,7 +11,9 @@ pub const INPUT_MAX_CHARS: i64 = 8192;
 pub const LARGE_COPY_MAX_CHARS: i64 = 32768;
 
 pub const PASTE_MAILBOX_WORD: usize = 32000;
+#[allow(dead_code)]
 pub const FONT_METRICS_FLAG_WORD: usize = 256;
+#[allow(dead_code)]
 pub const FONT_METRICS_TABLE_WORD: usize = 257;
 
 #[repr(i32)]

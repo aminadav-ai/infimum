@@ -960,7 +960,7 @@ pub fn handle_request(
                                     let s = String::from_utf8_lossy(&line_buf);
                                     let clean = s.trim_end_matches(['\r', '\n']);
                                     let char_n = clean.chars().count();
-                                    if win_chars + char_n + 1 <= 64500 {
+                                    if win_chars + char_n < 64500 {
                                         win_lines.push(clean.to_string());
                                         win_chars += char_n + 1;
                                     }
@@ -1691,8 +1691,10 @@ mod tests {
     use super::*;
 
     fn test_ctx() -> ServerContext {
-        let mut policy = CapabilityPolicy::default();
-        policy.allow_user_workspaces = true;
+        let policy = CapabilityPolicy {
+            allow_user_workspaces: true,
+            ..Default::default()
+        };
         ServerContext {
             policy,
             token: "secret-test-token-123".to_string(),
@@ -1760,9 +1762,11 @@ mod tests {
         assert!(files.contains(&"src/helper.ifm".to_string()));
         assert!(files.contains(&"textures.json".to_string()));
 
-        let mut policy = CapabilityPolicy::default();
-        policy.allow_user_workspaces = false;
-        policy.allowed_fs_roots = vec![tmp.clone()];
+        let policy = CapabilityPolicy {
+            allow_user_workspaces: false,
+            allowed_fs_roots: vec![tmp.clone()],
+            ..Default::default()
+        };
         let ctx = ServerContext {
             policy,
             token: "secret-test-token-123".to_string(),

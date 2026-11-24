@@ -623,6 +623,19 @@ where
                     } else {
                         let v_smt = self.encode_expr(value, local_env, local_types, guard, emit_checks)?;
                         local_env.insert(name.clone(), v_smt);
+                        let copied: Vec<(String, String, Option<Type>)> = if let Expr::Var(src) = value {
+                            let src_prefix = format!("{src}#");
+                            local_env
+                                .iter()
+                                .filter_map(|(k, v)| {
+                                    k.strip_prefix(&src_prefix).map(|idx| {
+                                        (format!("{name}#{idx}"), v.clone(), local_types.get(k).cloned())
+                                    })
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
                         let prefix = format!("{name}#");
                         let stale: Vec<String> = local_env
                             .keys()
@@ -632,6 +645,12 @@ where
                         for k in stale {
                             local_env.remove(&k);
                             local_types.remove(&k);
+                        }
+                        for (k, v, fty) in copied {
+                            local_env.insert(k.clone(), v);
+                            if let Some(t) = fty {
+                                local_types.insert(k, t);
+                            }
                         }
                     }
                 }

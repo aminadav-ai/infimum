@@ -214,7 +214,7 @@ impl GlyphAtlas {
                 let font = if primary_font.lookup_glyph_index(ch) != 0 {
                     *primary_font
                 } else {
-                    &symbol_fallback
+                    symbol_fallback
                 };
 
                 let (metrics, bitmap) = font.rasterize(ch, ATLAS_FONT_PX);

@@ -409,7 +409,7 @@ fn decode_image_rgba(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
         let mut rgba = Vec::with_capacity(n * 4);
         match info.pixel_format {
             jpeg_decoder::PixelFormat::RGB24 => {
-                for chunk in pixels.chunks_exact(3) {
+                for chunk in pixels.as_chunks::<3>().0 {
                     rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
                 }
             }
@@ -419,7 +419,7 @@ fn decode_image_rgba(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
                 }
             }
             jpeg_decoder::PixelFormat::CMYK32 => {
-                for chunk in pixels.chunks_exact(4) {
+                for chunk in pixels.as_chunks::<4>().0 {
                     let c = chunk[0] as u32;
                     let m = chunk[1] as u32;
                     let y = chunk[2] as u32;
@@ -447,7 +447,7 @@ fn decode_image_rgba(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
         match info.color_type {
             png::ColorType::Rgba => rgba.extend_from_slice(data),
             png::ColorType::Rgb => {
-                for chunk in data.chunks_exact(3) {
+                for chunk in data.as_chunks::<3>().0 {
                     rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
                 }
             }
@@ -457,7 +457,7 @@ fn decode_image_rgba(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
                 }
             }
             png::ColorType::GrayscaleAlpha => {
-                for chunk in data.chunks_exact(2) {
+                for chunk in data.as_chunks::<2>().0 {
                     rgba.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
                 }
             }
@@ -681,7 +681,7 @@ pub fn decode_image_bytes(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         match info.color_type {
             png::ColorType::Rgba => rgba.extend_from_slice(data),
             png::ColorType::Rgb => {
-                for chunk in data.chunks_exact(3) {
+                for chunk in data.as_chunks::<3>().0 {
                     rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
                 }
             }
@@ -691,7 +691,7 @@ pub fn decode_image_bytes(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                 }
             }
             png::ColorType::GrayscaleAlpha => {
-                for chunk in data.chunks_exact(2) {
+                for chunk in data.as_chunks::<2>().0 {
                     rgba.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
                 }
             }
@@ -896,7 +896,7 @@ pub fn prepare_textures_3d_cpu(
                             })
                             .unwrap_or_else(|| {
                                 let mut flat = vec![0u8; (target_size * target_size * 4) as usize];
-                                for px in flat.chunks_exact_mut(4) {
+                                for px in flat.as_chunks_mut::<4>().0 {
                                     px[0] = 128;
                                     px[1] = 128;
                                     px[2] = 255;
@@ -910,7 +910,7 @@ pub fn prepare_textures_3d_cpu(
                             let rough_resized =
                                 resize_rgba_bilinear(&r_rgba, rw, rh, target_size, target_size);
                             for (n_px, r_px) in
-                                norm_resized.chunks_exact_mut(4).zip(rough_resized.chunks_exact(4))
+                                norm_resized.as_chunks_mut::<4>().0.iter_mut().zip(rough_resized.as_chunks::<4>().0)
                             {
                                 n_px[3] = r_px[0];
                             }

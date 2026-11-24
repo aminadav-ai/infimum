@@ -18,6 +18,12 @@ pub struct NativeClipboard {
     inner: Option<Clipboard>,
 }
 
+impl Default for NativeClipboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NativeClipboard {
     pub fn new() -> Self {
         Self {
@@ -245,6 +251,7 @@ pub fn pick_image_files_dialog() -> Vec<PathBuf> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn pick_folder_dialog(initial_dir: Option<&Path>) -> Option<PathBuf> {
     let mut cmd = Command::new("zenity");
     cmd.args([
@@ -414,6 +421,7 @@ pub fn encode_base64(input: &[u8]) -> String {
     out
 }
 
+#[allow(dead_code)]
 pub fn decode_base64(input: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity((input.len() * 3) / 4);
     let mut buf = 0u32;
@@ -438,6 +446,7 @@ pub fn decode_base64(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+#[allow(dead_code)]
 pub fn decode_base64_image_rgba(b64: &str) -> Option<(u32, u32, Vec<u8>)> {
     let raw = decode_base64(b64)?;
     let img = pasted_image_from_any_bytes(&raw)?;
