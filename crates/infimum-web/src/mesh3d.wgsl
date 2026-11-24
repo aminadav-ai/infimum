@@ -261,12 +261,8 @@ fn fs_mesh(in: MeshVsOut) -> @location(0) vec4<f32> {
     let n = perturb_normal(n_geo, in.world_pos, in.uv, detail_map_n);
     let view_dir = normalize(u.cam_pos.xyz - in.world_pos);
 
-    // Subtle ground-contact AO near floor junctions (Quake lightmap feel)
-    var contact_ao = in.ao;
-    if (u.params.z < 0.5 && abs(n_geo.y) < 0.5) {
-        let h_above_floor = max(in.world_pos.y, 0.0);
-        contact_ao = contact_ao * mix(0.68, 1.0, smoothstep(0.0, 0.65, h_above_floor));
-    }
+    // Per-vertex ambient occlusion supplied by capsule (no hardcoded y == 0 floor bias so multi-deck 3D worlds work cleanly)
+    let contact_ao = in.ao;
 
     // Warm directional sunlight + hemisphere ambient (brighter sunlit savanna when sky_mode == 2)
     let is_day = u.params.x > 1.5;
@@ -315,18 +311,21 @@ fn fs_mesh(in: MeshVsOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // True 3D radial distance fog (skipped for viewmodel; soft golden horizon haze when fog_mode == 0)
+    // True 3D radial distance fog (skipped for viewmodel; 0 = horizon haze, 1 = dark fog, 2 = crimson fog)
     if (u.params.z < 0.5) {
         let fog_dist = length(u.cam_pos.xyz - in.world_pos);
-        if (u.params.y > 0.5) {
+        if (u.params.y > 1.5) {
             let fog_f = clamp((fog_dist - 10.0) / 38.0, 0.0, 0.80);
             lit_col = mix(lit_col, vec3<f32>(0.26, 0.14, 0.15), fog_f);
+        } else if (u.params.y > 0.5) {
+            let fog_f = clamp((fog_dist - 10.0) / 38.0, 0.0, 0.80);
+            lit_col = mix(lit_col, vec3<f32>(0.05, 0.07, 0.10), fog_f);
         } else if (u.params.x > 1.5) {
             let fog_f = clamp((fog_dist - 18.0) / 48.0, 0.0, 0.45);
             lit_col = mix(lit_col, vec3<f32>(0.92, 0.78, 0.58), fog_f);
         } else {
-            let fog_f = clamp((fog_dist - 10.0) / 38.0, 0.0, 0.80);
-            lit_col = mix(lit_col, vec3<f32>(0.18, 0.11, 0.14), fog_f);
+            let fog_f = clamp((fog_dist - 18.0) / 48.0, 0.0, 0.55);
+            lit_col = mix(lit_col, vec3<f32>(0.12, 0.10, 0.14), fog_f);
         }
     }
 
