@@ -36,18 +36,24 @@ pub struct GlyphAtlas {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_font_with_fallbacks(candidates: &[&str]) -> Font {
+const EMBEDDED_FALLBACK_FONT: &[u8] = include_bytes!("../assets/fallback.ttf");
+
+#[cfg(not(target_arch = "wasm32"))]
+fn win_font(name: &str) -> String {
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+    format!("{windir}\\Fonts\\{name}")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn try_load_font_with_fallbacks(candidates: &[String]) -> Option<Font> {
     for path in candidates {
         if let Ok(bytes) = fs::read(path) {
             if let Ok(font) = Font::from_bytes(bytes, FontSettings::default()) {
-                return font;
+                return Some(font);
             }
         }
     }
-    panic!(
-        "Could not locate any system TrueType font from candidates: {:?}",
-        candidates
-    );
+    None
 }
 
 /// Map atlas slot `0..175` back to its Unicode character.
@@ -74,32 +80,122 @@ pub fn atlas_slot_to_char(slot: u32) -> Option<char> {
 impl GlyphAtlas {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn build_system_atlas() -> Self {
-        let regular = load_font_with_fallbacks(&[
-            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ]);
-        let bold = load_font_with_fallbacks(&[
-            "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        ]);
-        let mono = load_font_with_fallbacks(&[
-            "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-        ]);
-        let symbol_fallback = load_font_with_fallbacks(&[
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-        ]);
-        Self::build_from_fonts(&regular, &bold, &mono, &symbol_fallback)
+        let regular_candidates = vec![
+            // Linux (prefer static TTFs before variable-font Ubuntu symlinks)
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf".to_string(),
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".to_string(),
+            "/usr/share/fonts/TTF/DejaVuSans.ttf".to_string(),
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf".to_string(),
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf".to_string(),
+            // macOS
+            "/System/Library/Fonts/Supplemental/Arial.ttf".to_string(),
+            "/System/Library/Fonts/Supplemental/Verdana.ttf".to_string(),
+            "/Library/Fonts/Arial.ttf".to_string(),
+            "/System/Library/Fonts/Helvetica.ttc".to_string(),
+            // Windows
+            win_font("segoeui.ttf"),
+            win_font("arial.ttf"),
+            win_font("calibri.ttf"),
+        ];
+        let bold_candidates = vec![
+            // Linux (static bold TTFs before variable-font Ubuntu-B.ttf)
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf".to_string(),
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf".to_string(),
+            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf".to_string(),
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf".to_string(),
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf".to_string(),
+            // macOS
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf".to_string(),
+            "/System/Library/Fonts/Supplemental/Verdana Bold.ttf".to_string(),
+            "/Library/Fonts/Arial Bold.ttf".to_string(),
+            // Windows
+            win_font("segoeuib.ttf"),
+            win_font("arialbd.ttf"),
+            win_font("calibrib.ttf"),
+        ];
+        let mono_candidates = vec![
+            // Linux
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf".to_string(),
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf".to_string(),
+            "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf".to_string(),
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf".to_string(),
+            "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf".to_string(),
+            // macOS
+            "/System/Library/Fonts/Supplemental/Courier New.ttf".to_string(),
+            "/System/Library/Fonts/Supplemental/Andale Mono.ttf".to_string(),
+            "/Library/Fonts/Courier New.ttf".to_string(),
+            "/System/Library/Fonts/Menlo.ttc".to_string(),
+            // Windows
+            win_font("consola.ttf"),
+            win_font("lucon.ttf"),
+            win_font("cour.ttf"),
+        ];
+        let symbol_candidates = vec![
+            // Linux
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".to_string(),
+            "/usr/share/fonts/TTF/DejaVuSans.ttf".to_string(),
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf".to_string(),
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf".to_string(),
+            // macOS
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf".to_string(),
+            "/System/Library/Fonts/Supplemental/Arial.ttf".to_string(),
+            // Windows
+            win_font("seguisym.ttf"),
+            win_font("segoeui.ttf"),
+            win_font("arial.ttf"),
+        ];
+
+        let regular = try_load_font_with_fallbacks(&regular_candidates).unwrap_or_else(|| {
+            Font::from_bytes(EMBEDDED_FALLBACK_FONT, FontSettings::default())
+                .expect("Embedded fallback TrueType font must be valid")
+        });
+        let bold = try_load_font_with_fallbacks(&bold_candidates);
+        let mono = try_load_font_with_fallbacks(&mono_candidates);
+        let symbol_fallback = try_load_font_with_fallbacks(&symbol_candidates);
+
+        Self::build_from_fonts(
+            &regular,
+            bold.as_ref().unwrap_or(&regular),
+            mono.as_ref().unwrap_or(&regular),
+            symbol_fallback.as_ref().unwrap_or(&regular),
+        )
     }
 
+    #[allow(dead_code)]
     pub fn build_from_font_bytes(regular_bytes: &[u8]) -> Result<Self, String> {
-        let font = Font::from_bytes(regular_bytes, FontSettings::default())
-            .map_err(|e| format!("Invalid TrueType font: {e}"))?;
-        Ok(Self::build_from_fonts(&font, &font, &font, &font))
+        Self::build_from_font_styles(regular_bytes, None, None)
+    }
+
+    /// Build a 3-style (`Regular`, `Bold`, `Mono`) Unicode glyph atlas from raw TrueType bytes.
+    /// Any omitted or empty `bold_bytes` / `mono_bytes` gracefully falls back to `regular_bytes`.
+    #[allow(dead_code)]
+    pub fn build_from_font_styles(
+        regular_bytes: &[u8],
+        bold_bytes: Option<&[u8]>,
+        mono_bytes: Option<&[u8]>,
+    ) -> Result<Self, String> {
+        let regular = Font::from_bytes(regular_bytes, FontSettings::default())
+            .map_err(|e| format!("Invalid Regular TrueType font: {e}"))?;
+        let bold = match bold_bytes.filter(|b| !b.is_empty()) {
+            Some(bytes) => Some(
+                Font::from_bytes(bytes, FontSettings::default())
+                    .map_err(|e| format!("Invalid Bold TrueType font: {e}"))?,
+            ),
+            None => None,
+        };
+        let mono = match mono_bytes.filter(|b| !b.is_empty()) {
+            Some(bytes) => Some(
+                Font::from_bytes(bytes, FontSettings::default())
+                    .map_err(|e| format!("Invalid Mono TrueType font: {e}"))?,
+            ),
+            None => None,
+        };
+        Ok(Self::build_from_fonts(
+            &regular,
+            bold.as_ref().unwrap_or(&regular),
+            mono.as_ref().unwrap_or(&regular),
+            &regular,
+        ))
     }
 
     fn build_from_fonts(regular: &Font, bold: &Font, mono: &Font, symbol_fallback: &Font) -> Self {
@@ -176,9 +272,28 @@ mod tests {
         assert_eq!(atlas.height, 2112);
         let non_zero = atlas.pixels.iter().filter(|&&b| b > 20).count();
         assert!(non_zero > 10_000, "Expected rasterized glyph pixels, got {non_zero}");
-        // Narrow 'i' must have smaller advance than wide 'W'
+        // Regular: narrow 'i' must have smaller advance than wide 'W'
         let adv_i = atlas.advances_256[0][('i' as usize) - 32];
         let adv_w = atlas.advances_256[0][('W' as usize) - 32];
-        assert!(adv_i < adv_w, "Expected 'i' ({adv_i}) < 'W' ({adv_w})");
+        assert!(adv_i < adv_w, "Expected Regular 'i' ({adv_i}) < 'W' ({adv_w})");
+        // Mono: 'i' and 'W' must share fixed-width advance
+        let mono_i = atlas.advances_256[2][('i' as usize) - 32];
+        let mono_w = atlas.advances_256[2][('W' as usize) - 32];
+        assert_eq!(mono_i, mono_w, "Expected Mono 'i' ({mono_i}) == 'W' ({mono_w})");
+        // Bold pixels (rows 11..22) must differ from Regular pixels (rows 0..11)
+        let style_bytes = (ATLAS_WIDTH * ATLAS_ROWS_PER_STYLE * ATLAS_CELL_PX) as usize;
+        let reg_slice = &atlas.pixels[0..style_bytes];
+        let bold_slice = &atlas.pixels[style_bytes..2 * style_bytes];
+        assert_ne!(reg_slice, bold_slice, "Expected Bold style to differ visually from Regular");
+    }
+
+    #[test]
+    fn build_from_font_styles_supports_optional_and_embedded_fallback() {
+        let fallback_only = GlyphAtlas::build_from_font_styles(EMBEDDED_FALLBACK_FONT, None, None)
+            .expect("Embedded fallback font must build");
+        assert_eq!(fallback_only.width, 1024);
+        assert_eq!(fallback_only.height, 2112);
+        let non_zero = fallback_only.pixels.iter().filter(|&&b| b > 20).count();
+        assert!(non_zero > 10_000, "Expected rasterized fallback pixels, got {non_zero}");
     }
 }
