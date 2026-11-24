@@ -94,12 +94,26 @@ if [[ -n "$INFIMUM_CODE_DIR" ]]; then
   echo "  [sync]   infimum-code/docs/INFIMUM_LANG_GUIDE.md matches canonical guide"
 fi
 
-if [[ -f "$SIBLINGS_ROOT/infimum-site/public/code/agent_worker.js" ]]; then
-  cmp -s "$REPO_ROOT/docs/INFIMUM_LANG_GUIDE.md" "$SIBLINGS_ROOT/infimum-site/public/code/INFIMUM_LANG_GUIDE.md" \
+SITE_DIR=""
+if [[ -f "$MONOREPO_ROOT/../infimum-site/public/code/agent_worker.js" ]]; then
+  SITE_DIR="$(cd "$MONOREPO_ROOT/../infimum-site" && pwd)"
+elif [[ -f "$SIBLINGS_ROOT/infimum-site/public/code/agent_worker.js" ]]; then
+  SITE_DIR="$SIBLINGS_ROOT/infimum-site"
+fi
+
+if [[ -n "$SITE_DIR" ]]; then
+  cmp -s "$REPO_ROOT/docs/INFIMUM_LANG_GUIDE.md" "$SITE_DIR/public/code/INFIMUM_LANG_GUIDE.md" \
     || { echo "ERROR: infimum-site/public/code/INFIMUM_LANG_GUIDE.md is out of sync!"; exit 1; }
   echo "  [sync]   infimum-site/public/code/INFIMUM_LANG_GUIDE.md matches canonical guide"
 
-  python3 - "$SIBLINGS_ROOT/infimum-site/public/code/agent_worker.js" "$TMP_DIR" <<'PY'
+  if [[ -n "$INFIMUM_CODE_DIR" && -f "$SITE_DIR/public/code/studio_abi.js" ]]; then
+    "$INF_BIN" export-abi "$INFIMUM_CODE_DIR/capsule/src/abi.ifm" --js -o "$TMP_DIR/studio_abi.js" >/dev/null
+    cmp -s "$TMP_DIR/studio_abi.js" "$SITE_DIR/public/code/studio_abi.js" \
+      || { echo "ERROR: infimum-site/public/code/studio_abi.js is out of sync with abi.ifm!"; exit 1; }
+    echo "  [sync]   infimum-site/public/code/studio_abi.js matches canonical abi.ifm"
+  fi
+
+  python3 - "$SITE_DIR/public/code/agent_worker.js" "$TMP_DIR" <<'PY'
 import re, sys
 from pathlib import Path
 js = Path(sys.argv[1]).read_text(encoding="utf-8")

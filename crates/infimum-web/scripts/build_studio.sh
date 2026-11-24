@@ -18,8 +18,11 @@ if [[ ! -x "$INFIMUM_BIN" ]]; then
   cargo build --release -p infimum-lang
 fi
 
-echo "[1/5] Exporting shared Rust ABI (abi.ifm -> apps/infimum-code/daemon/src/studio_abi.rs)..."
+echo "[1/5] Exporting shared Rust & JS ABI (abi.ifm -> studio_abi.rs / studio_abi.js)..."
 "$INFIMUM_BIN" export-abi "$STUDIO_DIR/capsule/src/abi.ifm" --rust -o "$STUDIO_DIR/daemon/src/studio_abi.rs"
+if [[ -d "$MONOREPO_ROOT/../infimum-site/public/code" ]]; then
+  "$INFIMUM_BIN" export-abi "$STUDIO_DIR/capsule/src/abi.ifm" --js -o "$MONOREPO_ROOT/../infimum-site/public/code/studio_abi.js"
+fi
 
 echo "[2/5] Verifying Infimum Code capsule (Z3 Telos + Flux + Forma)..."
 "$INFIMUM_BIN" verify "$STUDIO_DIR/capsule/src/infimum_code.ifm"
