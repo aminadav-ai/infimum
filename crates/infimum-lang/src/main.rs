@@ -1,6 +1,6 @@
 #![deny(clippy::todo, clippy::unimplemented, dead_code, unused_must_use)]
 
-use infimum_lang::abi::{generate_json_abi, generate_rust_abi};
+use infimum_lang::abi::{generate_js_abi, generate_json_abi, generate_rust_abi};
 use infimum_lang::codegen::{build_native_binary, run_native_binary};
 use infimum_lang::diag::{InfimumDiagnostic, Span};
 use infimum_lang::parser::parse_module_from_path;
@@ -185,6 +185,35 @@ fn run_cli(args: &[&str], json_mode: bool, no_cache: bool) -> Result<(), Infimum
             let module = parse_module_from_path(Path::new(file_path))?;
             let rust_src = generate_rust_abi(&module)?;
             print!("{rust_src}");
+            Ok(())
+        }
+        ["export-abi", file_path, "--js", "-o", out_path] => {
+            let module = parse_module_from_path(Path::new(file_path))?;
+            let js_src = generate_js_abi(&module)?;
+            write_abi_output(Path::new(out_path), &js_src)?;
+            if json_mode {
+                println!(
+                    "{{\"format\":\"js\",\"out\":\"{}\",\"consts\":{},\"enums\":{},\"layouts\":{}}}",
+                    out_path,
+                    module.consts.len(),
+                    module.enums.len(),
+                    module.layouts.len()
+                );
+            } else {
+                println!(
+                    "  Exported JS ABI -> {} ({} const(s), {} enum(s), {} layout(s))",
+                    out_path,
+                    module.consts.len(),
+                    module.enums.len(),
+                    module.layouts.len()
+                );
+            }
+            Ok(())
+        }
+        ["export-abi", file_path, "--js"] => {
+            let module = parse_module_from_path(Path::new(file_path))?;
+            let js_src = generate_js_abi(&module)?;
+            print!("{js_src}");
             Ok(())
         }
         ["export-abi", file_path, "-o", out_path] if json_mode => {
