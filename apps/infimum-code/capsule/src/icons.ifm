@@ -78,6 +78,18 @@ fn ui_icon_image(x: i64, y: i64, sz: i64, col: i64, clip: i64) -[Mem]-> unit {
 }
 
 // Infimum brand mark: a circle resting over its greatest lower bound (horizontal bar).
+fn ui_icon_play(cx: i64, cy: i64, sz: i64, col: i64, clip: i64) -[Mem]-> unit {
+  let s = clamp_i64(sz, 8, 22);
+  let w = clamp_i64((s * 80) / 100, 6, 16);
+  let x0 = cx - w / 2 + 1;
+  for i in 0..w max 16 {
+    let rem = w - i;
+    let bh = clamp_i64((rem * s) / w, 2, s);
+    let sw = if i + 1 >= w { 1 } else { 2 };
+    ui_rect(x0 + i, cy - bh / 2, sw, bh, 0, 0, 0, col, 0, clip);
+  }
+}
+
 fn ui_icon_infimum_logo(cx: i64, cy: i64, sz: i64, dot_col: i64, bar_col: i64, clip: i64) -[Mem]-> unit {
   let s = clamp_i64(sz, 14, 28);
   let r = clamp_i64((s * 22) / 100, 3, 6);

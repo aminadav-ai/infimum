@@ -35,10 +35,12 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
 
   let side_w = rw;
   let plus_w = clamp_i64((22 * scale) / 100, 20, 34);
-  let play_w = clamp_i64((44 * scale) / 100, 40, 64);
-  let plus_x = rx + side_w - 16 - plus_w - 4;
-  let rm_x = plus_x - plus_w - 4;
-  let play_x = rm_x - play_w - 4;
+  let play_w = plus_w;
+  // Header '+' button sits at the rightmost slot; project rows order buttons as [▶] [+] [x] (x rightmost).
+  let hdr_plus_x = rx + side_w - 16 - plus_w - 4;
+  let rm_x = hdr_plus_x;
+  let plus_x = rm_x - plus_w - 4;
+  let play_x = plus_x - play_w - 4;
 
   // --- Sticky Sidebar Header (always pinned at top, never scrolls away) ---
   let hdr_y = ry + 10;
@@ -68,10 +70,10 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
   let title_x = logo_x + logo_sz + 8;
   let title_y = logo_y + (logo_sz - sm_sz) / 2;
   ui_text(title_x, title_y, "ПРОЕКТЫ", sm_sz, 1, col_muted(th), ClipId::Root);
-  ui_int(rm_x - sf(20), title_y, StudioMem.proj_count, sm_sz, 2, col_muted(th), ClipId::Root);
+  ui_int(hdr_plus_x - plus_w - sf(20), title_y, StudioMem.proj_count, sm_sz, 2, col_muted(th), ClipId::Root);
 
   let add_btn_y = logo_y + (logo_sz - add_btn_h) / 2;
-  let add_hov = modal_none && point_in_rect(mx, my, plus_x, add_btn_y, plus_w, add_btn_h);
+  let add_hov = modal_none && point_in_rect(mx, my, hdr_plus_x, add_btn_y, plus_w, add_btn_h);
   if add_hov {
     gfx_set_cursor(CursorKind::Pointer);
     if m_clicked == 1 {
@@ -89,8 +91,8 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
       }
     }
   }
-  ui_rect(plus_x, add_btn_y, plus_w, add_btn_h, 5, 1, 0, if add_hov { col_accent() } else { col_surf(th) }, col_border(th), ClipId::Root);
-  ui_text(plus_x + (plus_w - sm_sz) / 2, add_btn_y + (add_btn_h - ui_sz) / 2, "+", ui_sz, 1, if add_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) }, ClipId::Root);
+  ui_rect(hdr_plus_x, add_btn_y, plus_w, add_btn_h, 5, 1, 0, if add_hov { col_accent() } else { col_surf(th) }, col_border(th), ClipId::Root);
+  ui_text(hdr_plus_x + (plus_w - sm_sz) / 2, add_btn_y + (add_btn_h - ui_sz) / 2, "+", ui_sz, 1, if add_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) }, ClipId::Root);
 
   // Sticky Segmented Switcher: Диалоги | Файлы
   let seg_y = logo_y + logo_sz + 8;
@@ -194,7 +196,16 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
             if play_hov {
               StudioMem.active_proj_idx = p_idx;
               extract_active_project_to(StudioMem::active_proj_buf);
-              daemon::play_project(StudioMem::projects_buf, start, name_len);
+              let play_st = daemon::play_project(StudioMem::projects_buf, start, name_len);
+              if play_st == 2 && StudioMem.ai_running == 0 {
+                StudioMem.ai_running = 1;
+                StudioMem.live_timeline_words = 0;
+                StudioMem.live_cmd_killing = 0;
+                StudioMem.async_elapsed_tenths = 0;
+                StudioMem.scroll_y = 0;
+                StudioMem.file_view_open = 0;
+                StudioMem.active_file_idx = -1;
+              }
             } else if plus_hov {
               StudioMem.file_view_open = 0;
               StudioMem.active_file_idx = -1;
@@ -241,12 +252,13 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
 
         if is_act || row_hov {
           let play_bg = if play_hov { pack_rgba(52, 211, 153, 255) } else { pack_rgba(16, 185, 129, 255) };
-          ui_rect(play_x, py + 3, play_w, row_h - 6, 5, 0, 0, play_bg, 0, clip_id);
-          ui_text(play_x + 6, py + (row_h - sm_sz) / 2, "Пуск", sm_sz, 1, pack_rgba(6, 33, 24, 255), clip_id);
-          ui_rect(rm_x, py + 3, plus_w, row_h - 6, 5, 0, 0, if rm_hov { col_red() } else { col_surf2(th) }, 0, clip_id);
-          ui_text(rm_x + (plus_w - sm_sz) / 2, py + (row_h - sm_sz) / 2, "x", sm_sz, 1, if rm_hov { pack_rgba(255, 255, 255, 255) } else { col_muted(th) }, clip_id);
-          ui_rect(plus_x, py + 3, plus_w, row_h - 6, 5, 0, 0, if plus_hov { col_accent() } else { col_surf2(th) }, 0, clip_id);
+          let btn_h = row_h - 6;
+          ui_rect(play_x, py + 3, play_w, btn_h, 5, 0, 0, play_bg, 0, clip_id);
+          ui_icon_play(play_x + play_w / 2, py + 3 + btn_h / 2, clamp_i64(sm_sz - 1, 9, 16), pack_rgba(6, 33, 24, 255), clip_id);
+          ui_rect(plus_x, py + 3, plus_w, btn_h, 5, 0, 0, if plus_hov { col_accent() } else { col_surf2(th) }, 0, clip_id);
           ui_text(plus_x + (plus_w - sm_sz) / 2, py + (row_h - ui_sz) / 2, "+", ui_sz, 1, if plus_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) }, clip_id);
+          ui_rect(rm_x, py + 3, plus_w, btn_h, 5, 0, 0, if rm_hov { col_red() } else { col_surf2(th) }, 0, clip_id);
+          ui_text(rm_x + (plus_w - sm_sz) / 2, py + (row_h - sm_sz) / 2, "x", sm_sz, 1, if rm_hov { pack_rgba(255, 255, 255, 255) } else { col_muted(th) }, clip_id);
         }
       }
       py += row_h + 2;

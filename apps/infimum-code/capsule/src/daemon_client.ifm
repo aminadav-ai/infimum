@@ -330,7 +330,12 @@ mod daemon {
       buf_push_cp(StudioMem::http_body_tmp, 1024, mem_load(proj_buf + 1 + pstart + i));
     }
     let code = http("POST", "/apps/play_project?format=ifm", StudioMem::http_body_tmp);
-    if code == 200 { 1 } else { 0 }
+    if code == 200 {
+      let n = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 16);
+      if n >= 1 && mem_load(StudioMem::http_resp_buf + 1) == '2' { 2 } else { 1 }
+    } else {
+      0
+    }
   }
 
   pub fn delete_conv(idx: i64) -[Mem, Net]-> i64 {
