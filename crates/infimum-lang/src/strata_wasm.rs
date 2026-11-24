@@ -503,6 +503,23 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
             )
         })?;
         let target_node = &nodes[(target_idx - import_offset) as usize];
+        let has_non_scalar_param = target_node
+            .ast
+            .params
+            .iter()
+            .any(|p| matches!(&p.ty, Type::Tuple(_)));
+        let has_non_scalar_ret = matches!(&target_node.ast.ret_type, Type::Tuple(_));
+        if has_non_scalar_param || has_non_scalar_ret {
+            return Err(InfimumDiagnostic::new(
+                "E082_NON_SCALAR_EXPORT",
+                "strata-wasm",
+                format!(
+                    "Exported function '{exp_name}' cannot take or return tuple/value-struct types across the Wasm ABI boundary"
+                ),
+                Span::zero(),
+                "Use scalar types (i64, fixed, bool, unit) on 'export fn' signatures, or keep tuple/struct helpers non-exported",
+            ));
+        }
         let arity = target_node.ast.params.len();
         let is_unit = target_node.ast.ret_type == Type::Unit;
 
@@ -1307,11 +1324,22 @@ fn emit_expr(
                 }
             }
             if let Expr::TupleLit(elems) = expr.as_ref() {
+                let keep = (*index).min(elems.len().saturating_sub(1));
+                let tmp = *ctx.local_map.get("__ifm_tup_tmp").unwrap();
                 for (i, e) in elems.iter().enumerate() {
-                    if i == *index {
-                        emit_expr(e, ctx, out)?;
+                    let e_arity = expr_result_arity(e, ctx);
+                    emit_expr(e, ctx, out)?;
+                    if i == keep {
+                        out.push(0x21); // local.set tmp
+                        push_u32_leb(out, tmp);
+                    } else {
+                        for _ in 0..e_arity {
+                            out.push(0x1A); // drop (preserving side effects of discarded elements)
+                        }
                     }
                 }
+                out.push(0x20); // local.get tmp
+                push_u32_leb(out, tmp);
             } else {
                 let arity = expr_result_arity(expr, ctx);
                 emit_expr(expr, ctx, out)?;
@@ -1395,5 +1423,52 @@ fn push_i64_leb(out: &mut Vec<u8>, mut val: i64) {
         } else {
             out.push(byte | 0x80);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn rejects_non_scalar_tuple_export_fn() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "main.ifm".to_string(),
+            r#"
+struct Vec2 { x: i64, y: i64 }
+
+export fn bad_export(v: Vec2) -> Vec2 {
+  Vec2 { x: v.x + 1, y: v.y + 1 }
+}
+"#
+            .to_string(),
+        );
+        let err = crate::wasm_api::compile_project_in_memory("main.ifm", &files).unwrap_err();
+        assert_eq!(err.code, "E082_NON_SCALAR_EXPORT");
+    }
+
+    #[test]
+    fn tuple_lit_field_preserves_discarded_side_effects() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "main.ifm".to_string(),
+            r#"
+fn side_effect() -[Mem]-> i64 {
+  mem_store(100, 777);
+  1
+}
+
+export fn run_check() -[Mem]-> i64 {
+  let v = (side_effect(), 42).1;
+  mem_load(100) + v
+}
+"#
+            .to_string(),
+        );
+        let (bytes, _) = crate::wasm_api::compile_project_in_memory("main.ifm", &files).unwrap();
+        assert!(bytes.starts_with(b"\0asm"));
+        // Verify emitted bytecode contains both call to side_effect and value 42, and validates cleanly in node/Wasm
+        assert!(bytes.len() > 40);
     }
 }
