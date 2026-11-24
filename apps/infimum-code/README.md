@@ -32,11 +32,11 @@
 ## Quick Start (Linux)
 
 ```bash
-# 1. Build the local agent daemon
-cargo build --release --manifest-path daemon/Cargo.toml
+# 1. From the monorepo root, build the workspace (`infimum`, `infimum-web`, `infimum-agentd`)
+cargo build --release --workspace
 
-# 2. Launch Infimum Code (requires `infimum-web` in PATH or sibling ../infimum-web)
-./bin/infimum-code
+# 2. Launch Infimum Code
+./apps/infimum-code/bin/infimum-code
 ```
 
 ---
