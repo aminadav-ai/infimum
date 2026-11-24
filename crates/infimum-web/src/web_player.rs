@@ -38,10 +38,33 @@ impl InfimumWebPlayer {
         js_sys::Uint8Array::from(AUDIO_CORE_AXW)
     }
 
-    /// Initialize `infimum-web` GPU pipeline on a browser `<canvas>` with TTF font bytes.
+    /// Initialize `infimum-web` GPU pipeline on a browser `<canvas>` with Regular TTF font bytes.
     pub async fn create(
         canvas: web_sys::HtmlCanvasElement,
         font_bytes: &[u8],
+        capsule_name: &str,
+        expect_textures: bool,
+        legacy_ascii_glyphs: bool,
+    ) -> Result<InfimumWebPlayer, JsValue> {
+        Self::create_with_fonts(
+            canvas,
+            font_bytes,
+            None,
+            None,
+            capsule_name,
+            expect_textures,
+            legacy_ascii_glyphs,
+        )
+        .await
+    }
+
+    /// Initialize `infimum-web` GPU pipeline on a browser `<canvas>` with distinct
+    /// Regular, Bold, and Mono TrueType fonts (Bold/Mono fall back to Regular when omitted).
+    pub async fn create_with_fonts(
+        canvas: web_sys::HtmlCanvasElement,
+        regular_font_bytes: &[u8],
+        bold_font_bytes: Option<Vec<u8>>,
+        mono_font_bytes: Option<Vec<u8>>,
         capsule_name: &str,
         expect_textures: bool,
         legacy_ascii_glyphs: bool,
@@ -55,8 +78,12 @@ impl InfimumWebPlayer {
             .unwrap_or(1.0)
             .max(1.0);
 
-        let atlas = GlyphAtlas::build_from_font_bytes(font_bytes)
-            .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+        let atlas = GlyphAtlas::build_from_font_styles(
+            regular_font_bytes,
+            bold_font_bytes.as_deref(),
+            mono_font_bytes.as_deref(),
+        )
+        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
 
         let mut font_advances = Vec::with_capacity(3 * 176);
         for row in &atlas.advances_256 {
