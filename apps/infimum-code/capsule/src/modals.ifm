@@ -44,7 +44,7 @@ enum DelAct {
 
 fn draw_settings_scale_val(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let scale = StudioMem.font_scale_pct;
-  let s_l = sf(14);
+  let s_l = 15;
   ui_fmt(rx + 2, ry + (rh - s_l) / 2, "{scale}%", s_l, 1, col_accent(), clip_id);
 }
 
@@ -231,7 +231,7 @@ forma SettingsModal(
           }
           Row(w: seg_w, h: s_bh, gap: 8, align: center) {
             Slider(id: 303, grow: 1, h: 24, bind: StudioMem::font_scale_pct, min: 80, max: 200, step: 5, bg: bg_bg, border_col: col_brd, accent: col_acc, on_change: SetAct::ScaleChanged)
-            Box(w: 44, h: s_bh) {
+            Box(w: 52, h: s_bh) {
               Slot(render: draw_settings_scale_val)
             }
           }
@@ -287,27 +287,29 @@ forma SettingsModal(
 fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
   if StudioMem.settings_open == 1 {
     let th = StudioMem.theme;
-    let scale = StudioMem.font_scale_pct;
+    // Keep the Settings modal geometry invariant to `font_scale_pct` so dragging
+    // the scale slider never resizes/shifts the slider track under the cursor
+    // (the IDE behind the modal still previews the new scale live!).
     let safe_w = clamp_i64(w, 680, 4096);
     let safe_h = clamp_i64(h, 460, 2160);
-    let s_h = clamp_i64(sf(16), 12, 24);
-    let s_l = clamp_i64(sf(14), 10, 20);
-    let s_s = clamp_i64(sf(12), 10, 18);
-    let s_bh = clamp_i64((30 * scale) / 100, 28, 42);
-    let row_h = clamp_i64(s_bh + 14, 42, 58);
+    let s_h = 18;
+    let s_l = 15;
+    let s_s = 13;
+    let s_bh = 34;
+    let row_h = 48;
     let min_mh = max_i64(440, 3 * row_h + 2 * s_s + 240);
-    let mw = clamp_i64((560 * scale) / 100, 460, safe_w - 40);
-    let mh = clamp_i64((465 * scale) / 100, min_mh, safe_h - 32);
+    let mw = clamp_i64(620, 460, safe_w - 40);
+    let mh = clamp_i64(515, min_mh, max_i64(min_mh, safe_h - 32));
     let mx0 = (safe_w - mw) / 2;
     let my0 = (safe_h - mh) / 2;
 
-    let tbtn_w = clamp_i64((120 * scale) / 100, 110, 170);
-    let seg_w = clamp_i64((150 * scale) / 100, 120, 210);
-    let rst_w = clamp_i64((84 * scale) / 100, 76, 110);
-    let cur_w = clamp_i64((94 * scale) / 100, 86, 130);
+    let tbtn_w = 136;
+    let seg_w = 210;
+    let rst_w = 96;
+    let cur_w = 108;
 
-    let cdd_w = clamp_i64((126 * scale) / 100, 118, 180);
-    let cdd_rh = clamp_i64((30 * scale) / 100, 28, 44);
+    let cdd_w = 144;
+    let cdd_rh = 34;
     let cdd_x = mx0 + mw - 18 - rst_w - 8 - cur_w;
     let cdd_y = my0 + 18 + 32 + 10 + row_h * 3 + 20 + 4;
     let cur_dd_open = StudioMem.cur_dd_open == 1;
