@@ -29,7 +29,7 @@ fn send_bank_wire(token: Secret<str>, net_amount: i64) -[Net("api.mybank.com"), 
 }
 
 // High-level checkout workflow: Z3 proves modularly that `net > 0` holds before `send_bank_wire`!
-fn checkout(auth_token: Secret<str>, total: i64) -> bool
+fn checkout(auth_token: Secret<str>, total: i64) -[Net("api.mybank.com"), Audit]-> bool
   req total > 100
   ens result == true
 {

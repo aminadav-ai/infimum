@@ -137,13 +137,28 @@ fn test_transitive_security_passport_and_undeclared_effect_rejection() {
         .expect_err("undeclared Net effect must fail");
     assert_eq!(err.code, "E021_UNDECLARED_EFFECT");
 
-    // 2. Transitive capability discovery through 3-hop chain A -> B -> C
+    // 2. Pure caller invoking an effectful callee must be rejected transitively!
+    let leaky_src = r#"
+        fn pure_wrapper(s: Secret<str>, payload: i64) -> i64 {
+          leaf_net(s, payload)
+        }
+        fn leaf_net(s: Secret<str>, payload: i64) -[Net("vault.local")]-> i64 {
+          do Net.send(reveal("vault.local", s), payload);
+          payload
+        }
+    "#;
+    let leaky_err = store
+        .ingest_module(&parse_module(leaky_src).expect("parse ok"))
+        .expect_err("pure caller invoking Net callee must fail");
+    assert_eq!(leaky_err.code, "E021_UNDECLARED_EFFECT");
+
+    // 3. Transitive capability discovery through 3-hop chain A -> B -> C (with explicit Flux effects)
     let chain_src = r#"
-        fn top_handler(tok: Secret<str>, v: i64) -> i64 {
+        fn top_handler(tok: Secret<str>, v: i64) -[Net("vault.local"), Fs("/tmp/log")]-> i64 {
           middle_step(tok, v)
         }
 
-        fn middle_step(t: Secret<str>, n: i64) -> i64 {
+        fn middle_step(t: Secret<str>, n: i64) -[Net("vault.local"), Fs("/tmp/log")]-> i64 {
           leaf_network_call(t, n + 1)
         }
 
@@ -170,7 +185,9 @@ fn test_transitive_security_passport_and_undeclared_effect_rejection() {
     assert!(top_pass.uses_secret_types);
     assert_eq!(top_pass.total_reachable_nodes, 3);
     assert_eq!(top_pass.capabilities.len(), 2);
-    assert_eq!(top_pass.capabilities[0].witness_chain.len(), 3);
+    assert!(!top_pass.capabilities[0].witness_chain.is_empty());
+    assert_eq!(top_pass.secret_pipes.len(), 1);
+    assert_eq!(top_pass.secret_pipes[0].witness_chain.len(), 3);
 
     let _ = fs::remove_dir_all(&ws);
 }

@@ -692,6 +692,30 @@ where
                 }
             }
 
+            // Transitive Flux effect check: caller must declare every capability required by callee
+            // (test harness blocks `__ifm_test_*` are exempt since they are never emitted to .ifw).
+            if !in_contract
+                && !matches!(target, TargetRef::SelfRec)
+                && !fn_name.starts_with("__ifm_test_")
+            {
+                for req_cap in &callee_ast.effects {
+                    if !caller_covers_effect(&self_node.ast.effects, req_cap) {
+                        return Err(InfimumDiagnostic::new(
+                            "E021_UNDECLARED_EFFECT",
+                            "typecheck",
+                            format!(
+                                "Function '{fn_name}' calls {callee_label} which requires effect '{req_cap}', but '{fn_name}' does not declare it"
+                            ),
+                            Span::zero(),
+                            format!(
+                                "Add '{req_cap}' to the effect signature of '{fn_name}': '-[..., {req_cap}]-> {}'",
+                                self_node.ast.ret_type
+                            ),
+                        ));
+                    }
+                }
+            }
+
             Ok(callee_ast.ret_type.clone())
         }
         Expr::Block { stmts, tail } => {
@@ -970,6 +994,12 @@ fn verify_net_domain_pinning(
     }
 
     Ok(())
+}
+
+fn caller_covers_effect(caller_effects: &[crate::ast::EffectCap], req: &crate::ast::EffectCap) -> bool {
+    caller_effects
+        .iter()
+        .any(|c| c.name == req.name && (c.scope.is_none() || c.scope == req.scope))
 }
 
 pub fn type_contains_secret(ty: &Type) -> bool {
