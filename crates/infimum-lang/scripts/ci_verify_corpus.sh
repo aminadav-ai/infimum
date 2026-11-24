@@ -86,7 +86,7 @@ if [[ -n "$INFIMUM_CODE_DIR" ]]; then
   check_ifm "infimum-code/outline_core.ifm" "$INFIMUM_CODE_DIR/cores/outline_core.ifm" 0 1
 
   if [[ -f "$INFIMUM_CODE_DIR/daemon/src/studio_abi.rs" ]]; then
-    "$INF_BIN" export-abi "$INFIMUM_CODE_DIR/capsule/src/abi.ifm" -o "$TMP_DIR/studio_abi.rs" >/dev/null
+    "$INF_BIN" export-abi "$INFIMUM_CODE_DIR/capsule/src/abi.ifm" --rust -o "$TMP_DIR/studio_abi.rs" >/dev/null
     cmp -s "$TMP_DIR/studio_abi.rs" "$INFIMUM_CODE_DIR/daemon/src/studio_abi.rs" \
       || { echo "ERROR: apps/infimum-code/daemon/src/studio_abi.rs is out of sync with abi.ifm!"; exit 1; }
     echo "  [sync]   apps/infimum-code/daemon/src/studio_abi.rs matches canonical abi.ifm"

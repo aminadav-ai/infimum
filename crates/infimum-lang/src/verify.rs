@@ -555,7 +555,7 @@ where
                             ftys.push(self.infer_expr_type(e, local_types));
                             fsyms.push(self.encode_expr(e, local_env, local_types, guard, emit_checks)?);
                         }
-                        for (i, (fsym, fty)) in fsyms.into_iter().zip(ftys.into_iter()).enumerate() {
+                        for (i, (fsym, fty)) in fsyms.into_iter().zip(ftys).enumerate() {
                             local_env.insert(format!("{name}#{i}"), fsym);
                             local_types.insert(format!("{name}#{i}"), fty);
                         }
@@ -614,7 +614,7 @@ where
                             ftys.push(self.infer_expr_type(e, local_types));
                             fsyms.push(self.encode_expr(e, local_env, local_types, guard, emit_checks)?);
                         }
-                        for (i, (fsym, fty)) in fsyms.into_iter().zip(ftys.into_iter()).enumerate() {
+                        for (i, (fsym, fty)) in fsyms.into_iter().zip(ftys).enumerate() {
                             local_env.insert(format!("{name}#{i}"), fsym);
                             local_types.insert(format!("{name}#{i}"), fty);
                         }
