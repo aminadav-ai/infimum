@@ -2032,7 +2032,7 @@ pub(super) fn execute_native_tool(
                     "Build/CI scripts (.sh, .py, GitHub Actions .yml), Cargo.toml manifests, Forma UI spec, and Infimum Code system prompt",
                     &[
                         "run_checks.sh", "ci_verify_corpus.sh", "build_studio.sh",
-                        "generate_cleanroom_icon.py", "lang-ci.yml", "code-ci.yml",
+                        "generate_cleanroom_icon.py", "ci.yml",
                         "lang-Cargo.toml", "web-Cargo.toml", "daemon-Cargo.toml",
                         "INFIMUM_FORMA_SPEC.md", "system_prompt.md",
                     ],
@@ -2161,7 +2161,7 @@ pub(super) fn execute_native_tool(
                             .as_ref()
                             .map(|wr| vec![wr.join("scripts").join(&file_name)])
                             .unwrap_or_default(),
-                        "lang-ci.yml" | "code-ci.yml" => monorepo
+                        "ci.yml" => monorepo
                             .map(|m| vec![m.join(".github").join("workflows").join("ci.yml")])
                             .unwrap_or_default(),
                         "lang-Cargo.toml" => lang_root
