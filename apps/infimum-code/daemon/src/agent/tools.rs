@@ -1217,15 +1217,6 @@ pub(super) fn studio_root_candidates() -> Vec<PathBuf> {
         {
             roots.push(r.join("apps/infimum-code"));
         }
-        // Standalone daemon: infimum-code/daemon/target/{release,debug}/infimum-agentd -> infimum-code/
-        if let Some(r) = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-        {
-            roots.push(r.to_path_buf());
-        }
         // Installed layout: <prefix>/bin/infimum-agentd -> <prefix>/
         if let Some(r) = exe.parent().and_then(|p| p.parent()) {
             roots.push(r.to_path_buf());
@@ -2119,96 +2110,86 @@ pub(super) fn execute_native_tool(
             }
             let mut found = None;
             for root in studio_root_candidates() {
-                // Support both monorepo (<monorepo>/apps/infimum-code -> <monorepo>/crates/...)
-                // and legacy sibling-repo layout (<parent>/infimum-{lang,web,code,site}).
-                let parent = root.parent();
-                let monorepo = parent.and_then(|p| p.parent());
-                let mut lang_roots: Vec<PathBuf> = Vec::new();
-                let mut web_roots: Vec<PathBuf> = Vec::new();
-                let mut site_roots: Vec<PathBuf> = Vec::new();
-                if let Some(m) = monorepo {
-                    lang_roots.push(m.join("crates").join("infimum-lang"));
-                    web_roots.push(m.join("crates").join("infimum-web"));
-                    if let Some(mp) = m.parent() {
-                        site_roots.push(mp.join("infimum-site"));
-                    }
-                }
-                if let Some(p) = parent {
-                    lang_roots.push(p.join("infimum-lang"));
-                    web_roots.push(p.join("infimum-web"));
-                    site_roots.push(p.join("infimum-site"));
-                }
+                // Monorepo layout: <monorepo>/apps/infimum-code -> <monorepo>/crates/{infimum-lang,infimum-web}
+                // and companion website repo at <monorepo>/../infimum-site.
+                let monorepo = root.parent().and_then(|p| p.parent());
+                let lang_root = monorepo.map(|m| m.join("crates").join("infimum-lang"));
+                let web_root = monorepo.map(|m| m.join("crates").join("infimum-web"));
+                let site_root = monorepo
+                    .and_then(|m| m.parent())
+                    .map(|mp| mp.join("infimum-site"));
 
                 let cands: Vec<PathBuf> = match *ex_name {
-                    "lang-demos" => lang_roots
-                        .iter()
-                        .flat_map(|lr| {
+                    "lang-demos" => lang_root
+                        .as_ref()
+                        .map(|lr| {
                             vec![
                                 lr.join("examples").join(&file_name),
                                 lr.join("tests").join(&file_name),
                                 lr.join("src").join("forma").join(&file_name),
                             ]
                         })
-                        .collect(),
-                    "web-cores" => web_roots
-                        .iter()
-                        .flat_map(|wr| {
+                        .unwrap_or_default(),
+                    "web-cores" => web_root
+                        .as_ref()
+                        .map(|wr| {
                             vec![
                                 wr.join("capsules").join("core").join(&file_name),
                                 wr.join("capsules").join("m2_text_demo").join("src").join(&file_name),
                             ]
                         })
-                        .collect(),
+                        .unwrap_or_default(),
                     "infimum-code" => vec![
                         root.join("capsule").join("src").join(&file_name),
                         root.join("cores").join(&file_name),
                     ],
-                    "rust-lang" => lang_roots.iter().map(|lr| lr.join(&file_name)).collect(),
-                    "rust-web" => web_roots.iter().map(|wr| wr.join("src").join(&file_name)).collect(),
+                    "rust-lang" => lang_root
+                        .as_ref()
+                        .map(|lr| vec![lr.join(&file_name)])
+                        .unwrap_or_default(),
+                    "rust-web" => web_root
+                        .as_ref()
+                        .map(|wr| vec![wr.join("src").join(&file_name)])
+                        .unwrap_or_default(),
                     "rust-code" => vec![root.join("daemon").join("src").join(&file_name)],
                     "infra" => match file_name.as_str() {
-                        "run_checks.sh" | "ci_verify_corpus.sh" => lang_roots
-                            .iter()
-                            .map(|lr| lr.join("scripts").join(&file_name))
-                            .collect(),
-                        "build_studio.sh" | "generate_cleanroom_icon.py" => web_roots
-                            .iter()
-                            .map(|wr| wr.join("scripts").join(&file_name))
-                            .collect(),
-                        "lang-ci.yml" => {
-                            let mut v: Vec<PathBuf> = lang_roots
-                                .iter()
-                                .map(|lr| lr.join(".github").join("workflows").join("ci.yml"))
-                                .collect();
-                            if let Some(m) = monorepo {
-                                v.insert(0, m.join(".github").join("workflows").join("ci.yml"));
-                            }
-                            v
-                        }
-                        "code-ci.yml" => {
-                            let mut v = vec![root.join(".github").join("workflows").join("ci.yml")];
-                            if let Some(m) = monorepo {
-                                v.insert(0, m.join(".github").join("workflows").join("ci.yml"));
-                            }
-                            v
-                        }
-                        "lang-Cargo.toml" => lang_roots.iter().map(|lr| lr.join("Cargo.toml")).collect(),
-                        "web-Cargo.toml" => web_roots.iter().map(|wr| wr.join("Cargo.toml")).collect(),
+                        "run_checks.sh" | "ci_verify_corpus.sh" => lang_root
+                            .as_ref()
+                            .map(|lr| vec![lr.join("scripts").join(&file_name)])
+                            .unwrap_or_default(),
+                        "build_studio.sh" | "generate_cleanroom_icon.py" => web_root
+                            .as_ref()
+                            .map(|wr| vec![wr.join("scripts").join(&file_name)])
+                            .unwrap_or_default(),
+                        "lang-ci.yml" | "code-ci.yml" => monorepo
+                            .map(|m| vec![m.join(".github").join("workflows").join("ci.yml")])
+                            .unwrap_or_default(),
+                        "lang-Cargo.toml" => lang_root
+                            .as_ref()
+                            .map(|lr| vec![lr.join("Cargo.toml")])
+                            .unwrap_or_default(),
+                        "web-Cargo.toml" => web_root
+                            .as_ref()
+                            .map(|wr| vec![wr.join("Cargo.toml")])
+                            .unwrap_or_default(),
                         "daemon-Cargo.toml" => vec![root.join("daemon").join("Cargo.toml")],
-                        "INFIMUM_FORMA_SPEC.md" => lang_roots
-                            .iter()
-                            .map(|lr| lr.join("docs").join("INFIMUM_FORMA_SPEC.md"))
-                            .collect(),
+                        "INFIMUM_FORMA_SPEC.md" => lang_root
+                            .as_ref()
+                            .map(|lr| vec![lr.join("docs").join("INFIMUM_FORMA_SPEC.md")])
+                            .unwrap_or_default(),
                         "system_prompt.md" => vec![root.join("capsule").join("system_prompt.md")],
                         _ => Vec::new(),
                     },
-                    "web-site" => site_roots.iter().map(|sr| sr.join(&file_name)).collect(),
+                    "web-site" => site_root
+                        .as_ref()
+                        .map(|sr| vec![sr.join(&file_name)])
+                        .unwrap_or_default(),
                     _ => {
                         let mut v = vec![
                             root.join("examples").join(ex_name).join("src").join(&file_name),
                             root.join("examples").join(ex_name).join(&file_name),
                         ];
-                        for lr in &lang_roots {
+                        if let Some(lr) = &lang_root {
                             v.push(lr.join("examples").join("showcase").join(ex_name).join("src").join(&file_name));
                             v.push(lr.join("examples").join("showcase").join(ex_name).join(&file_name));
                         }
