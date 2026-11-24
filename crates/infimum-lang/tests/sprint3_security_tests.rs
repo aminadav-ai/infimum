@@ -156,7 +156,7 @@ fn test_passport_traces_authorized_secret_pipe_transitively() {
           true
         }
 
-        fn charge_customer(key: Secret<str>, dollars: i64) -> bool
+        fn charge_customer(key: Secret<str>, dollars: i64) -[Net("api.stripe.com")]-> bool
           req dollars > 0
           ens result == true
         {
