@@ -167,7 +167,7 @@ export fn apply_batch_edits_ifm() -[Mem]-> i64 {
       } else {
         EditMem.s_start[idx] = pos;
         EditMem.s_end[idx] = pos + tlen;
-        EditMem.s_idx[idx] = idx;
+        EditMem.s_idx[idx] = clamp_i64(idx, 0, 63);
       }
     }
 

@@ -346,7 +346,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
                       if loaded > 0 {
                         StudioMem.file_view_open = 0;
                         StudioMem.active_file_idx = -1;
-                        StudioMem.msg_count = loaded;
+                        StudioMem.msg_count = clamp_i64(loaded, 0, MAX_MESSAGES);
                         StudioMem.active_conv_idx = c_idx;
                         StudioMem.active_proj_idx = p_idx;
                         StudioMem.view_mode = ViewMode::Chat;

@@ -165,7 +165,7 @@ fn pool_alloc(flags_addr: i64, cap: i64) -[Mem]-> i64
       break;
     }
   }
-  found
+  clamp_i64(found, -1, 1023)
 }
 
 /// Release slot `idx` back to the pool in O(1).
@@ -193,5 +193,5 @@ fn pool_count(flags_addr: i64, cap: i64) -[Mem]-> i64
       c += 1;
     }
   }
-  c
+  clamp_i64(c, 0, 1024)
 }

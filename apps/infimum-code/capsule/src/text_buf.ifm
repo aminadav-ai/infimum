@@ -317,7 +317,7 @@ fn evict_msg_pool_range(alloc_start: i64, alloc_end: i64, keep_slot: i64) -[Mem]
     s += 1;
   }
   if dst != cnt {
-    StudioMem.msg_count = dst;
+    StudioMem.msg_count = clamp_i64(dst, 0, MAX_MESSAGES);
     StudioMem.cached_layout_col_w = 0;
     clear_msg_sel();
   }

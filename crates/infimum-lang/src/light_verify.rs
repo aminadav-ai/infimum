@@ -11,7 +11,7 @@
 use crate::ast::{BinOp, Expr, FnDef, Module, Stmt, TargetRef, UnaryOp};
 use crate::diag::{InfimumDiagnostic, Span};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const I64_LO: i128 = i64::MIN as i128;
 const I64_HI: i128 = i64::MAX as i128;
@@ -455,7 +455,9 @@ impl<'a> FnChecker<'a> {
                 refine_env(&mut env_then, cond, true);
                 let mut env_else = env.clone();
                 refine_env(&mut env_else, cond, false);
-                let t = if env_then.values().any(|v| v.is_empty()) {
+                let then_unreachable = env_then.values().any(|v| v.is_empty());
+                let else_unreachable = env_else.values().any(|v| v.is_empty());
+                let t = if then_unreachable {
                     Interval {
                         lo: 1,
                         hi: 0,
@@ -464,7 +466,7 @@ impl<'a> FnChecker<'a> {
                 } else {
                     self.eval_expr(&mut env_then, then_branch)?
                 };
-                let e = if env_else.values().any(|v| v.is_empty()) {
+                let e = if else_unreachable {
                     Interval {
                         lo: 1,
                         hi: 0,
@@ -473,6 +475,28 @@ impl<'a> FnChecker<'a> {
                 } else {
                     self.eval_expr(&mut env_else, else_branch)?
                 };
+
+                let mut mutated = BTreeSet::new();
+                collect_assigned_vars_expr(then_branch, &mut mutated);
+                collect_assigned_vars_expr(else_branch, &mut mutated);
+                let outer_keys: Vec<String> = env.keys().cloned().collect();
+                for k in outer_keys {
+                    if !mutated.contains(&k) {
+                        continue;
+                    }
+                    let merged = match (then_unreachable, else_unreachable) {
+                        (false, false) => {
+                            let tv = env_then.get(&k).copied().unwrap_or_else(Interval::top);
+                            let ev = env_else.get(&k).copied().unwrap_or_else(Interval::top);
+                            tv.join(ev)
+                        }
+                        (false, true) => env_then.get(&k).copied().unwrap_or_else(Interval::top),
+                        (true, false) => env_else.get(&k).copied().unwrap_or_else(Interval::top),
+                        (true, true) => continue,
+                    };
+                    env.insert(k, merged);
+                }
+
                 Ok(t.join(e))
             }
             Expr::Call { target, args } => {
@@ -561,11 +585,32 @@ impl<'a> FnChecker<'a> {
                 self.eval_expr(env, inner)
             }
             Expr::Block { stmts, tail } => {
+                let outer_keys: Vec<String> = env.keys().cloned().collect();
                 let mut local = env.clone();
+                let mut declared = BTreeSet::new();
                 for s in stmts {
+                    match s {
+                        Stmt::Let { name, .. } => {
+                            declared.insert(name.clone());
+                        }
+                        Stmt::LetTuple { names, .. } => {
+                            for (n, _) in names {
+                                declared.insert(n.clone());
+                            }
+                        }
+                        _ => {}
+                    }
                     self.eval_stmt(&mut local, s)?;
                 }
-                self.eval_expr(&mut local, tail)
+                let res = self.eval_expr(&mut local, tail)?;
+                for k in outer_keys {
+                    if !declared.contains(&k) {
+                        if let Some(iv) = local.get(&k) {
+                            env.insert(k, *iv);
+                        }
+                    }
+                }
+                Ok(res)
             }
             Expr::TupleLit(elems) => {
                 for e in elems {
@@ -614,13 +659,14 @@ impl<'a> FnChecker<'a> {
                 env.insert(name.clone(), iv);
             }
             Stmt::While { cond, body, .. } => {
-                let _ = self.eval_expr(env, cond)?;
-                // Widen any variables assigned in loop body before checking body once
-                let mut assigned = Vec::new();
+                // Widen any variables assigned anywhere in loop (including inside if/block) before checking cond & body
+                let mut assigned = BTreeSet::new();
+                collect_assigned_vars_expr(cond, &mut assigned);
                 collect_assigned_vars(body, &mut assigned);
                 for v in &assigned {
                     env.insert(v.clone(), Interval::top());
                 }
+                let _ = self.eval_expr(env, cond)?;
                 let mut loop_env = env.clone();
                 refine_env(&mut loop_env, cond, true);
                 for s in body {
@@ -635,12 +681,65 @@ impl<'a> FnChecker<'a> {
     }
 }
 
-fn collect_assigned_vars(stmts: &[Stmt], out: &mut Vec<String>) {
+fn collect_assigned_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
+    match expr {
+        Expr::IntLit(_)
+        | Expr::FixedLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StrLit(_)
+        | Expr::UnitLit
+        | Expr::Var(_) => {}
+        Expr::Unary { expr: inner, .. }
+        | Expr::SecretWrap(inner)
+        | Expr::Reveal { expr: inner, .. }
+        | Expr::MemLoad { index: inner, .. }
+        | Expr::TupleField { expr: inner, .. } => collect_assigned_vars_expr(inner, out),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_assigned_vars_expr(lhs, out);
+            collect_assigned_vars_expr(rhs, out);
+        }
+        Expr::MemStore { index, value, .. } => {
+            collect_assigned_vars_expr(index, out);
+            collect_assigned_vars_expr(value, out);
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_assigned_vars_expr(cond, out);
+            collect_assigned_vars_expr(then_branch, out);
+            collect_assigned_vars_expr(else_branch, out);
+        }
+        Expr::Call { args, .. } | Expr::Perform { args, .. } | Expr::TupleLit(args) => {
+            for a in args {
+                collect_assigned_vars_expr(a, out);
+            }
+        }
+        Expr::Block { stmts, tail } => {
+            collect_assigned_vars(stmts, out);
+            collect_assigned_vars_expr(tail, out);
+        }
+    }
+}
+
+fn collect_assigned_vars(stmts: &[Stmt], out: &mut BTreeSet<String>) {
     for s in stmts {
         match s {
-            Stmt::Assign { name, .. } => out.push(name.clone()),
-            Stmt::While { body, .. } => collect_assigned_vars(body, out),
-            _ => {}
+            Stmt::Assign { name, value } => {
+                out.insert(name.clone());
+                collect_assigned_vars_expr(value, out);
+            }
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+                collect_assigned_vars_expr(value, out);
+            }
+            Stmt::While { cond, body, .. } => {
+                collect_assigned_vars_expr(cond, out);
+                collect_assigned_vars(body, out);
+            }
+            Stmt::Expr(e) => {
+                collect_assigned_vars_expr(e, out);
+            }
         }
     }
 }
@@ -760,5 +859,62 @@ fn coupled(a: i64, b: i64) -> i64
         let rep = verify_module_light(&m).unwrap();
         assert!(!rep.inconclusive.is_empty());
         assert!(rep.inconclusive[0].contains("Z3"));
+    }
+
+    #[test]
+    fn does_not_prove_false_ensures_after_if_mutation() {
+        let src = r#"
+fn unsound(flag: bool) -> i64
+  ens result == 1
+{
+  let mut x = 1;
+  if flag { x = 999; }
+  x
+}
+"#;
+        let m = parse_module(src).unwrap();
+        let rep = verify_module_light(&m).unwrap();
+        assert_eq!(rep.proven, 0, "Must not falsely prove result == 1");
+        assert!(!rep.inconclusive.is_empty());
+    }
+
+    #[test]
+    fn flags_possible_div_by_zero_after_if_mutation() {
+        let src = r#"
+fn div_after_if(flag: bool) -> i64 {
+  let mut x = 1;
+  if flag { x = 0; }
+  10 / x
+}
+"#;
+        let m = parse_module(src).unwrap();
+        let rep = verify_module_light(&m).unwrap();
+        assert!(
+            rep.inconclusive.iter().any(|s| s.contains("division by zero")),
+            "Expected div-by-zero inconclusive warning, got: {:?}",
+            rep.inconclusive
+        );
+    }
+
+    #[test]
+    fn widens_var_mutated_inside_if_within_while() {
+        let src = r#"
+fn div_after_while_if(flag: bool) -> i64 {
+  let mut x = 1;
+  let mut i = 0;
+  while i < 5 max 10 {
+    if flag { x = 0; }
+    i = i + 1;
+  }
+  10 / x
+}
+"#;
+        let m = parse_module(src).unwrap();
+        let rep = verify_module_light(&m).unwrap();
+        assert!(
+            rep.inconclusive.iter().any(|s| s.contains("division by zero")),
+            "Expected div-by-zero inconclusive warning after loop-if mutation, got: {:?}",
+            rep.inconclusive
+        );
     }
 }
