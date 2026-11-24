@@ -69,6 +69,7 @@ pub struct InMemoryCompileResult {
     pub compiled_nodes: usize,
     pub proven: usize,
     pub inconclusive: Vec<String>,
+    pub verifier: String,
     pub error: Option<String>,
 }
 
@@ -77,13 +78,33 @@ pub fn compile_project_in_memory(
     entry_path: &str,
     files: &BTreeMap<String, String>,
 ) -> Result<(Vec<u8>, InMemoryCompileResult), InfimumDiagnostic> {
+    compile_project_in_memory_with_z3::<fn(&str) -> Result<String, InfimumDiagnostic>>(
+        entry_path, files, None,
+    )
+}
+
+/// Parse, typecheck, verify (using full Z3 SMT when `z3_runner` is `Some`, or `light_verify` when `None`),
+/// embed a real `SecurityPassport`, and compile an in-memory `.ifm` project directly to `.ifw` bytes.
+pub fn compile_project_in_memory_with_z3<R>(
+    entry_path: &str,
+    files: &BTreeMap<String, String>,
+    mut z3_runner: Option<&mut R>,
+) -> Result<(Vec<u8>, InMemoryCompileResult), InfimumDiagnostic>
+where
+    R: FnMut(&str) -> Result<String, InfimumDiagnostic>,
+{
     let module = parse_module_from_virtual_fs(entry_path, files)?;
-    let light_report: LightVerifyReport = verify_module_light(&module)?;
+    let light_report: Option<LightVerifyReport> = if z3_runner.is_none() {
+        Some(verify_module_light(&module)?)
+    } else {
+        None
+    };
 
     let order = topo_sort_functions(&module.functions)?;
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     let mut nodes_by_hash: BTreeMap<String, CanonicalNode> = BTreeMap::new();
     let mut ordered_nodes: Vec<CanonicalNode> = Vec::with_capacity(order.len());
+    let mut z3_proven: usize = 0;
 
     for &idx in &order {
         let raw_fn = &module.functions[idx];
@@ -129,6 +150,10 @@ pub fn compile_project_in_memory(
             })
         };
         node.direct_secret_sinks = typecheck_node(&raw_fn.name, &node, &loader)?;
+        if let Some(runner) = z3_runner.as_deref_mut() {
+            let vrep = crate::verify::verify_node_with_runner(raw_fn, &node, &loader, runner)?;
+            z3_proven += vrep.obligations_checked;
+        }
         aliases.insert(raw_fn.name.clone(), node.hash.clone());
         nodes_by_hash.insert(node.hash.clone(), node.clone());
         ordered_nodes.push(node);
@@ -150,15 +175,44 @@ pub fn compile_project_in_memory(
         }
     }
 
+    let mut aliases_by_hash: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (alias, hash) in &aliases {
+        aliases_by_hash
+            .entry(hash.clone())
+            .or_default()
+            .push(alias.clone());
+    }
+    let passport_bytes = crate::store::build_merged_passport_bytes(&export_pairs, |alias| {
+        let h = aliases.get(alias).ok_or_else(|| {
+            InfimumDiagnostic::new(
+                "E032_NODE_NOT_FOUND",
+                "passport",
+                format!("Missing alias '{alias}' while computing passport"),
+                Span::zero(),
+                "Ensure exported functions exist in the module",
+            )
+        })?;
+        crate::store::compute_passport_in_memory(h, &nodes_by_hash, &aliases_by_hash)
+    })?;
+
     let layout_end_word = compute_module_layout_end_word(&module);
-    let wasm_bytes =
-        emit_strata_wasm_bytes_with_layout_end(&ordered_nodes, &export_pairs, b"{}", layout_end_word)?;
+    let wasm_bytes = emit_strata_wasm_bytes_with_layout_end(
+        &ordered_nodes,
+        &export_pairs,
+        &passport_bytes,
+        layout_end_word,
+    )?;
+    let (proven, inconclusive, verifier) = match light_report {
+        Some(lr) => (lr.proven, lr.inconclusive, "light".to_string()),
+        None => (z3_proven, Vec::new(), "z3".to_string()),
+    };
     let meta = InMemoryCompileResult {
         ok: true,
         exported_functions: export_pairs.into_iter().map(|(n, _)| n).collect(),
         compiled_nodes: ordered_nodes.len(),
-        proven: light_report.proven,
-        inconclusive: light_report.inconclusive,
+        proven,
+        inconclusive,
+        verifier,
         error: None,
     };
     Ok((wasm_bytes, meta))
@@ -177,6 +231,75 @@ mod js_bindings {
     #[wasm_bindgen]
     pub fn infimum_list_std_json() -> String {
         serde_json::to_string(list_embedded_std_files()).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    fn make_js_z3_runner(
+        z3_eval: &js_sys::Function,
+    ) -> impl FnMut(&str) -> Result<String, InfimumDiagnostic> + '_ {
+        move |script: &str| {
+            let res = z3_eval
+                .call1(&JsValue::NULL, &JsValue::from_str(script))
+                .map_err(|e| {
+                    InfimumDiagnostic::new(
+                        "E058_Z3_EXEC",
+                        "verify",
+                        format!("Browser Z3.wasm evaluation error: {e:?}"),
+                        Span::zero(),
+                        "Check browser console for Z3.wasm initialization issues",
+                    )
+                })?;
+            res.as_string().ok_or_else(|| {
+                InfimumDiagnostic::new(
+                    "E058_Z3_EXEC",
+                    "verify",
+                    "Browser Z3.wasm callback returned non-string result".to_string(),
+                    Span::zero(),
+                    "Ensure evalSmtZ3 returns a string",
+                )
+            })
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn infimum_verify_project_z3_json(
+        entry_path: &str,
+        files_json: &str,
+        z3_eval: &js_sys::Function,
+    ) -> String {
+        console_error_panic_hook::set_once();
+        let files: BTreeMap<String, String> = match serde_json::from_str(files_json) {
+            Ok(f) => f,
+            Err(e) => {
+                return serde_json::json!({ "ok": false, "error": format!("Invalid files JSON: {e}") }).to_string();
+            }
+        };
+        let mut runner = make_js_z3_runner(z3_eval);
+        match compile_project_in_memory_with_z3(entry_path, &files, Some(&mut runner)) {
+            Ok((_, meta)) => {
+                serde_json::to_string(&meta).unwrap_or_else(|_| r#"{"ok":true}"#.to_string())
+            }
+            Err(diag) => serde_json::json!({
+                "ok": false,
+                "error": format!("error {diag}"),
+            })
+            .to_string(),
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn infimum_compile_project_z3(
+        entry_path: &str,
+        files_json: &str,
+        z3_eval: &js_sys::Function,
+    ) -> Result<js_sys::Uint8Array, JsValue> {
+        console_error_panic_hook::set_once();
+        let files: BTreeMap<String, String> = serde_json::from_str(files_json)
+            .map_err(|e| JsValue::from_str(&format!("Invalid files JSON: {e}")))?;
+        let mut runner = make_js_z3_runner(z3_eval);
+        match compile_project_in_memory_with_z3(entry_path, &files, Some(&mut runner)) {
+            Ok((bytes, _)) => Ok(js_sys::Uint8Array::from(bytes.as_slice())),
+            Err(diag) => Err(JsValue::from_str(&format!("error {diag}"))),
+        }
     }
 
     #[wasm_bindgen]
@@ -270,6 +393,11 @@ export fn add_clamped(a: i64, b: i64) -> i64
         assert!(bytes.starts_with(b"\0asm"), "Expected valid Wasm magic header");
         assert!(meta.ok);
         assert!(meta.exported_functions.contains(&"add_clamped".to_string()));
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("infimum.passport") && text.contains("\"root_hash\"") && text.contains("\"add_clamped\""),
+            "Expected real SecurityPassport embedded in .ifw custom section"
+        );
     }
 
     #[test]

@@ -751,74 +751,149 @@ impl GraphStore {
 
     pub fn compute_passport(&self, name_or_hash: &str) -> Result<SecurityPassport, InfimumDiagnostic> {
         let root_hash = self.resolve_ref(name_or_hash)?;
-        let root_node = self.load_node(&root_hash)?;
-        let root_aliases = self.aliases_for_hash(&root_hash);
+        let load = |h: &str| self.load_node(h);
+        let aliases_fn = |h: &str| self.aliases_for_hash(h);
+        compute_passport_with(&root_hash, &load, &aliases_fn)
+    }
+}
 
-        let mut visited: BTreeSet<String> = BTreeSet::new();
-        let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::new();
-        let mut effect_witness: BTreeMap<EffectCap, Vec<String>> = BTreeMap::new();
-        let mut sink_witness: BTreeMap<DirectSecretSink, Vec<String>> = BTreeMap::new();
-        let mut uses_secret = fn_uses_secret(&root_node.ast);
+/// Pure in-memory `SecurityPassport` computation (shared by CLI `GraphStore` and `wasm32` `wasm_api`).
+pub fn compute_passport_in_memory(
+    root_hash: &str,
+    nodes_by_hash: &BTreeMap<String, CanonicalNode>,
+    aliases_by_hash: &BTreeMap<String, Vec<String>>,
+) -> Result<SecurityPassport, InfimumDiagnostic> {
+    let load = |h: &str| {
+        nodes_by_hash.get(h).cloned().ok_or_else(|| {
+            InfimumDiagnostic::new(
+                "E032_NODE_NOT_FOUND",
+                "passport",
+                format!("Missing canonical node #{h} while computing passport"),
+                Span::zero(),
+                "Ensure all transitive callees are present in the compiled module",
+            )
+        })
+    };
+    let aliases_fn = |h: &str| aliases_by_hash.get(h).cloned().unwrap_or_default();
+    compute_passport_with(root_hash, &load, &aliases_fn)
+}
 
-        let root_label = format_node_label(&root_node, &root_aliases);
-        visited.insert(root_hash.clone());
-        queue.push_back((root_hash.clone(), vec![root_label]));
-
-        while let Some((curr_hash, path)) = queue.pop_front() {
-            let curr = self.load_node(&curr_hash)?;
-            if fn_uses_secret(&curr.ast) {
-                uses_secret = true;
-            }
-            for eff in &curr.direct_effects {
-                effect_witness
-                    .entry(eff.clone())
-                    .or_insert_with(|| path.clone());
-            }
-            for sink in &curr.direct_secret_sinks {
-                sink_witness
-                    .entry(sink.clone())
-                    .or_insert_with(|| path.clone());
-            }
-            for dep_hash in &curr.direct_deps {
-                if visited.insert(dep_hash.clone()) {
-                    let dep_node = self.load_node(dep_hash)?;
-                    let dep_aliases = self.aliases_for_hash(dep_hash);
-                    let mut next_path = path.clone();
-                    next_path.push(format_node_label(&dep_node, &dep_aliases));
-                    queue.push_back((dep_hash.clone(), next_path));
+/// Merge `SecurityPassport` across all exported entrypoints (so no exported function can hide capabilities).
+pub fn build_merged_passport_bytes<F>(
+    export_pairs: &[(String, String)],
+    compute: F,
+) -> Result<Vec<u8>, InfimumDiagnostic>
+where
+    F: Fn(&str) -> Result<SecurityPassport, InfimumDiagnostic>,
+{
+    if let Some((ui_alias, _)) = export_pairs
+        .iter()
+        .find(|(n, _)| n == "step_ui" || n == "init_app")
+    {
+        let mut merged = compute(ui_alias)?;
+        let mut seen_effs: BTreeSet<String> = merged
+            .capabilities
+            .iter()
+            .map(|c| c.effect.clone())
+            .collect();
+        for (alias, _) in export_pairs {
+            if let Ok(other) = compute(alias) {
+                if other.uses_secret_types {
+                    merged.uses_secret_types = true;
+                }
+                for cap in other.capabilities {
+                    if seen_effs.insert(cap.effect.clone()) {
+                        merged.capabilities.push(cap);
+                    }
                 }
             }
         }
-
-        let capabilities: Vec<CapabilityGrant> = effect_witness
-            .into_iter()
-            .map(|(eff, chain)| CapabilityGrant {
-                effect: eff.to_string(),
-                witness_chain: chain,
-            })
-            .collect();
-
-        let secret_pipes: Vec<SecretPipe> = sink_witness
-            .into_iter()
-            .map(|(sink, chain)| SecretPipe {
-                secret_type: sink.secret_type,
-                destination_domain: sink.domain,
-                operation: sink.operation,
-                witness_chain: chain,
-            })
-            .collect();
-
-        Ok(SecurityPassport {
-            root_hash,
-            short_hash: root_node.short_hash,
-            aliases: root_aliases,
-            total_reachable_nodes: visited.len(),
-            is_pure: capabilities.is_empty(),
-            uses_secret_types: uses_secret,
-            capabilities,
-            secret_pipes,
-        })
+        merged.is_pure = merged.capabilities.is_empty();
+        Ok(serde_json::to_vec(&merged).unwrap_or_default())
+    } else if let Some((alias, _)) = export_pairs.first() {
+        let p = compute(alias)?;
+        Ok(serde_json::to_vec(&p).unwrap_or_default())
+    } else {
+        Ok(Vec::new())
     }
+}
+
+fn compute_passport_with<FL, FA>(
+    root_hash: &str,
+    load_node: &FL,
+    aliases_for_hash: &FA,
+) -> Result<SecurityPassport, InfimumDiagnostic>
+where
+    FL: Fn(&str) -> Result<CanonicalNode, InfimumDiagnostic>,
+    FA: Fn(&str) -> Vec<String>,
+{
+    let root_node = load_node(root_hash)?;
+    let root_aliases = aliases_for_hash(root_hash);
+
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+    let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::new();
+    let mut effect_witness: BTreeMap<EffectCap, Vec<String>> = BTreeMap::new();
+    let mut sink_witness: BTreeMap<DirectSecretSink, Vec<String>> = BTreeMap::new();
+    let mut uses_secret = fn_uses_secret(&root_node.ast);
+
+    let root_label = format_node_label(&root_node, &root_aliases);
+    visited.insert(root_hash.to_string());
+    queue.push_back((root_hash.to_string(), vec![root_label]));
+
+    while let Some((curr_hash, path)) = queue.pop_front() {
+        let curr = load_node(&curr_hash)?;
+        if fn_uses_secret(&curr.ast) {
+            uses_secret = true;
+        }
+        for eff in &curr.direct_effects {
+            effect_witness
+                .entry(eff.clone())
+                .or_insert_with(|| path.clone());
+        }
+        for sink in &curr.direct_secret_sinks {
+            sink_witness
+                .entry(sink.clone())
+                .or_insert_with(|| path.clone());
+        }
+        for dep_hash in &curr.direct_deps {
+            if visited.insert(dep_hash.clone()) {
+                let dep_node = load_node(dep_hash)?;
+                let dep_aliases = aliases_for_hash(dep_hash);
+                let mut next_path = path.clone();
+                next_path.push(format_node_label(&dep_node, &dep_aliases));
+                queue.push_back((dep_hash.clone(), next_path));
+            }
+        }
+    }
+
+    let capabilities: Vec<CapabilityGrant> = effect_witness
+        .into_iter()
+        .map(|(eff, chain)| CapabilityGrant {
+            effect: eff.to_string(),
+            witness_chain: chain,
+        })
+        .collect();
+
+    let secret_pipes: Vec<SecretPipe> = sink_witness
+        .into_iter()
+        .map(|(sink, chain)| SecretPipe {
+            secret_type: sink.secret_type,
+            destination_domain: sink.domain,
+            operation: sink.operation,
+            witness_chain: chain,
+        })
+        .collect();
+
+    Ok(SecurityPassport {
+        root_hash: root_hash.to_string(),
+        short_hash: root_node.short_hash,
+        aliases: root_aliases,
+        total_reachable_nodes: visited.len(),
+        is_pure: capabilities.is_empty(),
+        uses_secret_types: uses_secret,
+        capabilities,
+        secret_pipes,
+    })
 }
 
 fn format_node_label(node: &CanonicalNode, aliases: &[String]) -> String {

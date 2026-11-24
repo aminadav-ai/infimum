@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v2";
@@ -731,8 +732,25 @@ pub fn verify_node<F>(
 where
     F: Fn(&str) -> Result<CanonicalNode, InfimumDiagnostic>,
 {
-    let start = Instant::now();
     let z3_bin = find_z3_binary()?;
+    verify_node_with_runner(raw_fn, canon_node, load_callee, &mut |script| {
+        run_z3(&z3_bin, script)
+    })
+}
+
+/// Platform-independent Z3 verifier entry point (used by both native CLI and `wasm32` `z3.wasm`).
+pub fn verify_node_with_runner<F, R>(
+    raw_fn: &FnDef,
+    canon_node: &CanonicalNode,
+    load_callee: &F,
+    run_smt: &mut R,
+) -> Result<VerificationReport, InfimumDiagnostic>
+where
+    F: Fn(&str) -> Result<CanonicalNode, InfimumDiagnostic>,
+    R: FnMut(&str) -> Result<String, InfimumDiagnostic>,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    let start = Instant::now();
     let canon_fn = &canon_node.ast;
 
     let mut base_env = BTreeMap::new();
@@ -770,7 +788,7 @@ where
             vac_script.push_str(&format!("(assert {r})\n"));
         }
         vac_script.push_str("(check-sat)\n");
-        let vac_out = run_z3(&z3_bin, &vac_script)?;
+        let vac_out = run_smt(&vac_script)?;
         if vac_out.lines().next().map(str::trim) == Some("unsat") {
             return Err(InfimumDiagnostic::new(
                 "E052_VACUOUS_PRECONDITION",
@@ -818,11 +836,15 @@ where
 
     let total_obligations = builder.obligations.len();
     if total_obligations == 0 {
+        #[cfg(not(target_arch = "wasm32"))]
+        let elapsed_ms = start.elapsed().as_millis();
+        #[cfg(target_arch = "wasm32")]
+        let elapsed_ms = 0u128;
         return Ok(VerificationReport {
             alias: raw_fn.name.clone(),
             short_hash: canon_node.short_hash.clone(),
             obligations_checked: 0,
-            elapsed_ms: start.elapsed().as_millis(),
+            elapsed_ms,
             status: "verified (0 obligations)".to_string(),
             cached: false,
         });
@@ -855,9 +877,8 @@ where
             "(assert (and {} (not {})))\n(check-sat)\n",
             ob.guard_smt, ob.goal_smt
         ));
-        script.push_str(&get_val_cmd);
 
-        let out = run_z3(&z3_bin, &script)?;
+        let out = run_smt(&script)?;
         let first_line = out.lines().next().unwrap_or("").trim();
 
         match first_line {
@@ -865,7 +886,9 @@ where
                 // Obligation mathematically proved for ALL inputs!
             }
             "sat" => {
-                let cex = extract_counterexample(&out, &raw_fn.params);
+                script.push_str(&get_val_cmd);
+                let cex_out = run_smt(&script).unwrap_or(out);
+                let cex = extract_counterexample(&cex_out, &raw_fn.params);
                 return Err(build_violation_diagnostic(&raw_fn.name, &ob.kind, cex));
             }
             other => {
@@ -883,11 +906,15 @@ where
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    let elapsed_ms = start.elapsed().as_millis();
+    #[cfg(target_arch = "wasm32")]
+    let elapsed_ms = 0u128;
     Ok(VerificationReport {
         alias: raw_fn.name.clone(),
         short_hash: canon_node.short_hash.clone(),
         obligations_checked: total_obligations,
-        elapsed_ms: start.elapsed().as_millis(),
+        elapsed_ms,
         status: format!("proved ({total_obligations} obligations)"),
         cached: false,
     })
