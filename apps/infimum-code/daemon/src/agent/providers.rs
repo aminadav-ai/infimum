@@ -51,16 +51,6 @@ pub(super) fn render_studio_system_prompt(proj_dir: &Path, imported_plan: &str, 
             }
         }
     }
-    if tpl.is_none() {
-        for root in studio_root_candidates() {
-            if let Ok(s) = fs::read_to_string(root.join("capsule/system_prompt.md")) {
-                if !s.trim().is_empty() {
-                    tpl = Some(s);
-                    break;
-                }
-            }
-        }
-    }
     let raw = tpl.unwrap_or_else(|| EMBEDDED_STUDIO_SYSTEM_PROMPT.to_string());
     let proj_s = proj_dir.display().to_string();
     let plan_s = if imported_plan.trim().is_empty() { "(нет)" } else { imported_plan.trim() };
@@ -661,6 +651,8 @@ where
             let spawn_res = Command::new("curl")
                 .args([
                     "-s",
+                    "--proto",
+                    "=https",
                     "--connect-timeout",
                     "20",
                     "--max-time",
@@ -1987,6 +1979,8 @@ where
         .args([
             "-sS",
             "-N",
+            "--proto",
+            "=https",
             "--connect-timeout",
             "25",
             "--keepalive-time",

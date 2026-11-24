@@ -60,6 +60,10 @@ pub fn take_pending_images() -> Vec<AttachedImage> {
     }
 }
 
+pub type GpuImageSlot = (u32, u32, Vec<u8>);
+pub type LoadedConvEntry = (i32, String, Option<TimelineSnapshot>, Vec<AttachedImage>);
+
+#[allow(dead_code)]
 pub fn has_pending_images() -> bool {
     pending_images_cell()
         .lock()
@@ -76,18 +80,21 @@ pub fn pending_images_meta() -> Vec<(u32, u32, String)> {
         .unwrap_or_default()
 }
 
-pub(super) fn loaded_conv_gpu_images_cell() -> &'static Mutex<Option<Vec<(u32, u32, Vec<u8>)>>> {
-    static CELL: OnceLock<Mutex<Option<Vec<(u32, u32, Vec<u8>)>>>> = OnceLock::new();
+#[allow(dead_code)]
+pub(super) fn loaded_conv_gpu_images_cell() -> &'static Mutex<Option<Vec<GpuImageSlot>>> {
+    static CELL: OnceLock<Mutex<Option<Vec<GpuImageSlot>>>> = OnceLock::new();
     CELL.get_or_init(|| Mutex::new(None))
 }
 
-pub fn set_loaded_conv_gpu_images(imgs: Vec<(u32, u32, Vec<u8>)>) {
+#[allow(dead_code)]
+pub fn set_loaded_conv_gpu_images(imgs: Vec<GpuImageSlot>) {
     if let Ok(mut g) = loaded_conv_gpu_images_cell().lock() {
         *g = Some(imgs);
     }
 }
 
-pub fn take_loaded_conv_gpu_images() -> Option<Vec<(u32, u32, Vec<u8>)>> {
+#[allow(dead_code)]
+pub fn take_loaded_conv_gpu_images() -> Option<Vec<GpuImageSlot>> {
     loaded_conv_gpu_images_cell().lock().ok()?.take()
 }
 
@@ -239,12 +246,14 @@ pub fn active_conv_header() -> String {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn brain_dir() -> Option<PathBuf> {
     let home = env::var("HOME").ok()?;
     Some(PathBuf::from(home).join(".gemini/antigravity/brain"))
 }
 
 /// Strip Antigravity XML wrappers (`<USER_REQUEST>`, `<ADDITIONAL_METADATA>`, `<CONTEXT_SUMMARY>`).
+#[allow(dead_code)]
 pub fn clean_antigravity_user_text(raw: &str) -> String {
     if let Some(s) = raw.find("<USER_REQUEST>") {
         let after = &raw[s + "<USER_REQUEST>".len()..];
@@ -298,9 +307,7 @@ pub fn list_saved_conversations() -> (Vec<PathBuf>, Vec<String>) {
     (paths, labels)
 }
 
-pub fn load_conversation_from_path(
-    path: &Path,
-) -> Option<Vec<(i32, String, Option<TimelineSnapshot>, Vec<AttachedImage>)>> {
+pub fn load_conversation_from_path(path: &Path) -> Option<Vec<LoadedConvEntry>> {
     let raw = fs::read_to_string(path).ok()?;
     let v = serde_json::from_str::<Value>(&raw).ok()?;
     let id = v
@@ -495,6 +502,7 @@ pub fn save_active_conversation() {
     }
 }
 
+#[allow(dead_code)]
 pub fn list_antigravity_sessions() -> (Vec<PathBuf>, Vec<String>) {
     let Some(brain) = brain_dir() else {
         return (Vec::new(), Vec::new());
@@ -571,6 +579,7 @@ pub fn list_antigravity_sessions() -> (Vec<PathBuf>, Vec<String>) {
     (paths, labels)
 }
 
+#[allow(dead_code)]
 pub fn import_antigravity_session_dir(dir_p: &Path) -> Vec<(i32, String)> {
     let dir_name = dir_p
         .file_name()

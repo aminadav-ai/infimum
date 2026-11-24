@@ -24,7 +24,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Lint workspace with Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run full workspace test suite
         run: cargo test --workspace

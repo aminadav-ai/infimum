@@ -94,7 +94,7 @@ pub fn is_sensitive_path(path: &Path) -> bool {
         .file_name()
         .map(|f| f.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    if fname == ".env"
+    fname == ".env"
         || fname.starts_with(".env.")
         || fname.ends_with(".pem")
         || fname.ends_with(".key")
@@ -110,10 +110,6 @@ pub fn is_sensitive_path(path: &Path) -> bool {
                 | ".pypirc"
                 | "credentials.json"
         )
-    {
-        return true;
-    }
-    false
 }
 
 pub(super) fn workspaces_config_path() -> PathBuf {
@@ -318,6 +314,7 @@ pub(super) fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>, dept
 }
 
 pub(super) const OUTLINE_MAX_ENTRIES: usize = 400;
+#[cfg(test)]
 pub(super) const OUTLINE_MAX_LINE_CHARS: usize = 300;
 pub(super) const OUTLINE_CORE_AXW: &[u8] = include_bytes!("../../../cores/outline_core.ifw");
 
@@ -1729,7 +1726,7 @@ pub(super) fn execute_native_tool(
                 });
             }
             let Some(std_dir) = resolve_infimum_std_dir() else {
-                return json!({ "error": format!("Standard library directory not found (set INFIMUM_LANG_DIR or INFIMUM_STD_DIR)") });
+                return json!({ "error": "Standard library directory not found (set INFIMUM_LANG_DIR or INFIMUM_STD_DIR)" });
             };
             let std_path = std_dir.join(&file_name);
             match fs::read_to_string(&std_path) {

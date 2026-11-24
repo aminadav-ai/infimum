@@ -221,7 +221,7 @@ fn load_window_icon(capsule_dir: Option<&Path>, capsule_stem: &str) -> Option<Ic
             png::ColorType::Rgba => data.to_vec(),
             png::ColorType::Rgb => {
                 let mut out = Vec::with_capacity((info.width * info.height * 4) as usize);
-                for c in data.chunks_exact(3) {
+                for c in data.as_chunks::<3>().0 {
                     out.extend_from_slice(&[c[0], c[1], c[2], 255]);
                 }
                 out

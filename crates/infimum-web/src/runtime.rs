@@ -67,8 +67,10 @@ const LARGE_COPY_MAX_CHARS: usize = ABI_LARGE_COPY_MAX_CHARS as usize;
 
 /// Linear memory word address where host writes exact TrueType advance widths (`3 * 176` words).
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 pub const FONT_METRICS_FLAG_WORD: usize = STUDIO_MEM_FONT_METRICS_FLAG_WORD;
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 pub const FONT_METRICS_TABLE_WORD: usize = STUDIO_MEM_FONT_METRICS_TABLE_WORD;
 
 /// Single GPU primitive matching `infimum-ui` / `studio_core.ifm` 8 x i32 layout (32 bytes).
@@ -651,8 +653,10 @@ mod tests {
     }
 
     fn studio_test_policy() -> CapabilityPolicy {
-        let mut policy = CapabilityPolicy::default();
-        policy.allow_clipboard = true;
+        let mut policy = CapabilityPolicy {
+            allow_clipboard: true,
+            ..Default::default()
+        };
         policy.allowed_net_domains.insert("127.0.0.1".to_string());
         policy
             .allowed_net_domains

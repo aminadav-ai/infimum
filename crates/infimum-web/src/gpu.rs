@@ -447,7 +447,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[instance_layout.clone()],
+                buffers: std::slice::from_ref(&instance_layout),
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -476,7 +476,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[instance_layout.clone()],
+                buffers: std::slice::from_ref(&instance_layout),
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -1094,6 +1094,7 @@ impl GpuRenderer {
     }
 
     /// Replace the 4x4 session image atlas with images decoded from a loaded conversation.
+    #[allow(dead_code)]
     pub fn load_session_images(&mut self, slots: Vec<(u32, u32, Vec<u8>)>) {
         self.image_slots = slots.into_iter().take(16).collect();
         self.image_pending_base = self.image_slots.len();
@@ -1101,6 +1102,7 @@ impl GpuRenderer {
     }
 
     /// Backward-compatible alias for single-image upload.
+    #[allow(dead_code)]
     pub fn upload_image_rgba(&mut self, width: u32, height: u32, rgba: &[u8]) {
         let _ = self.add_image_rgba(width, height, rgba);
     }
