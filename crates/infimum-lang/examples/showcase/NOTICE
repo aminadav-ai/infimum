@@ -1,0 +1,15 @@
+# Third-Party Asset Notice (`examples/`)
+
+## Source Code
+All Infimum source code (`.ifm`) and compiled `.ifw` showcase capsules in `examples/` are licensed under the **Apache License 2.0** (see [`LICENSE`](LICENSE)).
+
+## 3D PBR Texture Assets (CC0 1.0 Public Domain)
+The 1K PBR texture sets (diffuse, normal, and roughness maps) declared in:
+- `examples/showcase/lion-herd/textures.json` (5 texture sets)
+- `examples/showcase/slipgate/textures.json` (7 texture sets)
+
+are sourced on demand from **Poly Haven** (<https://polyhaven.com>) via the Infimum Texture Hub (`https://infimum-lang.org/textures/`) and cached locally by `infimum-web` (`~/.cache/infimum-web/textures/` on desktop, `Cache API` in browser). All textures are dedicated to the public domain under **CC0 1.0 Universal (CC0 1.0)** (<https://creativecommons.org/publicdomain/zero/1.0/>). Zero binary image assets are bundled in this repository.
+
+## Audio & Procedural Assets
+- All sound effects across the showcase examples are 100% procedurally synthesized via `std/audio.ifm` (zero third-party audio samples).
+- `examples/color-lines/` uses zero external texture or audio assets.

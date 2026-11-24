@@ -1,0 +1,470 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM COLOR LINES 98 — True 3D Hardware Z-Buffered Refractive Glass & Carved Marble Renderer
+// Uses `infimum-web` 3D pipeline (`ui_quad_3d_mat`) with MAT_MARBLE, MAT_WALNUT,
+// MAT_GLASS_SPHERE (Fresnel + dual specular + subsurface caustic) & MAT_SHADOW_CAUSTIC.
+
+use "abi.ifm";
+use "logic.ifm";
+
+// --- 7 Saturated Gemstone Pigments (1=Ruby, 2=Emerald, 3=Sapphire, 4=Amber, 5=Aqua, 6=Amethyst, 7=Garnet) ---
+
+fn gem_r(cid: i64) -> i64 {
+  match cid {
+    1 => 242,
+    2 => 36,
+    3 => 48,
+    4 => 250,
+    5 => 28,
+    6 => 192,
+    _ => 252,
+  }
+}
+
+fn gem_g(cid: i64) -> i64 {
+  match cid {
+    1 => 46,
+    2 => 214,
+    3 => 118,
+    4 => 204,
+    5 => 222,
+    6 => 64,
+    _ => 112,
+  }
+}
+
+fn gem_b(cid: i64) -> i64 {
+  match cid {
+    1 => 68,
+    2 => 104,
+    3 => 252,
+    4 => 36,
+    5 => 238,
+    6 => 248,
+    _ => 34,
+  }
+}
+
+// --- 3D Tabletop Perspective Projection (Fixed-Point 1000 units = 1 cell) ---
+// Camera at (0, 9200, 11200) pitched down ~42 deg (cos=742, sin=670 / 1024).
+
+fn cam_fl(vw: i64, vh: i64) -> i64 {
+  let m = if vw < vh { vw } else { vh };
+  clamp_i64((m * 116) / 100, 420, 2400)
+}
+
+fn proj_vz(wy: i64, wz: i64) -> i64 {
+  let dy = wy - 9200;
+  let dz = 11200 - wz;
+  let vz = (dz * 742 - dy * 670) / 1024;
+  if vz < 400 { 400 } else { vz }
+}
+
+fn proj_sx(wx: i64, wy: i64, wz: i64, vw: i64, vh: i64) -> i64 {
+  let vz = proj_vz(wy, wz);
+  let fl = cam_fl(vw, vh);
+  vw / 2 + (wx * fl) / vz
+}
+
+fn proj_sy(wy: i64, wz: i64, vw: i64, vh: i64) -> i64 {
+  let dy = wy - 9200;
+  let dz = 11200 - wz;
+  let vz = proj_vz(wy, wz);
+  let vy = (dy * 742 + dz * 670) / 1024;
+  let fl = cam_fl(vw, vh);
+  (vh * 53) / 100 - (vy * fl) / vz
+}
+
+fn proj_zbuf(wy: i64, wz: i64) -> i64 {
+  clamp_i64(proj_vz(wy, wz) / 28, 2, 1020)
+}
+
+// Exact 2D point-in-convex-quad test for pixel-accurate 3D tile picking
+fn cross_2d(ax: i64, ay: i64, bx: i64, by: i64, px: i64, py: i64) -> i64 {
+  (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+}
+
+fn point_in_quad(px: i64, py: i64, x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64, x3: i64, y3: i64) -> bool {
+  let c0 = cross_2d(x0, y0, x1, y1, px, py);
+  let c1 = cross_2d(x1, y1, x2, y2, px, py);
+  let c2 = cross_2d(x2, y2, x3, y3, px, py);
+  let c3 = cross_2d(x3, y3, x0, y0, px, py);
+  (c0 >= 0 && c1 >= 0 && c2 >= 0 && c3 >= 0) || (c0 <= 0 && c1 <= 0 && c2 <= 0 && c3 <= 0)
+}
+
+// Emit a horizontal 3D quad on plane y = wy spanning [x0..x1] x [z0..z1]
+fn emit_horiz_quad(
+  x0: i64, x1: i64, z0: i64, z1: i64, wy: i64,
+  u_rep: i64, v_rep: i64, mat: i64, col: i64, light: i64, vw: i64, vh: i64
+) -[Mem]-> unit {
+  let sx0 = proj_sx(x0, wy, z0, vw, vh);
+  let sy0 = proj_sy(wy, z0, vw, vh);
+  let zb0 = proj_zbuf(wy, z0);
+
+  let sx1 = proj_sx(x1, wy, z0, vw, vh);
+  let sy1 = proj_sy(wy, z0, vw, vh);
+  let zb1 = proj_zbuf(wy, z0);
+
+  let sx2 = proj_sx(x1, wy, z1, vw, vh);
+  let sy2 = proj_sy(wy, z1, vw, vh);
+  let zb2 = proj_zbuf(wy, z1);
+
+  let sx3 = proj_sx(x0, wy, z1, vw, vh);
+  let sy3 = proj_sy(wy, z1, vw, vh);
+  let zb3 = proj_zbuf(wy, z1);
+
+  ui_quad_3d_mat(sx0, sy0, zb0, sx1, sy1, zb1, sx2, sy2, zb2, sx3, sy3, zb3, u_rep, v_rep, mat, col, light, FOG_NONE, 0);
+}
+
+// Emit a front-facing vertical 3D skirt quad at z = wz spanning [x0..x1] x [y_top..y_bot]
+fn emit_front_skirt(
+  x0: i64, x1: i64, wz: i64, y_top: i64, y_bot: i64,
+  u_rep: i64, v_rep: i64, mat: i64, col: i64, light: i64, vw: i64, vh: i64
+) -[Mem]-> unit {
+  let sx0 = proj_sx(x0, y_top, wz, vw, vh);
+  let sy0 = proj_sy(y_top, wz, vw, vh);
+  let zb0 = proj_zbuf(y_top, wz);
+
+  let sx1 = proj_sx(x1, y_top, wz, vw, vh);
+  let sy1 = proj_sy(y_top, wz, vw, vh);
+  let zb1 = proj_zbuf(y_top, wz);
+
+  let sx2 = proj_sx(x1, y_bot, wz, vw, vh);
+  let sy2 = proj_sy(y_bot, wz, vw, vh);
+  let zb2 = proj_zbuf(y_bot, wz);
+
+  let sx3 = proj_sx(x0, y_bot, wz, vw, vh);
+  let sy3 = proj_sy(y_bot, wz, vw, vh);
+  let zb3 = proj_zbuf(y_bot, wz);
+
+  ui_quad_3d_mat(sx0, sy0, zb0, sx1, sy1, zb1, sx2, sy2, zb2, sx3, sy3, zb3, u_rep, v_rep, mat, col, light, FOG_NONE, 0);
+}
+
+// Emit a true 3D ray-shaded refractive glass jewel sphere + its floor contact shadow & colored caustic
+fn draw_jewel_3d(
+  wx: i64, wy_lift: i64, wz: i64, world_rad: i64,
+  cid: i64, is_sel: bool, floor_y: i64, alpha: i64, vw: i64, vh: i64
+) -[Mem]-> unit {
+  let r = gem_r(cid);
+  let g = gem_g(cid);
+  let b = gem_b(cid);
+  let a = clamp_i64(alpha, 0, 255);
+
+  // 1. Contact shadow + colored caustic on the marble surface below
+  let sh_rad = clamp_i64(world_rad + 110 + wy_lift / 6, 260, 720);
+  let sh_lit = clamp_i64(255 - wy_lift / 5, 80, 255);
+  emit_horiz_quad(
+    wx - sh_rad, wx + sh_rad, wz - sh_rad, wz + sh_rad, floor_y + 16,
+    64, 64, MAT_SHADOW_CAUSTIC, pack_rgba(r, g, b, a), sh_lit, vw, vh
+  );
+
+  // 2. Pulsing golden selection halo on the marble tile if selected
+  if is_sel {
+    let pulse = sin_1024(GameMem.anim_tick * 16) / 24;
+    let hr = world_rad + 95 + pulse;
+    emit_horiz_quad(
+      wx - hr, wx + hr, wz - hr, wz + hr, floor_y + 22,
+      64, 64, MAT_GLOW, pack_rgba(255, 214, 88, 175), 255, vw, vh
+    );
+  }
+
+  // 3. Analytical ray-shaded 3D refractive glass sphere billboard (Fresnel + dual specular + caustic)
+  let cy_world = floor_y + world_rad + wy_lift;
+  let vz = proj_vz(cy_world, wz);
+  let fl = cam_fl(vw, vh);
+  let sx = proj_sx(wx, cy_world, wz, vw, vh);
+  let sy = proj_sy(cy_world, wz, vw, vh);
+  let r_px = clamp_i64((world_rad * fl) / vz, 8, 120);
+  // Slightly closer Z so the sphere cleanly sits in front of its floor shadow
+  let zb = clamp_i64(proj_zbuf(cy_world, wz) - 4, 2, 1020);
+  let col = pack_rgba(r, g, b, a);
+  ui_quad_3d_mat(
+    sx - r_px, sy - r_px, zb,
+    sx + r_px, sy - r_px, zb,
+    sx + r_px, sy + r_px, zb,
+    sx - r_px, sy + r_px, zb,
+    64, 64, MAT_GLASS_SPHERE, col, 255, FOG_NONE, 0
+  );
+}
+
+fn draw_explosion_3d(wx: i64, wz: i64, cid: i64, rem: i64, vw: i64, vh: i64) -[Mem]-> unit {
+  let prog = clamp_i64(14 - rem, 0, 14);
+  let dist = 120 + prog * 55;
+  let lift = 180 + prog * 48;
+  let sr = clamp_i64(190 * (15 - prog) / 14, 50, 200);
+  let alpha = clamp_i64((15 - prog) * 18, 0, 255);
+  for k in 0..8 {
+    let ang = k * 128 + prog * 24;
+    let dx = (cos_1024(ang) * dist) / 1024;
+    let dz = (sin_1024(ang) * dist) / 1024;
+    draw_jewel_3d(wx + dx, lift, wz + dz, sr, cid, false, 0, alpha, vw, vh);
+  }
+}
+
+// --- HUD & Full 3D Scene Renderer ---
+
+fn draw_hud_card(x: i64, y: i64, w: i64, h: i64, label: str, val: i64, accent: i64) -[Mem]-> unit {
+  ui_rect(x, y, w, h, 10, 1, 4, pack_rgba(24, 22, 30, 238), pack_rgba(124, 102, 68, 210), 0);
+  ui_text(x + 12, y + 6, label, 11, 1, pack_rgba(188, 174, 150, 255), 0);
+  ui_int(x + 12, y + 21, val, 21, 1, accent, 0);
+}
+
+fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
+  req vw >= 560 && vh >= 460
+{
+  set_clip_rect(0, 0, 0, vw, vh);
+
+  // Deep studio background
+  ui_rect(0, 0, vw, vh, 0, 0, 0, pack_rgba(15, 16, 24, 255), 0, 0);
+
+  // --- 3D Rear Pedestal for Next 3 Preview Spheres (Burled Walnut + 3 Marble Tiles) ---
+  let ped_y = 140;
+  emit_horiz_quad(-1950, 1950, -6450, -5050, ped_y, 192, 64, MAT_WALNUT, pack_rgba(116, 70, 40, 255), 220, vw, vh);
+  emit_front_skirt(-1950, 1950, -5050, ped_y, -260, 192, 48, MAT_WALNUT, pack_rgba(78, 46, 26, 255), 185, vw, vh);
+  // 3 miniature veined marble sockets on the pedestal
+  emit_horiz_quad(-1550, -650, -6200, -5300, ped_y + 12, 64, 64, MAT_MARBLE, pack_rgba(62, 66, 76, 255), 235, vw, vh);
+  emit_horiz_quad(-450, 450, -6200, -5300, ped_y + 12, 64, 64, MAT_MARBLE, pack_rgba(232, 218, 192, 255), 240, vw, vh);
+  emit_horiz_quad(650, 1550, -6200, -5300, ped_y + 12, 64, 64, MAT_MARBLE, pack_rgba(62, 66, 76, 255), 235, vw, vh);
+  // The 3 upcoming 3D refractive glass spheres resting on the pedestal
+  draw_jewel_3d(-1100, 0, -5750, 360, GameMem.next_colors[0], false, ped_y + 12, 255, vw, vh);
+  draw_jewel_3d(0, 0, -5750, 360, GameMem.next_colors[1], false, ped_y + 12, 255, vw, vh);
+  draw_jewel_3d(1100, 0, -5750, 360, GameMem.next_colors[2], false, ped_y + 12, 255, vw, vh);
+
+  // --- 3D Burled Walnut Outer Frame & Brass Trim ---
+  let f_out = 5150;
+  let f_in = 4560;
+  let walnut_top = pack_rgba(126, 76, 42, 255);
+  let walnut_side = pack_rgba(76, 44, 24, 255);
+  let brass_col = pack_rgba(214, 174, 86, 255);
+  // Top walnut frame (4 border planks)
+  emit_horiz_quad(-f_out, f_out, -f_out, -f_in, 45, 255, 64, MAT_WALNUT, walnut_top, 230, vw, vh);
+  emit_horiz_quad(-f_out, f_out, f_in, f_out, 45, 255, 64, MAT_WALNUT, walnut_top, 245, vw, vh);
+  emit_horiz_quad(-f_out, -f_in, -f_in, f_in, 45, 64, 255, MAT_WALNUT, walnut_top, 235, vw, vh);
+  emit_horiz_quad(f_in, f_out, -f_in, f_in, 45, 64, 255, MAT_WALNUT, walnut_top, 235, vw, vh);
+  // Decorative brass inlay strips on left/right frame rails
+  emit_horiz_quad(-f_out + 40, -f_in - 40, -1650, -1450, 52, 64, 64, MAT_SOLID, brass_col, 245, vw, vh);
+  emit_horiz_quad(f_in + 40, f_out - 40, -1650, -1450, 52, 64, 64, MAT_SOLID, brass_col, 245, vw, vh);
+  emit_horiz_quad(-f_out + 40, -f_in - 40, 1450, 1650, 52, 64, 64, MAT_SOLID, brass_col, 245, vw, vh);
+  emit_horiz_quad(f_in + 40, f_out - 40, 1450, 1650, 52, 64, 64, MAT_SOLID, brass_col, 245, vw, vh);
+  // Inner brass bezel around the 9x9 marble grid
+  emit_horiz_quad(-f_in, f_in, -f_in, -4500, 30, 64, 64, MAT_SOLID, brass_col, 230, vw, vh);
+  emit_horiz_quad(-f_in, f_in, 4500, f_in, 30, 64, 64, MAT_SOLID, brass_col, 240, vw, vh);
+  emit_horiz_quad(-f_in, -4500, -4500, 4500, 30, 64, 64, MAT_SOLID, brass_col, 235, vw, vh);
+  emit_horiz_quad(4500, f_in, -4500, 4500, 30, 64, 64, MAT_SOLID, brass_col, 235, vw, vh);
+  // 3D front thickness skirt of the wooden board
+  emit_front_skirt(-f_out, f_out, f_out, 45, -480, 255, 48, MAT_WALNUT, walnut_side, 185, vw, vh);
+
+  // --- 9x9 Carved Veined Marble Tiles + Exact 3D Mouse Picking + 3D Jewels ---
+  let modal_open = GameMem.game_over == 1;
+  let mut hover = -1;
+  for r in 0..9 {
+    for c in 0..9 {
+      let idx = r * 9 + c;
+      let x0 = -4500 + c * 1000;
+      let x1 = x0 + 1000;
+      let z0 = -4500 + r * 1000;
+      let z1 = z0 + 1000;
+
+      let sx0 = proj_sx(x0, 0, z0, vw, vh);
+      let sy0 = proj_sy(0, z0, vw, vh);
+      let zb0 = proj_zbuf(0, z0);
+      let sx1 = proj_sx(x1, 0, z0, vw, vh);
+      let sy1 = proj_sy(0, z0, vw, vh);
+      let zb1 = proj_zbuf(0, z0);
+      let sx2 = proj_sx(x1, 0, z1, vw, vh);
+      let sy2 = proj_sy(0, z1, vw, vh);
+      let zb2 = proj_zbuf(0, z1);
+      let sx3 = proj_sx(x0, 0, z1, vw, vh);
+      let sy3 = proj_sy(0, z1, vw, vh);
+      let zb3 = proj_zbuf(0, z1);
+
+      let is_hov = !modal_open && my > 64 && my < vh - 58 && point_in_quad(mx, my, sx0, sy0, sx1, sy1, sx2, sy2, sx3, sy3);
+      if is_hov {
+        hover = idx;
+        gfx_set_cursor(CursorKind::Pointer);
+        if m_clicked == 1 {
+          handle_cell_click(r, c);
+        }
+      }
+
+      let is_cream = ((r + c) & 1) == 0;
+      let tile_col = if GameMem.anim.blocked_idx == idx && GameMem.anim.blocked_timer > 0 {
+        pack_rgba(208, 62, 68, 255)
+      } else if GameMem.selected_idx == idx {
+        if is_cream { pack_rgba(255, 240, 198, 255) } else { pack_rgba(112, 102, 78, 255) }
+      } else if is_hov {
+        if is_cream { pack_rgba(248, 236, 212, 255) } else { pack_rgba(92, 98, 112, 255) }
+      } else {
+        if is_cream { pack_rgba(226, 212, 186, 255) } else { pack_rgba(58, 62, 72, 255) }
+      };
+      // Gentle front-to-back studio lighting gradient
+      let tile_lit = clamp_i64(212 + r * 4, 200, 252);
+      ui_quad_3d_mat(sx0, sy0, zb0, sx1, sy1, zb1, sx2, sy2, zb2, sx3, sy3, zb3, 64, 64, MAT_MARBLE, tile_col, tile_lit, FOG_NONE, 0);
+
+      // 3D Glass Jewel on this tile
+      let cid = GameMem.cells[idx].color;
+      if cid > 0 {
+        let wx = x0 + 500;
+        let wz = z0 + 500;
+        if GameMem.anim.mode == AnimMode::Exploding && GameMem.cells[idx].clear_mark == 1 {
+          draw_explosion_3d(wx, wz, cid, GameMem.anim.explode_timer, vw, vh);
+        } else {
+          let is_sel = GameMem.selected_idx == idx;
+          let lift = if is_sel {
+            let s = sin_1024(GameMem.anim_tick * 24);
+            let ab = if s < 0 { 0 - s } else { s };
+            110 + (ab * 140) / 1024
+          } else {
+            0
+          };
+          draw_jewel_3d(wx, lift, wz, 420, cid, is_sel, 0, 255, vw, vh);
+        }
+      }
+    }
+  }
+  GameMem.hover_idx = hover;
+
+  // --- Animated 3D Hopping Jewel along BFS Path ---
+  if GameMem.anim.mode == AnimMode::Hopping && GameMem.anim.path_len >= 2 {
+    let step = clamp_i64(GameMem.anim.hop_step, 0, 80);
+    let a_idx = GameMem.path[step];
+    let b_idx = GameMem.path[step + 1];
+    let ar = a_idx / 9;
+    let ac = a_idx - ar * 9;
+    let br = b_idx / 9;
+    let bc = b_idx - br * 9;
+    let ax = -4000 + ac * 1000;
+    let az = -4000 + ar * 1000;
+    let tx = -4000 + bc * 1000;
+    let tz = -4000 + br * 1000;
+    let sub = clamp_i64(GameMem.anim.hop_sub, 0, 5);
+    let cur_x = ax + ((tx - ax) * sub) / 5;
+    let cur_z = az + ((tz - az) * sub) / 5;
+    let arc_y = (sub * (5 - sub) * 620) / 6;
+    draw_jewel_3d(cur_x, arc_y, cur_z, 420, GameMem.anim.hop_color, false, 0, 255, vw, vh);
+  }
+
+  // --- Top HUD Bar (Clean Glass Overlay) ---
+  let hud_w = clamp_i64(vw - 40, 520, 780);
+  let hud_x = (vw - hud_w) / 2;
+  let hud_y = 10;
+  let card_h = 48;
+  let gap = 10;
+  let card_w = (hud_w - gap * 3) / 4;
+
+  draw_hud_card(hud_x, hud_y, card_w, card_h, "SCORE", GameMem.score, pack_rgba(255, 224, 128, 255));
+  draw_hud_card(hud_x + (card_w + gap), hud_y, card_w, card_h, "BEST", GameMem.high_score, pack_rgba(144, 232, 184, 255));
+  draw_hud_card(hud_x + (card_w + gap) * 2, hud_y, card_w, card_h, "TURN", GameMem.turn_num, pack_rgba(138, 198, 255, 255));
+
+  let sp_x = hud_x + (card_w + gap) * 3;
+  ui_rect(sp_x, hud_y, card_w, card_h, 10, 1, 4, pack_rgba(24, 22, 30, 238), pack_rgba(124, 102, 68, 210), 0);
+  ui_text(sp_x + 12, hud_y + 6, "SPHERES", 11, 1, pack_rgba(188, 174, 150, 255), 0);
+  ui_fmt(sp_x + 12, hud_y + 21, "{GameMem.balls_count} / 81", 19, 1, pack_rgba(238, 240, 248, 255), 0);
+
+  // --- Floating Score Bonus Banner ---
+  if GameMem.anim.last_clear_timer > 0 && GameMem.anim.last_clear_pts > 0 {
+    let bw = 156;
+    let bh = 36;
+    let bxp = (vw - bw) / 2;
+    let byp = 74 - (45 - GameMem.anim.last_clear_timer) / 4;
+    ui_rect(bxp, byp, bw, bh, 18, 2, 6, pack_rgba(24, 52, 36, 240), pack_rgba(116, 238, 168, 255), 0);
+    ui_fmt_centered(vw / 2, byp + 9, "+{GameMem.anim.last_clear_pts} PTS", 18, 1, pack_rgba(255, 240, 148, 255), 0);
+  }
+
+  // --- Bottom Time-Travel & New Game Bar ---
+  let bar_y = vh - 50;
+  let btn_h = 38;
+  let can_prev = GameMem.turn_num > 0 && GameMem.anim.mode == AnimMode::Idle;
+  let can_next = GameMem.turn_num < GameMem.max_saved_turn && GameMem.anim.mode == AnimMode::Idle;
+  let prev_w = 128;
+  let next_w = 128;
+  let new_w = 148;
+  let prev_x = hud_x;
+  let next_x = prev_x + prev_w + 10;
+  let new_x = hud_x + hud_w - new_w;
+
+  let prev_hov = !modal_open && can_prev && point_in_rect(mx, my, prev_x, bar_y, prev_w, btn_h);
+  if prev_hov {
+    gfx_set_cursor(CursorKind::Pointer);
+    if m_clicked == 1 { rewind_to_turn(GameMem.turn_num - 1); }
+  }
+  ui_rect(prev_x, bar_y, prev_w, btn_h, 9, 1, 2,
+    if prev_hov { pack_rgba(68, 60, 82, 255) } else { pack_rgba(28, 26, 36, 242) },
+    if can_prev { pack_rgba(148, 132, 178, 200) } else { pack_rgba(60, 56, 70, 120) }, 0);
+  ui_text(prev_x + 16, bar_y + 11, "< UNDO [Z]", 14, 1,
+    if can_prev { pack_rgba(232, 228, 245, 255) } else { pack_rgba(105, 102, 118, 200) }, 0);
+
+  let next_hov = !modal_open && can_next && point_in_rect(mx, my, next_x, bar_y, next_w, btn_h);
+  if next_hov {
+    gfx_set_cursor(CursorKind::Pointer);
+    if m_clicked == 1 { rewind_to_turn(GameMem.turn_num + 1); }
+  }
+  ui_rect(next_x, bar_y, next_w, btn_h, 9, 1, 2,
+    if next_hov { pack_rgba(68, 60, 82, 255) } else { pack_rgba(28, 26, 36, 242) },
+    if can_next { pack_rgba(148, 132, 178, 200) } else { pack_rgba(60, 56, 70, 120) }, 0);
+  ui_text(next_x + 16, bar_y + 11, "REDO [Y] >", 14, 1,
+    if can_next { pack_rgba(232, 228, 245, 255) } else { pack_rgba(105, 102, 118, 200) }, 0);
+
+  let hint_x = next_x + next_w + 18;
+  if hint_x + 150 < new_x {
+    if GameMem.status_code == 2 && GameMem.anim.blocked_timer > 0 {
+      ui_text(hint_x, bar_y + 12, "Path blocked!", 14, 1, pack_rgba(255, 118, 124, 255), 0);
+    } else {
+      ui_text(hint_x, bar_y + 12, "Align 5+ glass spheres in any line", 13, 0, pack_rgba(154, 150, 168, 230), 0);
+    }
+  }
+
+  let new_hov = !modal_open && point_in_rect(mx, my, new_x, bar_y, new_w, btn_h);
+  if new_hov {
+    gfx_set_cursor(CursorKind::Pointer);
+    if m_clicked == 1 {
+      reset_game(GameMem.rng_state + GameMem.anim_tick + 7919);
+      sfx_play(SFX_CLICK, 110, 75);
+    }
+  }
+  ui_rect(new_x, bar_y, new_w, btn_h, 9, 1, 2,
+    if new_hov { pack_rgba(182, 132, 54, 255) } else { pack_rgba(132, 94, 38, 245) },
+    pack_rgba(238, 196, 116, 225), 0);
+  ui_text(new_x + 18, bar_y + 11, "NEW GAME [R]", 14, 1, pack_rgba(255, 248, 232, 255), 0);
+
+  // --- Game Over Modal Overlay ---
+  if modal_open {
+    ui_rect(0, 0, vw, vh, 0, 0, 0, pack_rgba(8, 8, 12, 175), 0, 0);
+    let mw = 360;
+    let mh = 220;
+    let mx0 = (vw - mw) / 2;
+    let my0 = (vh - mh) / 2;
+    ui_rect(mx0, my0, mw, mh, 16, 2, 18, pack_rgba(28, 24, 34, 252), pack_rgba(214, 168, 92, 240), 0);
+    ui_fmt_centered(vw / 2, my0 + 24, "GAME OVER", 26, 1, pack_rgba(255, 214, 120, 255), 0);
+    ui_fmt_centered(vw / 2, my0 + 70, "FINAL SCORE: {GameMem.score}", 18, 1, pack_rgba(255, 232, 140, 255), 0);
+    ui_fmt_centered(vw / 2, my0 + 102, "BEST SCORE: {GameMem.high_score}", 18, 1, pack_rgba(144, 232, 184, 255), 0);
+
+    let b1x = mx0 + 24;
+    let b1y = my0 + 152;
+    let b1w = 148;
+    let b2x = mx0 + 188;
+    let b1_hov = point_in_rect(mx, my, b1x, b1y, b1w, 42);
+    if b1_hov {
+      gfx_set_cursor(CursorKind::Pointer);
+      if m_clicked == 1 {
+        reset_game(GameMem.rng_state + GameMem.anim_tick + 31337);
+        sfx_play(SFX_CLICK, 115, 80);
+      }
+    }
+    ui_rect(b1x, b1y, b1w, 42, 10, 1, 4,
+      if b1_hov { pack_rgba(48, 168, 108, 255) } else { pack_rgba(34, 134, 84, 255) },
+      pack_rgba(136, 238, 180, 220), 0);
+    ui_text(b1x + 24, b1y + 13, "PLAY AGAIN", 15, 1, pack_rgba(255, 255, 255, 255), 0);
+
+    let b2_hov = GameMem.turn_num > 0 && point_in_rect(mx, my, b2x, b1y, b1w, 42);
+    if b2_hov {
+      gfx_set_cursor(CursorKind::Pointer);
+      if m_clicked == 1 { rewind_to_turn(GameMem.turn_num - 1); }
+    }
+    ui_rect(b2x, b1y, b1w, 42, 10, 1, 4,
+      if b2_hov { pack_rgba(88, 72, 114, 255) } else { pack_rgba(54, 46, 70, 255) },
+      pack_rgba(170, 152, 206, 220), 0);
+    ui_text(b2x + 24, b1y + 13, "UNDO TURN", 15, 1, pack_rgba(240, 236, 252, 255), 0);
+  }
+}

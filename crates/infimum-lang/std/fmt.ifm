@@ -1,0 +1,138 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/fmt.ifm
+// Exact-width formatting for numbers, fixed-point decimals, durations (M min S s),
+// memory sizes (MB), and ellipsis-clipped text.
+
+use "std/math.ifm";
+use "std/text.ifm";
+
+// Render fixed-point tenths (e.g. 1192 -> "119.2") and return pixel width.
+fn fmt_fixed_1(x: i64, y: i64, tenths: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let mut v = tenths;
+  let mut cx = x;
+  if v < 0 {
+    cx += ui_glyph(cx, y, '-', size, style, rgba, clip);
+    v = -v;
+  }
+  let whole = v / 10;
+  let frac = v % 10;
+  cx += ui_int(cx, y, whole, size, style, rgba, clip);
+  cx += ui_glyph(cx, y, '.', size, style, rgba, clip);
+  cx += ui_glyph(cx, y, '0' + frac, size, style, rgba, clip);
+  cx - x
+}
+
+fn fmt_fixed_1_width(tenths: i64, size: i64, style: i64) -[Mem]-> i64 {
+  let mut v = tenths;
+  let mut w = 0;
+  if v < 0 {
+    w += glyph_px('-', size, style);
+    v = -v;
+  }
+  let whole = v / 10;
+  let frac = v % 10;
+  w += ui_int_width(whole, size, style);
+  w += glyph_px('.', size, style);
+  w += glyph_px('0' + frac, size, style);
+  w
+}
+
+// Render fixed-point hundredths (e.g. 125 -> "1.25") and return pixel width.
+fn fmt_fixed_2(x: i64, y: i64, hundredths: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let mut v = hundredths;
+  let mut cx = x;
+  if v < 0 {
+    cx += ui_glyph(cx, y, '-', size, style, rgba, clip);
+    v = -v;
+  }
+  let whole = v / 100;
+  let rem = v % 100;
+  cx += ui_int(cx, y, whole, size, style, rgba, clip);
+  cx += ui_glyph(cx, y, '.', size, style, rgba, clip);
+  cx += ui_glyph(cx, y, '0' + (rem / 10), size, style, rgba, clip);
+  cx += ui_glyph(cx, y, '0' + (rem % 10), size, style, rgba, clip);
+  cx - x
+}
+
+// Render memory size in MB from tenths of MB (e.g. 1192 -> "119.2 MB").
+fn fmt_mb(x: i64, y: i64, tenths_mb: i64, size: i64, col_num: i64, col_unit: i64, clip: i64) -[Mem]-> i64 {
+  let v = clamp_i64(tenths_mb, 0, 999999);
+  let w1 = fmt_fixed_1(x, y, v, size, 2, col_num, clip);
+  let w2 = ui_text(x + w1 + 4, y, "MB", size, 0, col_unit, clip);
+  w1 + 4 + w2
+}
+
+fn fmt_mb_width(tenths_mb: i64, size: i64) -[Mem]-> i64 {
+  let v = clamp_i64(tenths_mb, 0, 999999);
+  fmt_fixed_1_width(v, size, 2) + 4 + ui_text_width("MB", size, 0)
+}
+
+// Render duration from tenths of seconds: "Mm Ss" when >= 60s, else "X.Xs".
+fn fmt_duration(x: i64, y: i64, tenths: i64, size: i64, col_num: i64, col_unit: i64, clip: i64) -[Mem]-> i64 {
+  let t = clamp_i64(tenths, 0, 999999);
+  if t >= 600 {
+    let total_s = t / 10;
+    let mins = total_s / 60;
+    let secs = total_s % 60;
+    let mut cx = x;
+    cx += ui_int(cx, y, mins, size, 2, col_num, clip);
+    cx += ui_text(cx, y, "m ", size, 0, col_unit, clip);
+    cx += ui_int(cx, y, secs, size, 2, col_num, clip);
+    cx += ui_text(cx, y, "s", size, 0, col_unit, clip);
+    cx - x
+  } else {
+    let w1 = fmt_fixed_1(x, y, t, size, 2, col_num, clip);
+    let w2 = ui_text(x + w1, y, "s", size, 0, col_unit, clip);
+    w1 + w2
+  }
+}
+
+fn fmt_duration_width(tenths: i64, size: i64) -[Mem]-> i64 {
+  let t = clamp_i64(tenths, 0, 999999);
+  if t >= 600 {
+    let total_s = t / 10;
+    let mins = total_s / 60;
+    let secs = total_s % 60;
+    ui_int_width(mins, size, 2)
+      + ui_text_width("m ", size, 0)
+      + ui_int_width(secs, size, 2)
+      + ui_text_width("s", size, 0)
+  } else {
+    fmt_fixed_1_width(t, size, 2) + ui_text_width("s", size, 0)
+  }
+}
+
+// Render string `s` strictly within `max_w`, appending "..." if it overflows.
+fn fmt_text_ellipsis(x: i64, y: i64, max_w: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  if max_w <= 0 {
+    0
+  } else {
+    let full_w = ui_text_width(s, size, style);
+    if full_w <= max_w {
+      ui_text(x, y, s, size, style, rgba, clip)
+    } else {
+      do Mem.store_str(STD_STR_SCRATCH_WORD, s);
+      let ptr = mem_load(STD_STR_SCRATCH_WORD);
+      let n = clamp_i64(mem_load(ptr), 0, 256);
+      let dot_adv = glyph_px('.', size, style);
+      let limit_x = x + max_w - dot_adv * 3;
+      let mut cx = x;
+      for i in 0..n max 256 {
+        let cp = mem_load(ptr + 1 + i);
+        let adv = glyph_px(cp, size, style);
+        if cx + adv <= limit_x {
+          cx += ui_glyph(cx, y, cp, size, style, rgba, clip);
+        } else {
+          break;
+        }
+      }
+      for _d in 0..3 max 3 {
+        if cx + dot_adv > x + max_w { break; }
+        cx += ui_glyph(cx, y, '.', size, style, rgba, clip);
+      }
+      cx - x
+    }
+  }
+}

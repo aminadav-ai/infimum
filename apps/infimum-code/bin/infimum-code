@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Infimum Code Launcher — starts isolated `infimum-agentd` + pure `infimum-web` browser.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STUDIO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+MONOREPO_ROOT="$(cd "$STUDIO_ROOT/../.." 2>/dev/null && pwd || true)"
+
+if [[ -n "${INFIMUM_AGENTD_BIN:-}" ]]; then
+  AGENTD_BIN="$INFIMUM_AGENTD_BIN"
+elif [[ -n "$MONOREPO_ROOT" && -x "$MONOREPO_ROOT/target/release/infimum-agentd" ]]; then
+  AGENTD_BIN="$MONOREPO_ROOT/target/release/infimum-agentd"
+elif [[ -x "$STUDIO_ROOT/daemon/target/release/infimum-agentd" ]]; then
+  AGENTD_BIN="$STUDIO_ROOT/daemon/target/release/infimum-agentd"
+else
+  AGENTD_BIN="${MONOREPO_ROOT:-$STUDIO_ROOT}/target/release/infimum-agentd"
+fi
+
+if [[ -n "${INFIMUM_WEB_BIN:-}" ]]; then
+  BROWSER_BIN="$INFIMUM_WEB_BIN"
+elif [[ -n "$MONOREPO_ROOT" && -x "$MONOREPO_ROOT/target/release/infimum-web" ]]; then
+  BROWSER_BIN="$MONOREPO_ROOT/target/release/infimum-web"
+elif command -v infimum-web >/dev/null 2>&1; then
+  BROWSER_BIN="$(command -v infimum-web)"
+elif [[ -x "$STUDIO_ROOT/../infimum-web/target/release/infimum-web" ]]; then
+  BROWSER_BIN="$STUDIO_ROOT/../infimum-web/target/release/infimum-web"
+elif [[ -x "$HOME/.local/bin/infimum-web" ]]; then
+  BROWSER_BIN="$HOME/.local/bin/infimum-web"
+else
+  BROWSER_BIN="infimum-web"
+fi
+CAPSULE_PATH="${INFIMUM_CODE_CAPSULE:-$STUDIO_ROOT/capsule/infimum_code.ifw}"
+
+if [[ ! -x "$AGENTD_BIN" ]]; then
+  echo "[infimum-code] Error: infimum-agentd binary not found at $AGENTD_BIN" >&2
+  echo "Build it with: cargo build --release --workspace" >&2
+  exit 1
+fi
+
+if [[ ! -x "$BROWSER_BIN" ]]; then
+  echo "[infimum-code] Error: infimum-web binary not found at $BROWSER_BIN" >&2
+  exit 1
+fi
+
+# Generate a fresh 256-bit random session token (passed via env, never in argv)
+TOKEN="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+export INFIMUM_AGENT_TOKEN="$TOKEN"
+export INFIMUM_CODE_HOME="$STUDIO_ROOT"
+
+READY_FILE="$(mktemp)"
+cleanup() {
+  rm -f "$READY_FILE"
+  if [[ -n "${AGENTD_PORT:-}" ]]; then
+    curl -sS -X POST -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:${AGENTD_PORT}/shutdown" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${AGENTD_PID:-}" ]]; then
+    kill "$AGENTD_PID" 2>/dev/null || true
+    wait "$AGENTD_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+"$AGENTD_BIN" \
+  --port=0 \
+  --allow-user-workspaces \
+  --allow-proc \
+  >"$READY_FILE" 2>&1 &
+AGENTD_PID=$!
+
+# Wait for INFIMUM_AGENTD_READY port=<PORT>
+AGENTD_PORT=""
+for _ in $(seq 1 50); do
+  if grep -q "INFIMUM_AGENTD_READY port=" "$READY_FILE" 2>/dev/null; then
+    AGENTD_PORT="$(grep -o 'INFIMUM_AGENTD_READY port=[0-9]*' "$READY_FILE" | head -n1 | cut -d= -f2)"
+    break
+  fi
+  sleep 0.05
+done
+
+if [[ -z "$AGENTD_PORT" ]]; then
+  echo "[infimum-code] Failed to start infimum-agentd:" >&2
+  cat "$READY_FILE" >&2
+  exit 1
+fi
+
+# Launch pure `infimum-web` browser restricted ONLY to 127.0.0.1:<PORT> (+ infimum-lang.org reader)
+"$BROWSER_BIN" \
+  "$CAPSULE_PATH" \
+  "--title=Infimum Code" \
+  "--app-id=infimum-code" \
+  --allow-clipboard \
+  "--allow-net=127.0.0.1:${AGENTD_PORT}" \
+  --allow-net=infimum-lang.org \
+  "--cap-arg=AGENT_URL=http://127.0.0.1:${AGENTD_PORT}" \
+  "--cap-arg=AGENT_TOKEN=${TOKEN}" \
+  "$@"

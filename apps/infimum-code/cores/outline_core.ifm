@@ -1,0 +1,538 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Z3-Verified Source Code Outline Extractor (`capsules/core/outline_core.ifm`).
+// Extracts top-level declarations and line spans for Infimum (`.ifm`) and Rust (`.rs`)
+// files (including nested methods inside `impl`/`trait`/`mod`) without returning bodies.
+
+use "std/math.ifm";
+use "std/buf.ifm";
+
+const MAX_LINES: i64 = 12000;
+const MAX_SRC: i64 = 262144;
+const MAX_OUT: i64 = 131072;
+const MAX_ENTRIES: i64 = 400;
+const MAX_ENTRY_CHARS: i64 = 300;
+const MAX_HDR_CHARS: i64 = 480;
+
+// Binary ABI shared with `infimum-code/daemon/src/agent.rs`
+layout OutMem at 0 {
+  src_len: word at 0,
+  is_rust: word at 1,
+  out_len: word at 2 inv 0..=131072,
+  entry_count: word at 3 inv 0..=400,
+  truncated: word at 4 inv 0..=1,
+  line_count: word at 5 inv 0..=12000,
+  line_start: words[12000] at 64,
+  line_end: words[12000] at 12064,
+  cdepth_stack: words[32] at 24064,
+  hdr_buf: words[512] at 24128,
+  src_buf: words[262144] at 25000,
+  out_buf: words[131072] at 287200,
+}
+
+struct LineScan {
+  delta: i64,
+  first_open: i64,
+  first_semi: i64,
+  code_end: i64,
+  bc: i64,
+}
+
+struct ItemSpan {
+  hdr_end: i64,
+  opened: i64,
+  end_line: i64,
+}
+
+fn is_ws(c: i64) -> bool {
+  c == ' ' || c == '\t' || c == '\r' || c == '\n'
+}
+
+fn is_ident(c: i64) -> bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+fn skip_ws_range(pos: i64, end: i64) -[Mem]-> i64 {
+  let mut i = pos;
+  while i < end && is_ws(OutMem.src_buf[i]) max 4096 {
+    i += 1;
+  }
+  i
+}
+
+fn kw_boundary(pos: i64, end: i64) -[Mem]-> bool {
+  pos >= end || !is_ident(OutMem.src_buf[pos])
+}
+
+fn kw2(p: i64, e: i64, c0: i64, c1: i64) -[Mem]-> bool {
+  p + 2 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1 && kw_boundary(p + 2, e)
+}
+
+fn kw3(p: i64, e: i64, c0: i64, c1: i64, c2: i64) -[Mem]-> bool {
+  p + 3 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
+    && OutMem.src_buf[p + 2] == c2 && kw_boundary(p + 3, e)
+}
+
+fn kw4(p: i64, e: i64, c0: i64, c1: i64, c2: i64, c3: i64) -[Mem]-> bool {
+  p + 4 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
+    && OutMem.src_buf[p + 2] == c2 && OutMem.src_buf[p + 3] == c3
+    && kw_boundary(p + 4, e)
+}
+
+fn kw5(p: i64, e: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64) -[Mem]-> bool {
+  p + 5 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
+    && OutMem.src_buf[p + 2] == c2 && OutMem.src_buf[p + 3] == c3
+    && OutMem.src_buf[p + 4] == c4 && kw_boundary(p + 5, e)
+}
+
+fn kw6(p: i64, e: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64) -[Mem]-> bool {
+  p + 6 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
+    && OutMem.src_buf[p + 2] == c2 && OutMem.src_buf[p + 3] == c3
+    && OutMem.src_buf[p + 4] == c4 && OutMem.src_buf[p + 5] == c5
+    && kw_boundary(p + 6, e)
+}
+
+fn kw7(p: i64, e: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64, c6: i64) -[Mem]-> bool {
+  p + 7 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
+    && OutMem.src_buf[p + 2] == c2 && OutMem.src_buf[p + 3] == c3
+    && OutMem.src_buf[p + 4] == c4 && OutMem.src_buf[p + 5] == c5
+    && OutMem.src_buf[p + 6] == c6 && kw_boundary(p + 7, e)
+}
+
+fn index_lines(n: i64) -[Mem]-> i64 {
+  let mut lc = 0;
+  let mut start = 0;
+  for i in 0..n max 262144 {
+    if lc >= MAX_LINES { break; }
+    if OutMem.src_buf[i] == '\n' {
+      let mut e = i;
+      if e > start && OutMem.src_buf[e - 1] == '\r' { e -= 1; }
+      OutMem.line_start[lc] = start;
+      OutMem.line_end[lc] = e;
+      lc += 1;
+      start = i + 1;
+    }
+  }
+  if start < n && lc < MAX_LINES {
+    let mut e = n;
+    if e > start && OutMem.src_buf[e - 1] == '\r' { e -= 1; }
+    OutMem.line_start[lc] = start;
+    OutMem.line_end[lc] = e;
+    lc += 1;
+  }
+  let safe_lc = clamp_i64(lc, 0, MAX_LINES);
+  OutMem.line_count = safe_lc;
+  safe_lc
+}
+
+// Scan one line [ls..le) with incoming block-comment depth `bc_in`.
+fn scan_code_line(ls: i64, le: i64, is_rust: bool, bc_in: i64) -[Mem]-> LineScan {
+  let mut delta = 0;
+  let mut first_open = -1;
+  let mut first_semi = -1;
+  let mut code_end = le;
+  let mut in_str = false;
+  let mut bc = bc_in;
+  let mut i = ls;
+
+  while i < le max 4096 {
+    let ch = OutMem.src_buf[i];
+    if bc > 0 {
+      if i + 1 < le && ch == '/' && OutMem.src_buf[i + 1] == '*' {
+        bc += 1;
+        i += 2;
+      } else if i + 1 < le && ch == '*' && OutMem.src_buf[i + 1] == '/' {
+        bc -= 1;
+        i += 2;
+      } else {
+        i += 1;
+      }
+    } else if in_str {
+      if ch == '\\' && i + 1 < le {
+        i += 2;
+      } else {
+        if ch == '"' { in_str = false; }
+        i += 1;
+      }
+    } else if i + 1 < le && ch == '/' && OutMem.src_buf[i + 1] == '/' {
+      code_end = i;
+      break;
+    } else if i + 1 < le && ch == '/' && OutMem.src_buf[i + 1] == '*' {
+      bc += 1;
+      i += 2;
+    } else if ch == '"' {
+      in_str = true;
+      i += 1;
+    } else if ch == '\'' {
+      if i + 2 < le && OutMem.src_buf[i + 1] != '\\' && OutMem.src_buf[i + 2] == '\'' {
+        i += 3;
+      } else if i + 3 < le && OutMem.src_buf[i + 1] == '\\' && OutMem.src_buf[i + 3] == '\'' {
+        i += 4;
+      } else {
+        i += 1;
+      }
+    } else {
+      if ch == '{' {
+        if first_open < 0 { first_open = i; }
+        delta += 1;
+      } else if ch == '}' {
+        delta -= 1;
+      } else if ch == ';' && first_semi < 0 {
+        first_semi = i;
+      }
+      i += 1;
+    }
+  }
+  LineScan { delta: delta, first_open: first_open, first_semi: first_semi, code_end: code_end, bc: bc }
+}
+
+fn append_hdr_collapsed(from: i64, to: i64) -[Mem]-> unit {
+  let mut prev_ws = buf_len(OutMem::hdr_buf, MAX_HDR_CHARS) > 0;
+  for i in from..to max 4096 {
+    let c = OutMem.src_buf[i];
+    if is_ws(c) {
+      prev_ws = true;
+    } else {
+      if prev_ws && buf_len(OutMem::hdr_buf, MAX_HDR_CHARS) > 0 {
+        buf_push_cp(OutMem::hdr_buf, MAX_HDR_CHARS, ' ');
+      }
+      prev_ws = false;
+      buf_push_cp(OutMem::hdr_buf, MAX_HDR_CHARS, c);
+    }
+  }
+}
+
+// Scan item header & closing brace span starting at 0-based `start_idx`.
+fn scan_item_span(start_idx: i64, lc: i64, is_rust: bool) -[Mem]-> ItemSpan {
+  buf_clear(OutMem::hdr_buf);
+  let mut bc = 0;
+  let mut hdr_end = start_idx;
+  let mut opened = false;
+  let mut depth = 0;
+
+  for idx in start_idx..lc max 256 {
+    let ls = OutMem.line_start[idx];
+    let le = OutMem.line_end[idx];
+    let sc = scan_code_line(ls, le, is_rust, bc);
+    bc = sc.bc;
+    let mut stop_col = -1;
+    if sc.first_open >= 0 && sc.first_semi >= 0 {
+      if sc.first_open < sc.first_semi {
+        opened = true;
+        stop_col = sc.first_open;
+      } else {
+        stop_col = sc.first_semi;
+      }
+    } else if sc.first_open >= 0 {
+      opened = true;
+      stop_col = sc.first_open;
+    } else if sc.first_semi >= 0 {
+      stop_col = sc.first_semi;
+    }
+    if stop_col >= 0 {
+      let lim = if stop_col < sc.code_end { stop_col } else { sc.code_end };
+      append_hdr_collapsed(ls, lim);
+      hdr_end = idx;
+      depth = sc.delta;
+      break;
+    } else {
+      append_hdr_collapsed(ls, sc.code_end);
+      hdr_end = idx;
+      depth += sc.delta;
+    }
+  }
+
+  let mut end_line = hdr_end + 1;
+  if opened && depth > 0 {
+    end_line = lc;
+    for j in (hdr_end + 1)..lc max 12000 {
+      let sc = scan_code_line(OutMem.line_start[j], OutMem.line_end[j], is_rust, bc);
+      bc = sc.bc;
+      depth += sc.delta;
+      if depth <= 0 {
+        end_line = j + 1;
+        break;
+      }
+    }
+  }
+
+  ItemSpan { hdr_end: hdr_end, opened: if opened { 1 } else { 0 }, end_line: end_line }
+}
+
+// Returns 0 = none, 1 = non-container decl, 2 = container decl (`mod`)
+fn detect_ifm_decl(start: i64, e: i64) -[Mem]-> i64 {
+  let mut p = start;
+  if kw3(p, e, 'p', 'u', 'b') {
+    p = skip_ws_range(p + 3, e);
+  }
+  if kw6(p, e, 'e', 'x', 'p', 'o', 'r', 't') {
+    let p2 = skip_ws_range(p + 6, e);
+    if kw2(p2, e, 'f', 'n') { 1 } else { 0 }
+  } else if kw3(p, e, 'm', 'o', 'd') {
+    2
+  } else if kw2(p, e, 'f', 'n')
+    || kw5(p, e, 'c', 'o', 'n', 's', 't')
+    || kw4(p, e, 'e', 'n', 'u', 'm')
+    || kw6(p, e, 's', 't', 'r', 'u', 'c', 't')
+    || kw6(p, e, 'l', 'a', 'y', 'o', 'u', 't')
+    || kw5(p, e, 'f', 'o', 'r', 'm', 'a')
+    || kw3(p, e, 'u', 's', 'e')
+    || kw4(p, e, 't', 'e', 's', 't')
+  {
+    1
+  } else {
+    0
+  }
+}
+
+// Returns 0 = none, 1 = non-container decl, 2 = container decl (impl/trait/mod)
+fn detect_rs_decl(start: i64, e: i64) -[Mem]-> i64 {
+  let mut p = start;
+  if kw3(p, e, 'p', 'u', 'b') {
+    p = skip_ws_range(p + 3, e);
+    if p < e && OutMem.src_buf[p] == '(' {
+      for k in (p + 1)..e max 64 {
+        if OutMem.src_buf[k] == ')' {
+          p = skip_ws_range(k + 1, e);
+          break;
+        }
+      }
+    }
+  }
+  let mut early_const = false;
+  for _qit in 0..6 max 6 {
+    if kw7(p, e, 'd', 'e', 'f', 'a', 'u', 'l', 't') {
+      p = skip_ws_range(p + 7, e);
+    } else if kw5(p, e, 'a', 's', 'y', 'n', 'c') {
+      p = skip_ws_range(p + 5, e);
+    } else if kw6(p, e, 'u', 'n', 's', 'a', 'f', 'e') {
+      p = skip_ws_range(p + 6, e);
+    } else if kw6(p, e, 'e', 'x', 't', 'e', 'r', 'n') {
+      p = skip_ws_range(p + 6, e);
+      if p < e && OutMem.src_buf[p] == '"' {
+        for k in (p + 1)..e max 32 {
+          if OutMem.src_buf[k] == '"' {
+            p = skip_ws_range(k + 1, e);
+            break;
+          }
+        }
+      }
+    } else if kw5(p, e, 'c', 'o', 'n', 's', 't') {
+      let p2 = skip_ws_range(p + 5, e);
+      if kw2(p2, e, 'f', 'n') || kw6(p2, e, 'u', 'n', 's', 'a', 'f', 'e') {
+        p = p2;
+      } else {
+        early_const = true;
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+  if early_const {
+    1
+  } else if kw4(p, e, 'i', 'm', 'p', 'l') || kw5(p, e, 't', 'r', 'a', 'i', 't') || kw3(p, e, 'm', 'o', 'd') {
+    2
+  } else if kw2(p, e, 'f', 'n') || kw6(p, e, 's', 't', 'r', 'u', 'c', 't') || kw4(p, e, 'e', 'n', 'u', 'm') || kw5(p, e, 'c', 'o', 'n', 's', 't') {
+    1
+  } else {
+    0
+  }
+}
+
+fn hdr_kw3_at(pos: i64, n: i64, c0: i64, c1: i64, c2: i64) -[Mem]-> bool {
+  let b_before = pos == 0 || !is_ident(OutMem.hdr_buf[pos]);
+  let b_after = pos + 3 >= n || !is_ident(OutMem.hdr_buf[pos + 4]);
+  b_before && b_after && pos + 3 <= n
+    && OutMem.hdr_buf[pos + 1] == c0
+    && OutMem.hdr_buf[pos + 2] == c1
+    && OutMem.hdr_buf[pos + 3] == c2
+}
+
+// Emit one outline line into OutMem::out_buf: `<indent>L<start>..L<end>: <header>\n`
+fn emit_outline_entry(indent_levels: i64, start_line: i64, end_line: i64, format_ifm_contracts: bool) -[Mem]-> unit {
+  if buf_len(OutMem::out_buf, MAX_OUT) > 0 {
+    buf_push_cp(OutMem::out_buf, MAX_OUT, '\n');
+  }
+  let line_start_out = buf_len(OutMem::out_buf, MAX_OUT);
+  let lim_ind = clamp_i64(indent_levels, 0, 16);
+  for _ind in 0..lim_ind max 16 {
+    buf_push_cp(OutMem::out_buf, MAX_OUT, ' ');
+    buf_push_cp(OutMem::out_buf, MAX_OUT, ' ');
+  }
+  buf_push_cp(OutMem::out_buf, MAX_OUT, 'L');
+  buf_push_int(OutMem::out_buf, MAX_OUT, start_line);
+  buf_push_cp(OutMem::out_buf, MAX_OUT, '.');
+  buf_push_cp(OutMem::out_buf, MAX_OUT, '.');
+  buf_push_cp(OutMem::out_buf, MAX_OUT, 'L');
+  buf_push_int(OutMem::out_buf, MAX_OUT, end_line);
+  buf_push_cp(OutMem::out_buf, MAX_OUT, ':');
+  buf_push_cp(OutMem::out_buf, MAX_OUT, ' ');
+
+  let hlen = buf_len(OutMem::hdr_buf, MAX_HDR_CHARS);
+  let mut emit_len = hlen;
+  let mut has_req = false;
+  let mut has_ens = false;
+
+  if format_ifm_contracts && hlen >= 2 {
+    let mut rp = -1;
+    for k in 0..hlen max 480 {
+      if OutMem.hdr_buf[1 + k] == ')' {
+        rp = k + 1;
+        break;
+      }
+    }
+    if rp > 0 {
+      let mut cstart = -1;
+      for j in rp..hlen max 480 {
+        if hdr_kw3_at(j, hlen, 'r', 'e', 'q') {
+          has_req = true;
+          if cstart < 0 { cstart = j; }
+        } else if hdr_kw3_at(j, hlen, 'e', 'n', 's') {
+          has_ens = true;
+          if cstart < 0 { cstart = j; }
+        }
+      }
+      if cstart >= 0 {
+        emit_len = cstart;
+        while emit_len > 0 && is_ws(OutMem.hdr_buf[emit_len]) max 64 {
+          emit_len -= 1;
+        }
+      }
+    }
+  }
+
+  for i in 0..emit_len max 480 {
+    if buf_len(OutMem::out_buf, MAX_OUT) - line_start_out < MAX_ENTRY_CHARS {
+      buf_push_cp(OutMem::out_buf, MAX_OUT, OutMem.hdr_buf[1 + i]);
+    }
+  }
+  if has_req || has_ens {
+    buf_push_cp(OutMem::out_buf, MAX_OUT, ' ');
+    buf_push_cp(OutMem::out_buf, MAX_OUT, '[');
+    if has_req {
+      buf_push_cp(OutMem::out_buf, MAX_OUT, 'r');
+      buf_push_cp(OutMem::out_buf, MAX_OUT, 'e');
+      buf_push_cp(OutMem::out_buf, MAX_OUT, 'q');
+    }
+    if has_req && has_ens {
+      buf_push_cp(OutMem::out_buf, MAX_OUT, ',');
+      buf_push_cp(OutMem::out_buf, MAX_OUT, ' ');
+    }
+    if has_ens {
+      buf_push_cp(OutMem::out_buf, MAX_OUT, 'e');
+      buf_push_cp(OutMem::out_buf, MAX_OUT, 'n');
+      buf_push_cp(OutMem::out_buf, MAX_OUT, 's');
+    }
+    buf_push_cp(OutMem::out_buf, MAX_OUT, ']');
+  }
+}
+
+export fn extract_outline_ifm() -[Mem]-> i64 {
+  buf_clear(OutMem::out_buf);
+  OutMem.entry_count = 0;
+  OutMem.truncated = 0;
+
+  let sn = clamp_i64(OutMem.src_len, 0, MAX_SRC);
+  let is_rust = OutMem.is_rust != 0;
+  let lc = index_lines(sn);
+
+  let mut bc = 0;
+  let mut depth = 0;
+  let mut cstack_len = 0;
+  let mut i = 0;
+
+  while i < lc max 12000 {
+    let ls = OutMem.line_start[i];
+    let le = OutMem.line_end[i];
+    let p = skip_ws_range(ls, le);
+    let at_decl = depth == 0 || (cstack_len > 0 && OutMem.cdepth_stack[cstack_len - 1] == depth);
+    let not_comment = p < le
+      && !(p + 1 < le && OutMem.src_buf[p] == '/' && (OutMem.src_buf[p + 1] == '/' || OutMem.src_buf[p + 1] == '*'))
+      && !(is_rust && OutMem.src_buf[p] == '#');
+
+    let mut handled = false;
+    if at_decl && bc == 0 && not_comment {
+      let decl_kind = if is_rust { detect_rs_decl(p, le) } else { detect_ifm_decl(p, le) };
+      if decl_kind > 0 {
+        let ec = OutMem.entry_count;
+        if ec >= MAX_ENTRIES {
+          OutMem.truncated = 1;
+          break;
+        } else {
+          let sp = scan_item_span(i, lc, is_rust);
+          emit_outline_entry(cstack_len, i + 1, sp.end_line, !is_rust);
+          OutMem.entry_count = ec + 1;
+          if decl_kind == 2 && sp.opened != 0 && sp.end_line > sp.hdr_end + 1 && cstack_len < 32 {
+            for k in i..(sp.hdr_end + 1) max 128 {
+              let sc = scan_code_line(OutMem.line_start[k], OutMem.line_end[k], is_rust, bc);
+              bc = sc.bc;
+              depth = max_i64(depth + sc.delta, 0);
+            }
+            OutMem.cdepth_stack[cstack_len] = depth;
+            cstack_len += 1;
+            i = sp.hdr_end + 1;
+          } else {
+            i = sp.end_line;
+          }
+          handled = true;
+        }
+      }
+    }
+
+    if !handled {
+      let sc = scan_code_line(ls, le, is_rust, bc);
+      bc = sc.bc;
+      depth = max_i64(depth + sc.delta, 0);
+      while cstack_len > 0 && depth < OutMem.cdepth_stack[cstack_len - 1] max 32 {
+        cstack_len -= 1;
+      }
+      i += 1;
+    }
+  }
+
+  let olen = clamp_i64(buf_len(OutMem::out_buf, MAX_OUT), 0, MAX_OUT);
+  OutMem.out_len = olen;
+  olen
+}
+
+test "extract_outline_ifm finds top-level fn declaration" {
+  // "fn hi() -> i64 { 1 }"
+  OutMem.src_buf[0] = 'f'; OutMem.src_buf[1] = 'n'; OutMem.src_buf[2] = ' ';
+  OutMem.src_buf[3] = 'h'; OutMem.src_buf[4] = 'i'; OutMem.src_buf[5] = '('; OutMem.src_buf[6] = ')';
+  OutMem.src_buf[7] = ' '; OutMem.src_buf[8] = '-'; OutMem.src_buf[9] = '>'; OutMem.src_buf[10] = ' ';
+  OutMem.src_buf[11] = 'i'; OutMem.src_buf[12] = '6'; OutMem.src_buf[13] = '4'; OutMem.src_buf[14] = ' ';
+  OutMem.src_buf[15] = '{'; OutMem.src_buf[16] = ' '; OutMem.src_buf[17] = '1'; OutMem.src_buf[18] = ' '; OutMem.src_buf[19] = '}';
+  OutMem.src_len = 20;
+  OutMem.is_rust = 0;
+  let olen = extract_outline_ifm();
+  assert(OutMem.entry_count == 1);
+  assert(olen > 0);
+}
+
+test "extract_outline_ifm descends into mod and recognizes pub fn and test" {
+  // "mod ai {\n  pub fn p() -> i64 { 1 }\n}\ntest \"ok\" {}"
+  let mut k = 0;
+  OutMem.src_buf[k] = 'm'; k += 1; OutMem.src_buf[k] = 'o'; k += 1; OutMem.src_buf[k] = 'd'; k += 1;
+  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = 'a'; k += 1; OutMem.src_buf[k] = 'i'; k += 1;
+  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '{'; k += 1; OutMem.src_buf[k] = '\n'; k += 1;
+  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = ' '; k += 1;
+  OutMem.src_buf[k] = 'p'; k += 1; OutMem.src_buf[k] = 'u'; k += 1; OutMem.src_buf[k] = 'b'; k += 1; OutMem.src_buf[k] = ' '; k += 1;
+  OutMem.src_buf[k] = 'f'; k += 1; OutMem.src_buf[k] = 'n'; k += 1; OutMem.src_buf[k] = ' '; k += 1;
+  OutMem.src_buf[k] = 'p'; k += 1; OutMem.src_buf[k] = '('; k += 1; OutMem.src_buf[k] = ')'; k += 1;
+  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '-'; k += 1; OutMem.src_buf[k] = '>'; k += 1; OutMem.src_buf[k] = ' '; k += 1;
+  OutMem.src_buf[k] = 'i'; k += 1; OutMem.src_buf[k] = '6'; k += 1; OutMem.src_buf[k] = '4'; k += 1;
+  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '{'; k += 1; OutMem.src_buf[k] = ' '; k += 1;
+  OutMem.src_buf[k] = '1'; k += 1; OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '}'; k += 1; OutMem.src_buf[k] = '\n'; k += 1;
+  OutMem.src_buf[k] = '}'; k += 1; OutMem.src_buf[k] = '\n'; k += 1;
+  OutMem.src_buf[k] = 't'; k += 1; OutMem.src_buf[k] = 'e'; k += 1; OutMem.src_buf[k] = 's'; k += 1; OutMem.src_buf[k] = 't'; k += 1;
+  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '"'; k += 1; OutMem.src_buf[k] = 'o'; k += 1; OutMem.src_buf[k] = 'k'; k += 1; OutMem.src_buf[k] = '"'; k += 1;
+  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '{'; k += 1; OutMem.src_buf[k] = '}'; k += 1;
+  OutMem.src_len = k;
+  OutMem.is_rust = 0;
+  let olen = extract_outline_ifm();
+  // Expect 3 entries: mod ai, nested pub fn p, and test "ok"
+  assert(OutMem.entry_count == 3);
+  assert(olen > 0);
+}

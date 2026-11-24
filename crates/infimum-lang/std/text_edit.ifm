@@ -1,0 +1,303 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/text_edit.ifm
+// Reusable UTF-32 text buffer editing, word-wrapping, hit-testing, selection,
+// and caret rendering (parameterized by buffer base pointer, Z3-verified).
+// Buffer format: word[buf_ptr] = len, word[buf_ptr + 1 + i] = UTF-32 codepoint.
+
+use "std/math.ifm";
+use "std/gfx.ifm";
+use "std/text.ifm";
+
+fn tbuf_len(buf_ptr: i64, max_cap: i64) -[Mem]-> i64 {
+  let cap = clamp_i64(max_cap, 1, 32768);
+  clamp_i64(mem_load(buf_ptr), 0, cap)
+}
+
+fn tbuf_is_word_sep(cp: i64) -> bool {
+  cp <= ' ' || cp == '(' || cp == ')' || cp == '*' || cp == ',' || cp == '.' || cp == ':' || cp == ';' ||
+  cp == '!' || cp == '?' || cp == '"' || cp == '\'' || cp == '`' || cp == '[' || cp == ']' ||
+  cp == '{' || cp == '}' || cp == '/' || cp == '\\' || cp == '<' || cp == '>'
+}
+
+fn tbuf_insert_char(buf_ptr: i64, max_cap: i64, pos: i64, ch: i64) -[Mem]-> i64 {
+  let cap = clamp_i64(max_cap, 1, 8192);
+  let n = clamp_i64(mem_load(buf_ptr), 0, cap);
+  let p = clamp_i64(pos, 0, n);
+  if n < cap {
+    let mut i = n;
+    while i > p max 8192 {
+      mem_store(buf_ptr + 1 + i, mem_load(buf_ptr + i));
+      i -= 1;
+    }
+    mem_store(buf_ptr + 1 + p, ch);
+    mem_store(buf_ptr, n + 1);
+    p + 1
+  } else {
+    p
+  }
+}
+
+fn tbuf_delete_range(buf_ptr: i64, max_cap: i64, a: i64, b: i64) -[Mem]-> i64 {
+  let cap = clamp_i64(max_cap, 1, 8192);
+  let n = clamp_i64(mem_load(buf_ptr), 0, cap);
+  let lo = clamp_i64(min_i64(a, b), 0, n);
+  let hi = clamp_i64(max_i64(a, b), 0, n);
+  let del = hi - lo;
+  if del > 0 {
+    for i in hi..n max 8192 {
+      mem_store(buf_ptr + 1 + i - del, mem_load(buf_ptr + 1 + i));
+    }
+    mem_store(buf_ptr, n - del);
+  }
+  lo
+}
+
+fn tbuf_backspace(buf_ptr: i64, max_cap: i64, pos: i64, anchor: i64) -[Mem]-> i64 {
+  if pos != anchor {
+    tbuf_delete_range(buf_ptr, max_cap, pos, anchor)
+  } else if pos > 0 {
+    tbuf_delete_range(buf_ptr, max_cap, pos - 1, pos)
+  } else {
+    0
+  }
+}
+
+fn tbuf_word_lo(buf_ptr: i64, max_cap: i64, idx: i64) -[Mem]-> i64 {
+  let cap = clamp_i64(max_cap, 1, 32768);
+  let n = clamp_i64(mem_load(buf_ptr), 0, cap);
+  if n == 0 {
+    0
+  } else {
+    let mut lo = clamp_i64(idx, 0, n - 1);
+    while lo > 0 max 96 {
+      if tbuf_is_word_sep(mem_load(buf_ptr + lo)) { break; }
+      lo -= 1;
+    }
+    lo
+  }
+}
+
+fn tbuf_word_hi(buf_ptr: i64, max_cap: i64, idx: i64) -[Mem]-> i64 {
+  let cap = clamp_i64(max_cap, 1, 32768);
+  let n = clamp_i64(mem_load(buf_ptr), 0, cap);
+  if n == 0 {
+    0
+  } else {
+    let mut hi = clamp_i64(idx, 0, n - 1) + 1;
+    while hi < n max 96 {
+      if tbuf_is_word_sep(mem_load(buf_ptr + 1 + hi)) { break; }
+      hi += 1;
+    }
+    hi
+  }
+}
+
+fn tbuf_measure_word_px(buf_ptr: i64, start: i64, total: i64, size: i64, style: i64) -[Mem]-> i64 {
+  let mut w = 0;
+  for i in start..total max 96 {
+    let ch = mem_load(buf_ptr + 1 + i);
+    if ch == ' ' || ch == '\n' { break; }
+    w += glyph_px(ch, size, style);
+  }
+  w
+}
+
+fn tbuf_measure_wrapped_h(buf_ptr: i64, max_cap: i64, max_w: i64, size: i64, line_h: i64, style: i64) -[Mem]-> i64 {
+  let cap = clamp_i64(max_cap, 1, 32768);
+  let n = clamp_i64(mem_load(buf_ptr), 0, cap);
+  let mw = clamp_i64(max_w, 40, 4000);
+  let lh = clamp_i64(line_h, 10, 96);
+  let mut cx = 0;
+  let mut cy = 0;
+  let mut i = 0;
+  while i < n max 32768 {
+    let ch = mem_load(buf_ptr + 1 + i);
+    if ch == '\n' {
+      cx = 0;
+      cy += lh;
+      i += 1;
+    } else if ch == ' ' {
+      let sp = glyph_px(' ', size, style);
+      if cx > 0 && cx + sp <= mw { cx += sp; }
+      i += 1;
+    } else {
+      let ww = tbuf_measure_word_px(buf_ptr, i, n, size, style);
+      if cx > 0 && cx + ww > mw {
+        cx = 0;
+        cy += lh;
+      }
+      while i < n max 96 {
+        let c2 = mem_load(buf_ptr + 1 + i);
+        if c2 == ' ' || c2 == '\n' { break; }
+        let adv = glyph_px(c2, size, style);
+        if cx + adv > mw && cx > 0 {
+          cx = 0;
+          cy += lh;
+        }
+        cx += adv;
+        i += 1;
+      }
+    }
+  }
+  cy + lh
+}
+
+fn tbuf_hit_wrapped(
+  buf_ptr: i64, max_cap: i64, mx: i64, my: i64, x: i64, y: i64,
+  max_w: i64, size: i64, line_h: i64, style: i64
+) -[Mem]-> i64 {
+  let cap = clamp_i64(max_cap, 1, 32768);
+  let n = clamp_i64(mem_load(buf_ptr), 0, cap);
+  let mw = clamp_i64(max_w, 40, 4000);
+  let lh = clamp_i64(line_h, 10, 96);
+  if my < y {
+    0
+  } else {
+    let mut cx = x;
+    let mut cy = y;
+    let mut best = n;
+    let mut found = false;
+    let mut i = 0;
+    while i < n && !found max 32768 {
+      if cy > my {
+        best = i;
+        found = true;
+        break;
+      }
+      let ch = mem_load(buf_ptr + 1 + i);
+      if ch == '\n' {
+        if my >= cy && my < cy + lh {
+          best = i;
+          found = true;
+          break;
+        }
+        cx = x;
+        cy += lh;
+        i += 1;
+      } else if ch == ' ' {
+        let sp = glyph_px(' ', size, style);
+        if cx > x && cx + sp <= x + mw {
+          if my >= cy && my < cy + lh && mx < cx + sp / 2 {
+            best = i;
+            found = true;
+            break;
+          }
+          cx += sp;
+        }
+        i += 1;
+      } else {
+        let ww = tbuf_measure_word_px(buf_ptr, i, n, size, style);
+        if cx > x && cx + ww > x + mw {
+          if my >= cy && my < cy + lh {
+            best = i;
+            found = true;
+            break;
+          }
+          cx = x;
+          cy += lh;
+        }
+        while i < n max 96 {
+          let c2 = mem_load(buf_ptr + 1 + i);
+          if c2 == ' ' || c2 == '\n' { break; }
+          let adv = glyph_px(c2, size, style);
+          if cx + adv > x + mw && cx > x {
+            if my >= cy && my < cy + lh {
+              best = i;
+              found = true;
+              break;
+            }
+            cx = x;
+            cy += lh;
+          }
+          if my >= cy && my < cy + lh && mx < cx + adv / 2 {
+            best = i;
+            found = true;
+            break;
+          }
+          cx += adv;
+          i += 1;
+        }
+      }
+    }
+    best
+  }
+}
+
+// Draw wrapped UTF-32 text buffer with optional selection [sel_lo, sel_hi) and caret (cursor_pos >= 0).
+fn tbuf_draw_wrapped(
+  buf_ptr: i64, max_cap: i64, x: i64, y: i64, max_w: i64,
+  size: i64, line_h: i64, style: i64, fg: i64,
+  sel_lo: i64, sel_hi: i64, sel_bg: i64,
+  cursor_pos: i64, cursor_col: i64,
+  clip: i64, vis_y0: i64, vis_y1: i64
+) -[Mem]-> i64 {
+  let cap = clamp_i64(max_cap, 1, 32768);
+  let n = clamp_i64(mem_load(buf_ptr), 0, cap);
+  let mw = clamp_i64(max_w, 40, 4000);
+  let lh = clamp_i64(line_h, 10, 96);
+  let mut cx = x;
+  let mut cy = y;
+  let mut i = 0;
+  let mut caret_drawn = false;
+  while i < n max 32768 {
+    if cursor_pos == i && !caret_drawn {
+      if cy + lh >= vis_y0 && cy <= vis_y1 {
+        ui_rect(cx, cy, 2, size + 2, 1, 0, 0, cursor_col, 0, clip);
+      }
+      caret_drawn = true;
+    }
+    let ch = mem_load(buf_ptr + 1 + i);
+    if ch == '\n' {
+      if i >= sel_lo && i < sel_hi && cy + lh >= vis_y0 && cy <= vis_y1 {
+        ui_rect(cx, cy - 1, 6, lh, 0, 0, 0, sel_bg, 0, clip);
+      }
+      cx = x;
+      cy += lh;
+      i += 1;
+    } else if ch == ' ' {
+      let sp = glyph_px(' ', size, style);
+      if cx > x && cx + sp <= x + mw {
+        if i >= sel_lo && i < sel_hi && cy + lh >= vis_y0 && cy <= vis_y1 {
+          ui_rect(cx, cy - 1, sp, lh, 0, 0, 0, sel_bg, 0, clip);
+        }
+        cx += sp;
+      }
+      i += 1;
+    } else {
+      let ww = tbuf_measure_word_px(buf_ptr, i, n, size, style);
+      if cx > x && cx + ww > x + mw {
+        cx = x;
+        cy += lh;
+      }
+      while i < n max 96 {
+        if cursor_pos == i && !caret_drawn {
+          if cy + lh >= vis_y0 && cy <= vis_y1 {
+            ui_rect(cx, cy, 2, size + 2, 1, 0, 0, cursor_col, 0, clip);
+          }
+          caret_drawn = true;
+        }
+        let c2 = mem_load(buf_ptr + 1 + i);
+        if c2 == ' ' || c2 == '\n' { break; }
+        let adv = glyph_px(c2, size, style);
+        if cx + adv > x + mw && cx > x {
+          cx = x;
+          cy += lh;
+        }
+        if cy + lh >= vis_y0 && cy <= vis_y1 {
+          if i >= sel_lo && i < sel_hi {
+            ui_rect(cx, cy - 1, adv, lh, 0, 0, 0, sel_bg, 0, clip);
+          }
+          ui_glyph(cx, cy, c2, size, style, fg, clip);
+        }
+        cx += adv;
+        i += 1;
+      }
+    }
+  }
+  if cursor_pos == n && !caret_drawn && cy + lh >= vis_y0 && cy <= vis_y1 {
+    ui_rect(cx, cy, 2, size + 2, 1, 0, 0, cursor_col, 0, clip);
+  }
+  (cy - y) + lh
+}

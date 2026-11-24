@@ -1,0 +1,180 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/math.ifm
+// Pure Z3-verified integer math, clamping, fixed-point easing (0..1000), geometry, and RNG.
+
+fn clamp_i64(v: i64, lo: i64, hi: i64) -> i64
+  req lo <= hi
+  ens result >= lo && result <= hi
+{
+  if v < lo { lo } else if v > hi { hi } else { v }
+}
+
+fn clamp_byte(v: i64) -> i64
+  ens result >= 0 && result <= 255
+{
+  if v < 0 { 0 } else if v > 255 { 255 } else { v }
+}
+
+fn min_i64(a: i64, b: i64) -> i64
+  ens result <= a && result <= b
+{
+  if a < b { a } else { b }
+}
+
+fn max_i64(a: i64, b: i64) -> i64
+  ens result >= a && result >= b
+{
+  if a > b { a } else { b }
+}
+
+fn abs_i64(v: i64) -> i64
+  ens result >= 0
+{
+  if v < 0 { -v } else { v }
+}
+
+fn point_in_rect(px: i64, py: i64, rx: i64, ry: i64, rw: i64, rh: i64) -> bool {
+  px >= rx && px < rx + rw && py >= ry && py < ry + rh
+}
+
+fn lerp_i64(a: i64, b: i64, t1000: i64) -> i64 {
+  let t = clamp_i64(t1000, 0, 1000);
+  a + ((b - a) * t) / 1000
+}
+
+fn ease_out_quad(t1000: i64) -> i64
+  ens result >= 0 && result <= 1000
+{
+  let t = clamp_i64(t1000, 0, 1000);
+  let inv = 1000 - t;
+  clamp_i64(1000 - (inv * inv) / 1000, 0, 1000)
+}
+
+fn ease_out_cubic(t1000: i64) -> i64
+  ens result >= 0 && result <= 1000
+{
+  let t = clamp_i64(t1000, 0, 1000);
+  let inv = 1000 - t;
+  let inv2 = (inv * inv) / 1000;
+  let inv3 = (inv2 * inv) / 1000;
+  clamp_i64(1000 - inv3, 0, 1000)
+}
+
+fn ease_in_out_quad(t1000: i64) -> i64
+  ens result >= 0 && result <= 1000
+{
+  let t = clamp_i64(t1000, 0, 1000);
+  if t < 500 {
+    clamp_i64((2 * t * t) / 1000, 0, 1000)
+  } else {
+    let inv = 1000 - t;
+    clamp_i64(1000 - (2 * inv * inv) / 1000, 0, 1000)
+  }
+}
+
+fn rng_next(seed: i64) -> i64 {
+  let s = (seed * 1103515245 + 12345) & 2147483647;
+  if s == 0 { 1234567 } else { s }
+}
+
+fn rng_range(seed: i64, bound: i64) -> i64
+  req bound > 0
+  ens result >= 0 && result < bound
+{
+  let v = abs_i64(seed) % bound;
+  clamp_i64(v, 0, bound - 1)
+}
+
+// Pure Z3-verified integer square root (up to 2^28).
+fn isqrt(n: i64) -> i64
+  ens result >= 0
+{
+  if n <= 0 {
+    0
+  } else {
+    let mut x = n;
+    let mut res = 0;
+    let mut bit = 16777216;
+    while bit > x max 14 {
+      bit = bit >> 2;
+    }
+    while bit > 0 max 14 {
+      if x >= res + bit {
+        x = x - (res + bit);
+        res = (res >> 1) + bit;
+      } else {
+        res = res >> 1;
+      };
+      bit = bit >> 2;
+    }
+    if res < 0 { 0 } else { res }
+  }
+}
+
+// Pure fixed-point sine: ang in 0..4095 (full circle = 4096), returns -1024..1024.
+fn sin_1024(ang: i64) -> i64
+  ens result >= -1024 && result <= 1024
+{
+  let a = ang & 4095;
+  let neg = a >= 2048;
+  let i = if neg { a - 2048 } else { a };
+  let p = i * (2048 - i);
+  let p_shr = p >> 8;
+  let denom = 81920 - ((4 * p) >> 8);
+  let s = if denom > 0 { (16 * p_shr * 1024) / denom } else { 0 };
+  let mag = clamp_i64(s, 0, 1024);
+  if neg { -mag } else { mag }
+}
+
+// Pure fixed-point cosine: ang in 0..4095 (full circle = 4096), returns -1024..1024.
+fn cos_1024(ang: i64) -> i64
+  ens result >= -1024 && result <= 1024
+{
+  sin_1024(ang + 1024)
+}
+
+// --- Deterministic Q16.16 `fixed` helpers (Z3-verified, zero float drift) ---
+
+fn fixed_abs(x: fixed) -> fixed
+  ens result >= 0.0
+{
+  if x < 0.0 { -x } else { x }
+}
+
+fn fixed_min(a: fixed, b: fixed) -> fixed
+  ens result <= a && result <= b
+{
+  if a < b { a } else { b }
+}
+
+fn fixed_max(a: fixed, b: fixed) -> fixed
+  ens result >= a && result >= b
+{
+  if a > b { a } else { b }
+}
+
+fn fixed_clamp(v: fixed, lo: fixed, hi: fixed) -> fixed
+  req lo <= hi
+  ens result >= lo && result <= hi
+{
+  if v < lo { lo } else if v > hi { hi } else { v }
+}
+
+fn fixed_lerp(a: fixed, b: fixed, t: fixed) -> fixed {
+  a + (b - a) * t
+}
+
+// Q16.16 sine/cosine: ang in 0..4095 -> fixed in -1.0..=1.0 (1024 * 64 == 65536 == 1.0)
+fn fixed_sin(ang: i64) -> fixed
+  ens result >= -1.0 && result <= 1.0
+{
+  fixed_from_raw(sin_1024(ang) * 64)
+}
+
+fn fixed_cos(ang: i64) -> fixed
+  ens result >= -1.0 && result <= 1.0
+{
+  fixed_from_raw(cos_1024(ang) * 64)
+}

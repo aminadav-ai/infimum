@@ -1,0 +1,190 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/mesh3d.ifm
+// Native Vulkan/wgpu 3D Mesh + Dynamic Point Lights + Procedural Sky Pipeline.
+// Zero CPU projection or manual clipping: GPU performs hardware 4x4 MVP, frustum
+// clipping, Depth32Float Z-buffering, 3D normal lighting & 24 dynamic point lights!
+
+use "std/math.ifm";
+use "std/color.ifm";
+use "std/gfx.ifm";
+
+const MESH3D_MAGIC: i64 = 1028866894;
+const MESH3D_MAX_VERTS: i64 = 120000;
+const MESH3D_MAX_VM_VERTS: i64 = 6000;
+const MESH3D_MAX_LIGHTS: i64 = 24;
+
+// Auto-placed non-overlapping 3D Mesh + Lights + VBO layout (zero collisions with user layouts;
+// 2D/UI capsules that don't import `std/mesh3d.ifm` pay 0 bytes; compiler auto-exports
+// `get_mesh3d_byte_offset()` for `infimum-web` and Online Studio).
+layout Mesh3dMem {
+  hdr: words[100],      // +0
+  lights: words[900],   // +100   (24 lights * 8 words)
+  vbo: words[960000],   // +1000  (120,000 world verts * 8 words)
+  vm_vbo: words[48000], // +961000 (6,000 viewmodel verts * 8 words)
+}
+
+fn mesh3d_begin(
+  cam_x: i64, cam_y: i64, cam_z: i64,
+  yaw: i64, pitch: i64, fov_deg: i64,
+  sky_mode: i64, fog_mode: i64
+) -[Mem]-> unit {
+  mem_store(Mesh3dMem::hdr, MESH3D_MAGIC);
+  mem_store(Mesh3dMem::hdr + 1, cam_x);
+  mem_store(Mesh3dMem::hdr + 2, cam_y);
+  mem_store(Mesh3dMem::hdr + 3, cam_z);
+  mem_store(Mesh3dMem::hdr + 4, yaw);
+  mem_store(Mesh3dMem::hdr + 5, clamp_i64(pitch, -240, 240));
+  mem_store(Mesh3dMem::hdr + 6, clamp_i64(fov_deg, 45, 110));
+  mem_store(Mesh3dMem::hdr + 7, sky_mode);
+  mem_store(Mesh3dMem::hdr + 8, fog_mode);
+  mem_store(Mesh3dMem::hdr + 9, 0);
+  mem_store(Mesh3dMem::hdr + 10, 0);
+  mem_store(Mesh3dMem::hdr + 11, 0);
+}
+
+fn mesh3d_add_light(x: i64, y: i64, z: i64, rad: i64, r: i64, g: i64, b: i64, inten: i64) -[Mem]-> unit {
+  let n = mem_load(Mesh3dMem::hdr + 10);
+  if n >= 0 && n < MESH3D_MAX_LIGHTS {
+    let base = Mesh3dMem::lights + n * 8;
+    mem_store(base, x);
+    mem_store(base + 1, y);
+    mem_store(base + 2, z);
+    mem_store(base + 3, rad);
+    mem_store(base + 4, clamp_i64(r, 0, 255));
+    mem_store(base + 5, clamp_i64(g, 0, 255));
+    mem_store(base + 6, clamp_i64(b, 0, 255));
+    mem_store(base + 7, clamp_i64(inten, 0, 512));
+    mem_store(Mesh3dMem::hdr + 10, n + 1);
+  }
+}
+
+fn mesh3d_pack_nm(nx: i64, ny: i64, nz: i64, mat: i64) -> i64 {
+  let bx = clamp_i64(nx + 128, 0, 255);
+  let by = clamp_i64(ny + 128, 0, 255);
+  let bz = clamp_i64(nz + 128, 0, 255);
+  let bm = clamp_i64(mat, 0, 15);
+  bx | (by << 8) | (bz << 16) | (bm << 24)
+}
+
+fn mesh3d_push_vert(
+  is_vm: i64, x: i64, y: i64, z: i64, nm: i64, u: i64, v: i64, rgba: i64, flags_ao: i64
+) -[Mem]-> unit {
+  let cnt_word = if is_vm == 1 { Mesh3dMem::hdr + 11 } else { Mesh3dMem::hdr + 9 };
+  let max_v = if is_vm == 1 { MESH3D_MAX_VM_VERTS } else { MESH3D_MAX_VERTS };
+  let base_vbo = if is_vm == 1 { Mesh3dMem::vm_vbo } else { Mesh3dMem::vbo };
+  let idx = mem_load(cnt_word);
+  if idx >= 0 && idx < max_v {
+    let b = base_vbo + idx * 8;
+    mem_store(b, x);
+    mem_store(b + 1, y);
+    mem_store(b + 2, z);
+    mem_store(b + 3, nm);
+    mem_store(b + 4, u);
+    mem_store(b + 5, v);
+    mem_store(b + 6, rgba);
+    mem_store(b + 7, flags_ao);
+    mem_store(cnt_word, idx + 1);
+  }
+}
+
+fn mesh3d_quad(
+  is_vm: i64,
+  x0: i64, y0: i64, z0: i64, u0: i64, v0: i64,
+  x1: i64, y1: i64, z1: i64, u1: i64, v1: i64,
+  x2: i64, y2: i64, z2: i64, u2: i64, v2: i64,
+  x3: i64, y3: i64, z3: i64, u3: i64, v3: i64,
+  nx: i64, ny: i64, nz: i64, mat: i64, rgba: i64, ao: i64, emissive: i64
+) -[Mem]-> unit {
+  let nm = mesh3d_pack_nm(nx, ny, nz, mat);
+  let fa = clamp_i64(ao, 0, 255) | (if emissive != 0 { 256 } else { 0 });
+  mesh3d_push_vert(is_vm, x0, y0, z0, nm, u0, v0, rgba, fa);
+  mesh3d_push_vert(is_vm, x1, y1, z1, nm, u1, v1, rgba, fa);
+  mesh3d_push_vert(is_vm, x2, y2, z2, nm, u2, v2, rgba, fa);
+  mesh3d_push_vert(is_vm, x0, y0, z0, nm, u0, v0, rgba, fa);
+  mesh3d_push_vert(is_vm, x2, y2, z2, nm, u2, v2, rgba, fa);
+  mesh3d_push_vert(is_vm, x3, y3, z3, nm, u3, v3, rgba, fa);
+}
+
+// Axis-aligned 3D box (6 faces, exact outward normals, automatic world-scale UVs)
+fn mesh3d_box(
+  is_vm: i64,
+  x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64,
+  mat: i64, rgba: i64, ao: i64, emissive: i64, uv_scale: i64
+) -[Mem]-> unit {
+  let sc = if uv_scale > 0 { uv_scale } else { 1000 };
+  let ux = clamp_i64(((x1 - x0) * 1024) / sc, 16, 32768);
+  let uy = clamp_i64(((y1 - y0) * 1024) / sc, 16, 32768);
+  let uz = clamp_i64(((z1 - z0) * 1024) / sc, 16, 32768);
+  // +Z front
+  mesh3d_quad(is_vm, x0, y1, z1, 0, 0, x1, y1, z1, ux, 0, x1, y0, z1, ux, uy, x0, y0, z1, 0, uy, 0, 0, 127, mat, rgba, ao, emissive);
+  // -Z back
+  mesh3d_quad(is_vm, x1, y1, z0, 0, 0, x0, y1, z0, ux, 0, x0, y0, z0, ux, uy, x1, y0, z0, 0, uy, 0, 0, -127, mat, rgba, ao, emissive);
+  // -X left
+  mesh3d_quad(is_vm, x0, y1, z0, 0, 0, x0, y1, z1, uz, 0, x0, y0, z1, uz, uy, x0, y0, z0, 0, uy, -127, 0, 0, mat, rgba, ao, emissive);
+  // +X right
+  mesh3d_quad(is_vm, x1, y1, z1, 0, 0, x1, y1, z0, uz, 0, x1, y0, z0, uz, uy, x1, y0, z1, 0, uy, 127, 0, 0, mat, rgba, ao, emissive);
+  // +Y top
+  mesh3d_quad(is_vm, x0, y1, z0, 0, 0, x1, y1, z0, ux, 0, x1, y1, z1, ux, uz, x0, y1, z1, 0, uz, 0, 127, 0, mat, rgba, ao, emissive);
+  // -Y bottom
+  mesh3d_quad(is_vm, x0, y0, z1, 0, 0, x1, y0, z1, ux, 0, x1, y0, z0, ux, uz, x0, y0, z0, 0, uz, 0, -127, 0, mat, rgba, ao, emissive);
+}
+
+// Y-rotated 3D limb box (for articulated 3D monsters, arms, legs, heads, horns, rotating pickups!)
+fn mesh3d_limb(
+  cx: i64, cy: i64, cz: i64, yaw: i64,
+  lx0: i64, ly0: i64, lz0: i64, lx1: i64, ly1: i64, lz1: i64,
+  mat: i64, rgba: i64, ao: i64, emissive: i64
+) -[Mem]-> unit {
+  let c = cos_1024(yaw);
+  let s = sin_1024(yaw);
+  // 4 XZ corners rotated around Y
+  let ax = cx + (lx0 * c + lz0 * s) / 1024;
+  let az = cz + (lz0 * c - lx0 * s) / 1024;
+  let bx = cx + (lx1 * c + lz0 * s) / 1024;
+  let bz = cz + (lz0 * c - lx1 * s) / 1024;
+  let dx = cx + (lx1 * c + lz1 * s) / 1024;
+  let dz = cz + (lz1 * c - lx1 * s) / 1024;
+  let ex = cx + (lx0 * c + lz1 * s) / 1024;
+  let ez = cz + (lz1 * c - lx0 * s) / 1024;
+  let y0 = cy + ly0;
+  let y1 = cy + ly1;
+
+  // Rotated outward normals
+  let f_nx = (127 * s) / 1024;
+  let f_nz = (127 * c) / 1024;
+  let r_nx = (127 * c) / 1024;
+  let r_nz = (0 - 127 * s) / 1024;
+
+  // Front (+Z local)
+  mesh3d_quad(0, ex, y1, ez, 0, 0, dx, y1, dz, 1024, 0, dx, y0, dz, 1024, 1024, ex, y0, ez, 0, 1024, f_nx, 0, f_nz, mat, rgba, ao, emissive);
+  // Back (-Z local)
+  mesh3d_quad(0, bx, y1, bz, 0, 0, ax, y1, az, 1024, 0, ax, y0, az, 1024, 1024, bx, y0, bz, 0, 1024, -f_nx, 0, -f_nz, mat, rgba, ao, emissive);
+  // Right (+X local)
+  mesh3d_quad(0, dx, y1, dz, 0, 0, bx, y1, bz, 1024, 0, bx, y0, bz, 1024, 1024, dx, y0, dz, 0, 1024, r_nx, 0, r_nz, mat, rgba, ao, emissive);
+  // Left (-X local)
+  mesh3d_quad(0, ax, y1, az, 0, 0, ex, y1, ez, 1024, 0, ex, y0, ez, 1024, 1024, ax, y0, az, 0, 1024, -r_nx, 0, -r_nz, mat, rgba, ao, emissive);
+  // Top (+Y)
+  mesh3d_quad(0, ax, y1, az, 0, 0, bx, y1, bz, 1024, 0, dx, y1, dz, 1024, 1024, ex, y1, ez, 0, 1024, 0, 127, 0, mat, rgba, ao, emissive);
+  // Bottom (-Y)
+  mesh3d_quad(0, ex, y0, ez, 0, 0, dx, y0, dz, 1024, 0, bx, y0, bz, 1024, 1024, ax, y0, az, 0, 1024, 0, -127, 0, mat, rgba, ao, emissive);
+}
+
+// Sloped architectural roof rafter / diagonal beam spanning (x0,y0) -> (x1,y1) at z=[z0..z1]
+fn mesh3d_rafter_x(
+  x0: i64, y0: i64, x1: i64, y1: i64, z0: i64, z1: i64, thick_y: i64,
+  mat: i64, rgba: i64, ao: i64
+) -[Mem]-> unit {
+  let u_len = clamp_i64(((abs_i64(x1 - x0) + abs_i64(y1 - y0)) * 1024) / 1400, 512, 16384);
+  let v_h = clamp_i64((thick_y * 1024) / 1200, 256, 4096);
+  let v_z = clamp_i64(((z1 - z0) * 1024) / 1200, 256, 4096);
+  // Front (+Z)
+  mesh3d_quad(0, x0, y0 + thick_y, z1, 0, 0, x1, y1 + thick_y, z1, u_len, 0, x1, y1, z1, u_len, v_h, x0, y0, z1, 0, v_h, 0, 0, 127, mat, rgba, ao, 0);
+  // Back (-Z)
+  mesh3d_quad(0, x1, y1 + thick_y, z0, 0, 0, x0, y0 + thick_y, z0, u_len, 0, x0, y0, z0, u_len, v_h, x1, y1, z0, 0, v_h, 0, 0, -127, mat, rgba, ao, 0);
+  // Underside (-Y)
+  mesh3d_quad(0, x0, y0, z1, 0, 0, x1, y1, z1, u_len, 0, x1, y1, z0, u_len, v_z, x0, y0, z0, 0, v_z, 0, -127, 0, mat, rgba, ao, 0);
+  // Top (+Y)
+  mesh3d_quad(0, x0, y0 + thick_y, z0, 0, 0, x1, y1 + thick_y, z0, u_len, 0, x1, y1 + thick_y, z1, u_len, v_z, x0, y0 + thick_y, z1, 0, v_z, 0, 127, 0, mat, rgba, ao, 0);
+}

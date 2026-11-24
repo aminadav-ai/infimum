@@ -1,0 +1,454 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM COLOR LINES 98 — Z3-Verified Rules, BFS Pathfinding, Time-Travel & Audio
+// Written with typed Infimum structs & indexed layout arrays (zero raw mem_load/mem_store!).
+
+use "abi.ifm";
+
+// --- Layer 1: Z3-Verified Pure Telos Kernels ---
+
+fn valid_coord(c: i64) -> bool
+  ens result == (c >= 0 && c < 9)
+{
+  c >= 0 && c < 9
+}
+
+fn cell_index(row: i64, col: i64) -> i64
+  req row >= 0 && row < 9 && col >= 0 && col < 9
+  ens result >= 0 && result < 81
+{
+  row * 9 + col
+}
+
+fn compute_line_points(cleared: i64) -> i64
+  req cleared >= 5 && cleared <= 81
+  ens result >= 10 && result <= 15000
+{
+  let extra = cleared - 5;
+  10 + extra * 4 + extra * extra * 2
+}
+
+// --- Deterministic PRNG & Board Helpers ---
+
+fn next_rand() -[Mem]-> i64 {
+  let s = GameMem.rng_state;
+  let nxt = (s * 1103515245 + 12345) & 2147483647;
+  let safe = if nxt == 0 { 1357911 } else { nxt };
+  GameMem.rng_state = safe;
+  safe
+}
+
+fn rand_color() -[Mem]-> i64
+  ens result >= 1 && result <= 7
+{
+  let r = next_rand();
+  clamp_i64(1 + (r - (r / 7) * 7), 1, 7)
+}
+
+fn roll_next_preview() -[Mem]-> unit {
+  GameMem.next_colors[0] = rand_color();
+  GameMem.next_colors[1] = rand_color();
+  GameMem.next_colors[2] = rand_color();
+}
+
+fn count_balls() -[Mem]-> i64 {
+  let mut cnt = 0;
+  for i in 0..81 {
+    if GameMem.cells[i].color > 0 { cnt += 1; }
+  }
+  let safe_cnt = clamp_i64(cnt, 0, 81);
+  GameMem.balls_count = safe_cnt;
+  safe_cnt
+}
+
+fn save_turn_snapshot(slot: i64) -[Mem]-> unit {
+  let s = clamp_i64(slot, 0, 127);
+  GameMem.snap_meta[s].score = GameMem.score;
+  GameMem.snap_meta[s].turn_num = GameMem.turn_num;
+  GameMem.snap_meta[s].game_over = GameMem.game_over;
+  GameMem.snap_meta[s].rng_state = GameMem.rng_state;
+  GameMem.snap_meta[s].next0 = GameMem.next_colors[0];
+  GameMem.snap_meta[s].next1 = GameMem.next_colors[1];
+  GameMem.snap_meta[s].next2 = GameMem.next_colors[2];
+  let board_base = s * BOARD_CELLS;
+  for i in 0..81 {
+    GameMem.snap_boards[board_base + i] = GameMem.cells[i].color;
+  }
+  if s > GameMem.max_saved_turn {
+    GameMem.max_saved_turn = s;
+  }
+}
+
+fn rewind_to_turn(turn_idx: i64) -[Mem, Gpu]-> unit {
+  let max_t = clamp_i64(GameMem.max_saved_turn, 0, 127);
+  let s = clamp_i64(turn_idx, 0, max_t);
+
+  GameMem.score = GameMem.snap_meta[s].score;
+  GameMem.turn_num = GameMem.snap_meta[s].turn_num;
+  GameMem.game_over = GameMem.snap_meta[s].game_over;
+  GameMem.rng_state = GameMem.snap_meta[s].rng_state;
+  GameMem.next_colors[0] = GameMem.snap_meta[s].next0;
+  GameMem.next_colors[1] = GameMem.snap_meta[s].next1;
+  GameMem.next_colors[2] = GameMem.snap_meta[s].next2;
+  GameMem.selected_idx = -1;
+  GameMem.status_code = 0;
+  GameMem.anim.blocked_idx = -1;
+  GameMem.anim.blocked_timer = 0;
+  GameMem.anim.mode = AnimMode::Idle;
+
+  let board_base = s * BOARD_CELLS;
+  for i in 0..81 {
+    GameMem.cells[i].color = GameMem.snap_boards[board_base + i];
+    GameMem.cells[i].clear_mark = 0;
+  }
+  let _ = count_balls();
+  sfx_play(SFX_CLICK, 85, 60);
+}
+
+// --- 4-Direction Line Detection (5+ in a row) ---
+
+fn mark_direction(sr: i64, sc: i64, dr: i64, dc: i64) -[Mem]-> unit {
+  if valid_coord(sr) && valid_coord(sc) {
+    let start_idx = cell_index(sr, sc);
+    let col_id = GameMem.cells[start_idx].color;
+    if col_id > 0 {
+      let mut len = 0;
+      let mut r = sr;
+      let mut c = sc;
+      while r >= 0 && r < 9 && c >= 0 && c < 9 max 9 {
+        let idx = cell_index(r, c);
+        if GameMem.cells[idx].color == col_id {
+          len += 1;
+          r += dr;
+          c += dc;
+        } else {
+          break;
+        }
+      }
+      if len >= 5 {
+        let mut mr = sr;
+        let mut mc = sc;
+        for _k in 0..len max 9 {
+          if mr >= 0 && mr < 9 && mc >= 0 && mc < 9 {
+            let midx = cell_index(mr, mc);
+            GameMem.cells[midx].clear_mark = 1;
+            mr += dr;
+            mc += dc;
+          } else {
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
+fn find_marked_lines() -[Mem]-> i64 {
+  for i in 0..81 {
+    GameMem.cells[i].clear_mark = 0;
+  }
+  for r in 0..9 {
+    for c in 0..9 {
+      mark_direction(r, c, 0, 1);
+      mark_direction(r, c, 1, 0);
+      mark_direction(r, c, 1, 1);
+      mark_direction(r, c, 1, -1);
+    }
+  }
+  let mut marked = 0;
+  for j in 0..81 {
+    if GameMem.cells[j].clear_mark == 1 { marked += 1; }
+  }
+  marked
+}
+
+fn apply_marked_clear() -[Mem]-> i64 {
+  let mut cleared = 0;
+  for j in 0..81 {
+    if GameMem.cells[j].clear_mark == 1 {
+      GameMem.cells[j].color = 0;
+      GameMem.cells[j].clear_mark = 0;
+      cleared += 1;
+    }
+  }
+  if cleared >= 5 && cleared <= 81 {
+    let pts = compute_line_points(cleared);
+    let new_score = GameMem.score + pts;
+    GameMem.score = new_score;
+    GameMem.anim.last_clear_pts = pts;
+    GameMem.anim.last_clear_timer = 45;
+    if new_score > GameMem.high_score {
+      GameMem.high_score = new_score;
+    }
+  }
+  let _ = count_balls();
+  cleared
+}
+
+// --- BFS Shortest Path Reconstruction ---
+
+fn bfs_build_path(src_idx: i64, dst_idx: i64) -[Mem]-> bool {
+  if src_idx == dst_idx || GameMem.cells[dst_idx].color != 0 {
+    false
+  } else {
+    for i in 0..81 {
+      GameMem.cells[i].bfs_vis = 0;
+      GameMem.cells[i].bfs_par = -1;
+    }
+    let mut q_head = 0;
+    let mut q_tail = 1;
+    GameMem.bfs_q[0] = src_idx;
+    GameMem.cells[src_idx].bfs_vis = 1;
+    let mut found = false;
+
+    while q_head < q_tail && !found max 81 {
+      let cur = GameMem.bfs_q[q_head];
+      q_head += 1;
+      let cr = cur / 9;
+      let cc = cur - cr * 9;
+
+      if cr > 0 {
+        let up = (cr - 1) * 9 + cc;
+        if GameMem.cells[up].bfs_vis == 0 && (up == dst_idx || GameMem.cells[up].color == 0) {
+          GameMem.cells[up].bfs_vis = 1;
+          GameMem.cells[up].bfs_par = cur;
+          GameMem.bfs_q[q_tail] = up;
+          q_tail += 1;
+          if up == dst_idx { found = true; }
+        }
+      }
+      if cr < 8 && !found {
+        let dn = (cr + 1) * 9 + cc;
+        if GameMem.cells[dn].bfs_vis == 0 && (dn == dst_idx || GameMem.cells[dn].color == 0) {
+          GameMem.cells[dn].bfs_vis = 1;
+          GameMem.cells[dn].bfs_par = cur;
+          GameMem.bfs_q[q_tail] = dn;
+          q_tail += 1;
+          if dn == dst_idx { found = true; }
+        }
+      }
+      if cc > 0 && !found {
+        let lf = cr * 9 + (cc - 1);
+        if GameMem.cells[lf].bfs_vis == 0 && (lf == dst_idx || GameMem.cells[lf].color == 0) {
+          GameMem.cells[lf].bfs_vis = 1;
+          GameMem.cells[lf].bfs_par = cur;
+          GameMem.bfs_q[q_tail] = lf;
+          q_tail += 1;
+          if lf == dst_idx { found = true; }
+        }
+      }
+      if cc < 8 && !found {
+        let rt = cr * 9 + (cc + 1);
+        if GameMem.cells[rt].bfs_vis == 0 && (rt == dst_idx || GameMem.cells[rt].color == 0) {
+          GameMem.cells[rt].bfs_vis = 1;
+          GameMem.cells[rt].bfs_par = cur;
+          GameMem.bfs_q[q_tail] = rt;
+          q_tail += 1;
+          if rt == dst_idx { found = true; }
+        }
+      }
+    }
+
+    if found {
+      let mut steps = 0;
+      let mut walk = dst_idx;
+      while walk >= 0 && walk != src_idx max 81 {
+        steps += 1;
+        walk = GameMem.cells[walk].bfs_par;
+      }
+      let total_nodes = steps + 1;
+      GameMem.anim.path_len = total_nodes;
+      let mut pos = total_nodes - 1;
+      let mut cur_back = dst_idx;
+      while pos >= 0 && cur_back >= 0 max 82 {
+        GameMem.path[pos] = cur_back;
+        cur_back = GameMem.cells[cur_back].bfs_par;
+        pos -= 1;
+      }
+      true
+    } else {
+      false
+    }
+  }
+}
+
+// --- Spawning, Turn Progression & Game Lifecycle ---
+
+fn spawn_one_ball(color_id: i64) -[Mem]-> bool {
+  let mut empty_cnt = 0;
+  for i in 0..81 {
+    if GameMem.cells[i].color == 0 {
+      GameMem.empty_list[empty_cnt] = i;
+      empty_cnt += 1;
+    }
+  }
+  if empty_cnt <= 0 {
+    false
+  } else {
+    let r = next_rand();
+    let pick = r - (r / empty_cnt) * empty_cnt;
+    let target_cell = GameMem.empty_list[pick];
+    GameMem.cells[target_cell].color = color_id;
+    true
+  }
+}
+
+fn finalize_turn_and_save() -[Mem, Gpu]-> unit {
+  if count_balls() >= 81 {
+    GameMem.game_over = 1;
+    GameMem.status_code = 3;
+    sfx_tone(220, 420, 3);
+  } else {
+    GameMem.status_code = 1;
+  }
+  let next_turn = clamp_i64(GameMem.turn_num + 1, 0, 127);
+  GameMem.turn_num = next_turn;
+  GameMem.max_saved_turn = next_turn;
+  save_turn_snapshot(next_turn);
+}
+
+fn spawn_preview_triplet() -[Mem, Gpu]-> unit {
+  let _ = spawn_one_ball(GameMem.next_colors[0]);
+  let _ = spawn_one_ball(GameMem.next_colors[1]);
+  let _ = spawn_one_ball(GameMem.next_colors[2]);
+  roll_next_preview();
+  sfx_spawn();
+  let marked = find_marked_lines();
+  if marked >= 5 {
+    GameMem.anim.mode = AnimMode::Exploding;
+    GameMem.anim.explode_timer = 14;
+    sfx_clear();
+    sfx_tone(660 + marked * 40, 260, 3);
+  } else {
+    finalize_turn_and_save();
+  }
+}
+
+fn reset_game(seed: i64) -[Mem, Gpu]-> unit {
+  let prev_best = GameMem.high_score;
+  let clean_seed = if seed <= 0 { 981998 } else { seed & 2147483647 };
+  GameMem.score = 0;
+  GameMem.high_score = prev_best;
+  GameMem.turn_num = 0;
+  GameMem.selected_idx = -1;
+  GameMem.status_code = 0;
+  GameMem.game_over = 0;
+  GameMem.rng_state = clean_seed;
+  GameMem.anim_tick = 0;
+  GameMem.max_saved_turn = 0;
+  GameMem.hover_idx = -1;
+  GameMem.anim.mode = AnimMode::Idle;
+  GameMem.anim.hop_color = 0;
+  GameMem.anim.path_len = 0;
+  GameMem.anim.hop_step = 0;
+  GameMem.anim.hop_sub = 0;
+  GameMem.anim.explode_timer = 0;
+  GameMem.anim.blocked_idx = -1;
+  GameMem.anim.blocked_timer = 0;
+  GameMem.anim.last_clear_pts = 0;
+  GameMem.anim.last_clear_timer = 0;
+
+  for i in 0..81 {
+    GameMem.cells[i].color = 0;
+    GameMem.cells[i].clear_mark = 0;
+  }
+
+  roll_next_preview();
+  for _k in 0..5 {
+    let _ = spawn_one_ball(rand_color());
+  }
+  let _ = count_balls();
+  save_turn_snapshot(0);
+}
+
+fn handle_cell_click(row: i64, col: i64) -[Mem, Gpu]-> unit {
+  if GameMem.anim.mode == AnimMode::Idle && GameMem.game_over == 0 && valid_coord(row) && valid_coord(col) {
+    GameMem.anim.blocked_idx = -1;
+    GameMem.anim.blocked_timer = 0;
+    let idx = cell_index(row, col);
+    let cell_val = GameMem.cells[idx].color;
+    let sel = GameMem.selected_idx;
+
+    if cell_val > 0 {
+      if sel == idx {
+        GameMem.selected_idx = -1;
+        sfx_play(SFX_CLICK, 80, 55);
+      } else {
+        GameMem.selected_idx = idx;
+        sfx_play(SFX_CLICK, 115, 75);
+      }
+      GameMem.status_code = 0;
+    } else if sel >= 0 && sel < 81 {
+      if bfs_build_path(sel, idx) {
+        let moving_color = GameMem.cells[sel].color;
+        GameMem.cells[sel].color = 0;
+        GameMem.selected_idx = -1;
+        GameMem.anim.mode = AnimMode::Hopping;
+        GameMem.anim.hop_color = moving_color;
+        GameMem.anim.hop_step = 0;
+        GameMem.anim.hop_sub = 0;
+        GameMem.status_code = 1;
+        sfx_play(SFX_HOP, 95, 70);
+      } else {
+        GameMem.status_code = 2;
+        GameMem.anim.blocked_idx = idx;
+        GameMem.anim.blocked_timer = 24;
+        sfx_error();
+      }
+    }
+  }
+}
+
+fn tick_animations() -[Mem, Gpu]-> unit {
+  GameMem.anim_tick = (GameMem.anim_tick + 1) & 4095;
+  if GameMem.anim.blocked_timer > 0 {
+    GameMem.anim.blocked_timer -= 1;
+    if GameMem.anim.blocked_timer == 0 {
+      GameMem.anim.blocked_idx = -1;
+    }
+  }
+  if GameMem.anim.last_clear_timer > 0 {
+    GameMem.anim.last_clear_timer -= 1;
+  }
+
+  let mode = GameMem.anim.mode;
+  if mode == AnimMode::Hopping {
+    let sub = GameMem.anim.hop_sub + 1;
+    if sub < 5 {
+      GameMem.anim.hop_sub = sub;
+    } else {
+      GameMem.anim.hop_sub = 0;
+      let next_step = GameMem.anim.hop_step + 1;
+      let plen = GameMem.anim.path_len;
+      if next_step < plen - 1 {
+        GameMem.anim.hop_step = next_step;
+        sfx_play(SFX_HOP, clamp_i64(95 + next_step * 9, 80, 210), 65);
+      } else {
+        let dst_idx = GameMem.path[plen - 1];
+        GameMem.cells[dst_idx].color = GameMem.anim.hop_color;
+        GameMem.anim.mode = AnimMode::Idle;
+        sfx_clack();
+
+        let marked = find_marked_lines();
+        if marked >= 5 {
+          GameMem.anim.mode = AnimMode::Exploding;
+          GameMem.anim.explode_timer = 14;
+          sfx_clear();
+          sfx_tone(660 + marked * 45, 280, 3);
+        } else {
+          spawn_preview_triplet();
+        }
+      }
+    }
+  } else if mode == AnimMode::Exploding {
+    let rem = GameMem.anim.explode_timer - 1;
+    if rem > 0 {
+      GameMem.anim.explode_timer = rem;
+    } else {
+      let _ = apply_marked_clear();
+      GameMem.anim.mode = AnimMode::Idle;
+      finalize_turn_and_save();
+    }
+  }
+}

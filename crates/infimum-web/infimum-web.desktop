@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Infimum Code Native
+GenericName=Zero-Chromium AI-Native IDE
+Comment=Z3-Verified Infimum Code running natively on Vulkan/Wayland via infimum-web
+Exec=/home/aminadav/Projects/infimum-web/launch_native_studio.sh
+Icon=infimum-code-native
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=infimum-code-native
+StartupNotify=true

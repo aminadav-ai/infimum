@@ -1,0 +1,99 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/input.ifm
+// Real-time held-key state bitmask (layout-independent physical keys, written every frame
+// by infimum-web using `get_input_byte_offset()` at SYS_INPUT_BASE_WORD) for smooth 60 FPS games & 3D movement.
+
+use "std/sys_mem.ifm";
+
+const STD_KEYS_HELD_WORD: i64 = SYS_KEYS_HELD_WORD;
+const STD_MOUSE_DX_WORD: i64 = SYS_MOUSE_DX_WORD;
+const STD_MOUSE_DY_WORD: i64 = SYS_MOUSE_DY_WORD;
+const STD_POINTER_LOCK_WORD: i64 = SYS_POINTER_LOCK_WORD;
+
+const KEY_W: i64 = 1;
+const KEY_A: i64 = 2;
+const KEY_S: i64 = 4;
+const KEY_D: i64 = 8;
+const KEY_UP: i64 = 16;
+const KEY_DOWN: i64 = 32;
+const KEY_LEFT: i64 = 64;
+const KEY_RIGHT: i64 = 128;
+const KEY_Q: i64 = 256;
+const KEY_E: i64 = 512;
+const KEY_SPACE: i64 = 1024;
+const KEY_SHIFT: i64 = 2048;
+const KEY_R: i64 = 4096;
+const KEY_Z: i64 = 8192;
+const KEY_Y: i64 = 16384;
+const KEY_F: i64 = 32768;
+const KEY_CTRL: i64 = 65536;
+const KEY_ALT: i64 = 131072;
+const KEY_1: i64 = 262144;
+const KEY_2: i64 = 524288;
+const KEY_3: i64 = 1048576;
+const KEY_4: i64 = 2097152;
+const KEY_5: i64 = 4194304;
+const KEY_6: i64 = 8388608;
+const KEY_7: i64 = 16777216;
+const KEY_8: i64 = 33554432;
+const KEY_9: i64 = 67108864;
+
+/// Standard `key_special` event codes delivered by infimum-web & WebGPU runtime.
+enum KeySpecial {
+  None = 0,
+  Backspace = 1,
+  Enter = 2,
+  Escape = 3,
+  Tab = 4,
+  ArrowLeft = 5,
+  ArrowRight = 6,
+  ArrowUp = 7,
+  ArrowDown = 8,
+  Home = 9,
+  End = 10,
+  Delete = 11,
+  ShiftEnter = 12,
+  CtrlA = 20,
+  CtrlC = 21,
+  CtrlV = 22,
+  CtrlX = 23,
+  ShiftLeft = 25,
+  ShiftRight = 26,
+  ShiftUp = 27,
+  ShiftDown = 28,
+  ShiftHome = 29,
+  ShiftEnd = 30,
+  RightClick = 31,
+  CtrlHome = 32,
+  CtrlEnd = 33,
+  CtrlShiftHome = 34,
+  CtrlShiftEnd = 35,
+}
+
+fn keys_held_mask() -[Mem]-> i64 {
+  mem_load(STD_KEYS_HELD_WORD)
+}
+
+fn key_held(bit: i64) -[Mem]-> bool {
+  (mem_load(STD_KEYS_HELD_WORD) & bit) != 0
+}
+
+// Per-frame relative mouse motion delta while pointer lock is active (infinite 360° look)
+fn mouse_dx() -[Mem]-> i64 {
+  mem_load(STD_MOUSE_DX_WORD)
+}
+
+fn mouse_dy() -[Mem]-> i64 {
+  mem_load(STD_MOUSE_DY_WORD)
+}
+
+fn pointer_locked() -[Mem]-> bool {
+  mem_load(STD_POINTER_LOCK_WORD) != 0
+}
+
+// Request browser pointer lock (hides cursor & enables raw relative mouse motion; Esc always unlocks)
+fn set_pointer_lock(lock: bool) -[Gpu]-> unit {
+  do Gpu.call(65, if lock { 1 } else { 0 }, 0, 0);
+}

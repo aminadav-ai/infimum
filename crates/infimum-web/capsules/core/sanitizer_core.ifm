@@ -1,0 +1,380 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Z3-Verified Zero-JS HTML Sanitizer Core (`Legacy HTML -> Clean Structured Text`).
+// Strips <script>, <style>, <iframe>, <svg>, <noscript>, HTML comments, and all
+// attributes/event handlers before a single character reaches any capsule.
+
+use "std/math.ifm";
+
+const MAX_IN_CHARS: i64 = 65536;
+const MAX_OUT_CHARS: i64 = 65536;
+
+// Skip-block kinds for raw-text elements
+enum SkipKind {
+  None = 0,
+  Script = 1,
+  Style = 2,
+  Iframe = 3,
+  Svg = 4,
+  Noscript = 5,
+}
+
+// Tag classification IDs
+enum TagKind {
+  Other = 0,
+  Script = 1,
+  Style = 2,
+  Iframe = 3,
+  Svg = 4,
+  Noscript = 5,
+  Heading = 6,
+  Li = 7,
+  Block = 8,
+  Cell = 9,
+  Br = 10,
+}
+
+// Binary ABI shared with Rust host (`infimum-web/src/sanitizer.rs`): words 0..3, 64..65599, 65600..131135
+layout SanMem at 0 {
+  out_len: word at 0 inv 0..=65536,
+  stripped_scripts: word at 1,
+  stripped_iframes: word at 2,
+  stripped_tags: word at 3,
+  in_buf: words[65536] at 64,
+  out_buf: words[65536] at 65600,
+}
+
+fn to_ascii_lower(c: i64) -> i64 {
+  if c >= 'A' && c <= 'Z' { c + 32 } else { c }
+}
+
+fn is_ws(c: i64) -> bool {
+  c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 160
+}
+
+fn in_at(idx: i64, n: i64) -[Mem]-> i64 {
+  if idx >= 0 && idx < n && idx < MAX_IN_CHARS {
+    SanMem.in_buf[idx]
+  } else {
+    0
+  }
+}
+
+fn out_push(ch: i64) -[Mem]-> unit {
+  let l = SanMem.out_len;
+  if l < MAX_OUT_CHARS {
+    SanMem.out_buf[l] = ch;
+    SanMem.out_len = l + 1;
+  }
+}
+
+fn out_trim_trailing_spaces() -[Mem]-> unit {
+  let mut l = SanMem.out_len;
+  while l > 0 max 64 {
+    if SanMem.out_buf[l - 1] == ' ' {
+      l -= 1;
+    } else {
+      break;
+    }
+  }
+  SanMem.out_len = clamp_i64(l, 0, MAX_OUT_CHARS);
+}
+
+fn out_ensure_newline() -[Mem]-> unit {
+  out_trim_trailing_spaces();
+  let l = SanMem.out_len;
+  if l > 0 && SanMem.out_buf[l - 1] != '\n' {
+    out_push('\n');
+  }
+}
+
+fn out_push_word_sep() -[Mem]-> unit {
+  let l = SanMem.out_len;
+  if l > 0 {
+    let last = SanMem.out_buf[l - 1];
+    if last != '\n' && last != ' ' {
+      out_push(' ');
+    }
+  }
+}
+
+fn match_ci2(pos: i64, n: i64, c0: i64, c1: i64) -[Mem]-> bool {
+  pos + 2 <= n
+    && to_ascii_lower(in_at(pos, n)) == c0
+    && to_ascii_lower(in_at(pos + 1, n)) == c1
+}
+
+fn match_ci3(pos: i64, n: i64, c0: i64, c1: i64, c2: i64) -[Mem]-> bool {
+  match_ci2(pos, n, c0, c1) && to_ascii_lower(in_at(pos + 2, n)) == c2
+}
+
+fn match_ci4(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64) -[Mem]-> bool {
+  match_ci3(pos, n, c0, c1, c2) && to_ascii_lower(in_at(pos + 3, n)) == c3
+}
+
+fn match_ci5(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64) -[Mem]-> bool {
+  match_ci4(pos, n, c0, c1, c2, c3) && to_ascii_lower(in_at(pos + 4, n)) == c4
+}
+
+fn match_ci6(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64) -[Mem]-> bool {
+  match_ci5(pos, n, c0, c1, c2, c3, c4) && to_ascii_lower(in_at(pos + 5, n)) == c5
+}
+
+fn match_ci7(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64, c6: i64) -[Mem]-> bool {
+  match_ci6(pos, n, c0, c1, c2, c3, c4, c5) && to_ascii_lower(in_at(pos + 6, n)) == c6
+}
+
+fn match_ci8(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64, c6: i64, c7: i64) -[Mem]-> bool {
+  match_ci7(pos, n, c0, c1, c2, c3, c4, c5, c6) && to_ascii_lower(in_at(pos + 7, n)) == c7
+}
+
+// Classify HTML tag name at [start..start+tlen)
+fn classify_tag(start: i64, tlen: i64, n: i64) -[Mem]-> i64 {
+  match tlen {
+    1 => if to_ascii_lower(in_at(start, n)) == 'p' { TagKind::Block } else { TagKind::Other },
+    2 => {
+      if match_ci2(start, n, 'h', '1') || match_ci2(start, n, 'h', '2') || match_ci2(start, n, 'h', '3') {
+        TagKind::Heading
+      } else if match_ci2(start, n, 'l', 'i') {
+        TagKind::Li
+      } else if match_ci2(start, n, 'b', 'r') {
+        TagKind::Br
+      } else if match_ci2(start, n, 't', 'r') {
+        TagKind::Block
+      } else if match_ci2(start, n, 't', 'd') || match_ci2(start, n, 't', 'h') {
+        TagKind::Cell
+      } else {
+        TagKind::Other
+      }
+    },
+    3 => {
+      if match_ci3(start, n, 'd', 'i', 'v') {
+        TagKind::Block
+      } else if match_ci3(start, n, 's', 'v', 'g') {
+        TagKind::Svg
+      } else {
+        TagKind::Other
+      }
+    },
+    5 => if match_ci5(start, n, 's', 't', 'y', 'l', 'e') { TagKind::Style } else { TagKind::Other },
+    6 => {
+      if match_ci6(start, n, 's', 'c', 'r', 'i', 'p', 't') {
+        TagKind::Script
+      } else if match_ci6(start, n, 'i', 'f', 'r', 'a', 'm', 'e') {
+        TagKind::Iframe
+      } else {
+        TagKind::Other
+      }
+    },
+    7 => {
+      if match_ci7(start, n, 's', 'e', 'c', 't', 'i', 'o', 'n')
+        || match_ci7(start, n, 'a', 'r', 't', 'i', 'c', 'l', 'e')
+      {
+        TagKind::Block
+      } else {
+        TagKind::Other
+      }
+    },
+    8 => if match_ci8(start, n, 'n', 'o', 's', 'c', 'r', 'i', 'p', 't') { TagKind::Noscript } else { TagKind::Other },
+    _ => TagKind::Other,
+  }
+}
+
+// Check if position `pos` matches `</script>`, `</style>`, `</iframe>`, `</svg>`, or `</noscript>`
+fn match_skip_end(pos: i64, n: i64, kind: i64) -[Mem]-> i64 {
+  if in_at(pos, n) != '<' || in_at(pos + 1, n) != '/' {
+    0
+  } else {
+    match kind {
+      SkipKind::Script => if pos + 9 <= n && match_ci6(pos + 2, n, 's', 'c', 'r', 'i', 'p', 't') && in_at(pos + 8, n) == '>' { 9 } else { 0 },
+      SkipKind::Style => if pos + 8 <= n && match_ci5(pos + 2, n, 's', 't', 'y', 'l', 'e') && in_at(pos + 7, n) == '>' { 8 } else { 0 },
+      SkipKind::Iframe => if pos + 9 <= n && match_ci6(pos + 2, n, 'i', 'f', 'r', 'a', 'm', 'e') && in_at(pos + 8, n) == '>' { 9 } else { 0 },
+      SkipKind::Svg => if pos + 6 <= n && match_ci3(pos + 2, n, 's', 'v', 'g') && in_at(pos + 5, n) == '>' { 6 } else { 0 },
+      SkipKind::Noscript => if pos + 11 <= n && match_ci8(pos + 2, n, 'n', 'o', 's', 'c', 'r', 'i', 'p', 't') && in_at(pos + 10, n) == '>' { 11 } else { 0 },
+      _ => 0,
+    }
+  }
+}
+
+// Decode common HTML entities at `pos` (where in_at(pos) == '&').
+// Returns tuple `(consumed_len, decoded_codepoint)`, or `(0, 0)` if not a known entity.
+fn decode_entity_at(pos: i64, n: i64) -[Mem]-> (i64, i64) {
+  if in_at(pos, n) != '&' {
+    (0, 0)
+  } else if pos + 4 <= n && match_ci2(pos + 1, n, 'l', 't') && in_at(pos + 3, n) == ';' {
+    (4, '<')
+  } else if pos + 4 <= n && match_ci2(pos + 1, n, 'g', 't') && in_at(pos + 3, n) == ';' {
+    (4, '>')
+  } else if pos + 5 <= n && match_ci3(pos + 1, n, 'a', 'm', 'p') && in_at(pos + 4, n) == ';' {
+    (5, '&')
+  } else if pos + 5 <= n && in_at(pos + 1, n) == '#' && in_at(pos + 2, n) == '3' && in_at(pos + 3, n) == '9' && in_at(pos + 4, n) == ';' {
+    (5, '\'')
+  } else if pos + 6 <= n && match_ci4(pos + 1, n, 'n', 'b', 's', 'p') && in_at(pos + 5, n) == ';' {
+    (6, ' ')
+  } else if pos + 6 <= n && match_ci4(pos + 1, n, 'q', 'u', 'o', 't') && in_at(pos + 5, n) == ';' {
+    (6, '"')
+  } else if pos + 6 <= n && match_ci4(pos + 1, n, 'b', 'u', 'l', 'l') && in_at(pos + 5, n) == ';' {
+    (6, 8226)
+  } else if pos + 7 <= n && match_ci5(pos + 1, n, 'm', 'd', 'a', 's', 'h') && in_at(pos + 6, n) == ';' {
+    (7, 8212)
+  } else if pos + 7 <= n && match_ci5(pos + 1, n, 'n', 'd', 'a', 's', 'h') && in_at(pos + 6, n) == ';' {
+    (7, '-')
+  } else {
+    (0, 0)
+  }
+}
+
+export fn sanitize_html_ifm(raw_len: i64) -[Mem]-> i64 {
+  let n = clamp_i64(raw_len, 0, MAX_IN_CHARS);
+  SanMem.out_len = 0;
+  SanMem.stripped_scripts = 0;
+  SanMem.stripped_iframes = 0;
+  SanMem.stripped_tags = 0;
+
+  let mut i = 0;
+  let mut skip_kind = SkipKind::None;
+  let mut pending_ws = false;
+
+  while i < n max 65536 {
+    if skip_kind != SkipKind::None {
+      let end_len = match_skip_end(i, n, skip_kind);
+      if end_len > 0 {
+        i += end_len;
+        skip_kind = SkipKind::None;
+      } else {
+        i += 1;
+      }
+    } else if in_at(i, n) == '<' && in_at(i + 1, n) == '!' && in_at(i + 2, n) == '-' && in_at(i + 3, n) == '-' {
+      // HTML comment: skip until `-->`
+      let mut next_i = n;
+      for j in (i + 4)..(n - 2) max 65536 {
+        if in_at(j, n) == '-' && in_at(j + 1, n) == '-' && in_at(j + 2, n) == '>' {
+          next_i = j + 3;
+          break;
+        }
+      }
+      i = next_i;
+    } else if in_at(i, n) == '<' {
+      // Scan to matching '>'
+      let mut gt = -1;
+      for k in (i + 1)..n max 4096 {
+        if in_at(k, n) == '>' {
+          gt = k;
+          break;
+        }
+      }
+      if gt < 0 {
+        i = n;
+      } else {
+        SanMem.stripped_tags = SanMem.stripped_tags + 1;
+        let mut tpos = i + 1;
+        while tpos < gt && is_ws(in_at(tpos, n)) max 64 {
+          tpos += 1;
+        }
+        let is_closing = tpos < gt && in_at(tpos, n) == '/';
+        if is_closing { tpos += 1; }
+        let name_start = tpos;
+        let mut name_end = gt;
+        for k in tpos..gt max 32 {
+          let ch = in_at(k, n);
+          if is_ws(ch) || ch == '/' {
+            name_end = k;
+            break;
+          }
+        }
+        let tag_kind = classify_tag(name_start, name_end - name_start, n);
+        if !is_closing {
+          match tag_kind {
+            TagKind::Script => {
+              SanMem.stripped_scripts = SanMem.stripped_scripts + 1;
+              skip_kind = SkipKind::Script;
+            },
+            TagKind::Style => { skip_kind = SkipKind::Style; },
+            TagKind::Iframe => {
+              SanMem.stripped_iframes = SanMem.stripped_iframes + 1;
+              skip_kind = SkipKind::Iframe;
+            },
+            TagKind::Svg => { skip_kind = SkipKind::Svg; },
+            TagKind::Noscript => { skip_kind = SkipKind::Noscript; },
+            TagKind::Heading => {
+              out_ensure_newline();
+              out_push('#');
+              out_push(' ');
+              pending_ws = false;
+            },
+            TagKind::Li => {
+              out_ensure_newline();
+              out_push(8226);
+              out_push(' ');
+              pending_ws = false;
+            },
+            TagKind::Block => {
+              out_ensure_newline();
+              pending_ws = false;
+            },
+            TagKind::Br => {
+              out_ensure_newline();
+              pending_ws = false;
+            },
+            TagKind::Cell => {
+              out_push(' ');
+              out_push('|');
+              out_push(' ');
+              pending_ws = false;
+            },
+            _ => {},
+          }
+        } else {
+          if tag_kind == TagKind::Heading || tag_kind == TagKind::Li || tag_kind == TagKind::Block {
+            out_ensure_newline();
+            pending_ws = false;
+          }
+        }
+        i = gt + 1;
+      }
+    } else {
+      // Plain text character or HTML entity
+      let (ent_len, ent_cp) = decode_entity_at(i, n);
+      let cp = if ent_len > 0 { ent_cp } else { in_at(i, n) };
+      let adv = if ent_len > 0 { ent_len } else { 1 };
+      if is_ws(cp) {
+        pending_ws = true;
+      } else {
+        if pending_ws {
+          out_push_word_sep();
+          pending_ws = false;
+        }
+        out_push(cp);
+      }
+      i += adv;
+    }
+  }
+
+  out_trim_trailing_spaces();
+  // Trim trailing newline if any
+  let final_l = SanMem.out_len;
+  if final_l > 0 && SanMem.out_buf[final_l - 1] == '\n' {
+    SanMem.out_len = final_l - 1;
+  }
+  SanMem.out_len
+}
+
+test "sanitizer strips script tags and decodes entities" {
+  // "<script>x</script>A&amp;B"
+  SanMem.in_buf[0] = '<'; SanMem.in_buf[1] = 's'; SanMem.in_buf[2] = 'c'; SanMem.in_buf[3] = 'r';
+  SanMem.in_buf[4] = 'i'; SanMem.in_buf[5] = 'p'; SanMem.in_buf[6] = 't'; SanMem.in_buf[7] = '>';
+  SanMem.in_buf[8] = 'x';
+  SanMem.in_buf[9] = '<'; SanMem.in_buf[10] = '/'; SanMem.in_buf[11] = 's'; SanMem.in_buf[12] = 'c';
+  SanMem.in_buf[13] = 'r'; SanMem.in_buf[14] = 'i'; SanMem.in_buf[15] = 'p'; SanMem.in_buf[16] = 't';
+  SanMem.in_buf[17] = '>';
+  SanMem.in_buf[18] = 'A';
+  SanMem.in_buf[19] = '&'; SanMem.in_buf[20] = 'a'; SanMem.in_buf[21] = 'm'; SanMem.in_buf[22] = 'p'; SanMem.in_buf[23] = ';';
+  SanMem.in_buf[24] = 'B';
+  let out_n = sanitize_html_ifm(25);
+  assert(SanMem.stripped_scripts == 1);
+  assert(out_n == 3);
+  assert(SanMem.out_buf[0] == 'A');
+  assert(SanMem.out_buf[1] == '&');
+  assert(SanMem.out_buf[2] == 'B');
+}

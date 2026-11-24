@@ -1,0 +1,44 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Infimum Code Native primitive layer — backed by the Z3-verified Infimum Standard Library
+// (std/math, std/color, std/gfx, std/text, std/fmt).
+
+use "abi.ifm";
+use "std/math.ifm";
+use "std/color.ifm";
+use "std/gfx.ifm";
+use "std/text.ifm";
+use "std/fmt.ifm";
+
+fn buf_can_insert(len: i64, cap: i64) -> bool req len >= 0 && cap >= 0 {
+  len < cap
+}
+
+fn emit_line_ptr(x: i64, y: i64, ptr: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let n = clamp_i64(mem_load(ptr), 0, 256);
+  let mut cx = x;
+  for i in 0..n max 256 {
+    cx += ui_glyph(cx, y, mem_load(ptr + 1 + i), size, style, rgba, clip);
+  }
+  cx - x
+}
+
+fn emit_cost_in_currency(x: i64, y: i64, milli_ils: i64, cur_id: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+  let hundredths = match cur_id {
+    Currency::Usd => (milli_ils * 10) / 365,
+    Currency::Eur => (milli_ils * 10) / 395,
+    _ => milli_ils / 10,
+  };
+  let v = max_i64(hundredths, 0);
+  let mut cx = x;
+  cx += fmt_fixed_2(cx, y, v, size, style, rgba, clip);
+  cx += ui_glyph(cx, y, ' ', size, style, rgba, clip);
+  let sym = match cur_id {
+    Currency::Usd => '$',
+    Currency::Eur => 8364,
+    _ => 8362,
+  };
+  cx += ui_glyph(cx, y, sym, size, style, rgba, clip);
+  cx - x
+}

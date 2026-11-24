@@ -1,0 +1,11 @@
+// Anti-Stub Demo: An AI agent attempts to cheat by returning `balance` unchanged
+// instead of deducting `amount`. Infimum's Z3 prover rejects this at compile time
+// with a concrete mathematical counterexample.
+
+fn withdraw_stub(balance: i64, amount: i64) -> i64
+  req amount > 0 && balance >= amount
+  ens result == balance - amount && result >= 0
+{
+  // Fake AI stub: forgot to subtract `amount`!
+  balance
+}

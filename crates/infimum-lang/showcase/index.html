@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>Infimum — Verified AI-Native Programming Language Showcase</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="container">
+      <div class="pill-row">
+        <span class="pill pill-accent" id="wasm-size-badge">Loading Wasm Capsule...</span>
+        <span class="pill">Z3 SMT Verified</span>
+        <span class="pill">BLAKE3 Content-Addressed Graph</span>
+        <span class="pill">Zero Ambient Authority</span>
+      </div>
+      <h1>Infimum Interactive Security &amp; Time-Travel X-Ray</h1>
+      <p class="subtitle">
+        No files. No silent AI stubs. No hidden side-effects. Execute a real
+        <strong>Infimum &rarr; WebAssembly</strong> payment graph directly in your browser,
+        scrub execution backward in time, and inspect mathematical Z3 &amp; taint-tracking proofs.
+      </p>
+    </div>
+  </header>
+
+  <main class="container grid-main">
+    <!-- Section 1: Live Wasm Execution + Time-Travel Flight Recorder -->
+    <section class="card card-wide" aria-labelledby="tt-heading">
+      <div class="card-header">
+        <div>
+          <h2 id="tt-heading">1. Live Verified Wasm Execution &amp; Time-Travel Debugger</h2>
+          <p class="muted">
+            Executes compiled node <code id="root-hash-code">#768a631876e7</code> (<code>checkout</code>).
+            Your secret token is typed as <code>Secret&lt;str&gt;</code> and mathematically blocked from leaking into traces or memory snapshots.
+          </p>
+        </div>
+        <span class="status-chip" id="engine-status">Initializing Wasm...</span>
+      </div>
+
+      <form id="exec-form" class="exec-form">
+        <div class="field">
+          <label for="token-input">API Secret Token (<code>Secret&lt;str&gt;</code>)</label>
+          <input
+            id="token-input"
+            type="password"
+            value="sk_live_ultra_secret_9942"
+            autocomplete="off"
+            required
+          >
+        </div>
+        <div class="field">
+          <label for="amount-input">Amount in Cents (<code>i64</code>, <code>req total &gt; 100</code>)</label>
+          <input
+            id="amount-input"
+            type="number"
+            value="10000"
+            step="1"
+            required
+          >
+        </div>
+        <div class="button-group">
+          <button type="submit" class="btn btn-primary">Execute Node</button>
+          <button type="button" class="btn btn-secondary" id="preset-valid-btn">Preset: 45,000</button>
+          <button type="button" class="btn btn-danger-outline" id="preset-invalid-btn">Test Boundary Reject (50)</button>
+        </div>
+      </form>
+
+      <div id="exec-banner" class="banner" hidden></div>
+
+      <div class="timetravel-box">
+        <div class="slider-header">
+          <label for="timeline-slider" class="slider-label">
+            Time-Travel Flight Recorder
+          </label>
+          <div class="slider-controls">
+            <span id="frame-indicator" class="mono-badge">No frames recorded yet</span>
+            <button type="button" class="btn btn-small" id="reset-timeline-btn">Clear History</button>
+          </div>
+        </div>
+
+        <input
+          type="range"
+          id="timeline-slider"
+          min="0"
+          max="0"
+          step="1"
+          value="0"
+          aria-valuetext="No frames recorded"
+          disabled
+        >
+
+        <div class="inspector-split">
+          <div class="panel">
+            <h3>Causal &ldquo;Why?&rdquo; Call Tree</h3>
+            <p class="panel-hint">Exact deterministic node invocations for the selected frame:</p>
+            <ul id="calls-list" class="trace-list">
+              <li class="empty-item">Click &ldquo;Execute Node&rdquo; to record Frame #0.</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>Capability Effect Log &amp; Return</h3>
+            <p class="panel-hint">External side effects &amp; redacted secret sinks:</p>
+            <ul id="effects-list" class="trace-list">
+              <li class="empty-item">Zero side effects executed yet.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 2: Unforgeable Security Passport -->
+    <section class="card" aria-labelledby="passport-heading">
+      <h2 id="passport-heading">2. Unforgeable Security Passport</h2>
+      <p class="muted">
+        Extracted directly from the read-only section of <code>checkout.wasm</code>.
+        Humans audit 4 lines of mathematical bounds instead of reading 10,000 lines of AI code.
+      </p>
+      <div id="passport-box" class="passport-grid"></div>
+
+      <h3 class="subhead">Semantic Deduplication Proof</h3>
+      <p class="muted">
+        Two agents wrote fee calculation with different variable names &amp; formatting.
+        De Bruijn canonicalization collapsed both into a single <code>BLAKE3</code> node:
+      </p>
+      <ul id="dedup-list" class="trace-list"></ul>
+    </section>
+
+    <!-- Section 3: Compiler X-Ray Against AI Stubs & Backdoors -->
+    <section class="card" aria-labelledby="xray-heading">
+      <h2 id="xray-heading">3. Compiler X-Ray: Anti-Stub &amp; Anti-Leak</h2>
+      <p class="muted">
+        Inspect real compile-time rejections generated by Infimum&rsquo;s Z3 solver and static taint checker:
+      </p>
+      <div class="tab-row" role="tablist" aria-label="Compiler Rejection Demos">
+        <button type="button" class="btn btn-primary" id="tab-stub-btn" aria-selected="true">
+          Z3 Catches AI Stub
+        </button>
+        <button type="button" class="btn btn-secondary" id="tab-leak-btn" aria-selected="false">
+          Taint Blocks Secret Leak
+        </button>
+      </div>
+      <pre class="code-block"><code id="xray-source"></code></pre>
+      <div id="xray-diag" class="diag-card"></div>
+    </section>
+  </main>
+
+  <footer class="container footer">
+    <p>
+      Powered by <strong>Infimum</strong> (<code>infimum-lang</code>) &middot; Content-Addressed Semantic Graph + Z3 Prover + Wasm Time-Travel Runtime.
+    </p>
+  </footer>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/audio.ifm
+// Zero-asset procedural sound effects via infimum-web built-in audio synthesizer (opcodes 50 & 51).
+// Requires only `-[Gpu]->` effect (already present in `step_ui`), zero audio files needed!
+
+use "std/math.ifm";
+
+const SFX_CLACK: i64 = 1;
+const SFX_HOP: i64 = 2;
+const SFX_CLICK: i64 = 3;
+const SFX_SPAWN: i64 = 4;
+const SFX_CLEAR: i64 = 5;
+const SFX_ERROR: i64 = 6;
+const SFX_WIN: i64 = 7;
+const SFX_SHOTGUN: i64 = 8;
+const SFX_MONSTER_HIT: i64 = 9;
+const SFX_MONSTER_DIE: i64 = 10;
+const SFX_PLAYER_HURT: i64 = 11;
+const SFX_STEP: i64 = 12;
+const SFX_GATE: i64 = 13;
+const SFX_JUMP: i64 = 14;
+const SFX_LION_ROAR: i64 = 15;
+const SFX_SHEEP_BAA: i64 = 16;
+const SFX_LASER: i64 = 17;
+const SFX_MISSILE: i64 = 18;
+
+// Play a built-in procedural SFX preset with pitch scaling (40..250%) and volume (0..100%)
+fn sfx_play(preset: i64, pitch_pct: i64, vol_pct: i64) -[Gpu]-> unit {
+  let p = clamp_i64(preset, 1, 18);
+  let pi = clamp_i64(pitch_pct, 40, 250);
+  let v = clamp_i64(vol_pct, 0, 100);
+  do Gpu.call(50, p, pi, v);
+}
+
+fn sfx_click() -[Gpu]-> unit { sfx_play(SFX_CLICK, 100, 75); }
+fn sfx_clack() -[Gpu]-> unit { sfx_play(SFX_CLACK, 100, 85); }
+fn sfx_hop() -[Gpu]-> unit { sfx_play(SFX_HOP, 100, 70); }
+fn sfx_spawn() -[Gpu]-> unit { sfx_play(SFX_SPAWN, 100, 65); }
+fn sfx_clear() -[Gpu]-> unit { sfx_play(SFX_CLEAR, 100, 85); }
+fn sfx_error() -[Gpu]-> unit { sfx_play(SFX_ERROR, 100, 75); }
+fn sfx_win() -[Gpu]-> unit { sfx_play(SFX_WIN, 100, 85); }
+
+// Custom procedural synth tone: wave 0=sine, 1=triangle, 2=square, 3=glass bell FM
+fn sfx_tone(freq_hz: i64, dur_ms: i64, wave: i64) -[Gpu]-> unit {
+  let f = clamp_i64(freq_hz, 60, 4000);
+  let d = clamp_i64(dur_ms, 10, 1500);
+  let w = clamp_i64(wave, 0, 3);
+  do Gpu.call(51, f, d, w);
+}

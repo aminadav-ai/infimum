@@ -1,0 +1,538 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Main workspace header, copy toast, scrollable dialogue feed, text selection,
+// per-message telemetry, action buttons (copy/like/dislike), and Web Clean-Reader.
+
+use "abi.ifm";
+use "primitives.ifm";
+use "theme.ifm";
+use "icons.ifm";
+use "text_buf.ifm";
+use "daemon_client.ifm";
+mod md from "markdown.ifm";
+mod tl from "timeline.ifm";
+
+// Detect trailing `[PLAY:<app.ifw>]` tag at the end of an assistant reply.
+// Returns the word offset where the tag (including preceding `\n` if any) starts, or -1 if absent.
+fn find_play_tag(text_ptr: i64) -[Mem]-> i64 {
+  let n = clamp_i64(mem_load(text_ptr), 0, MAX_MSG_CHARS);
+  let mut end_i = n;
+  while end_i > 0 max 32 {
+    let ch = mem_load(text_ptr + end_i);
+    if ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t' {
+      end_i -= 1;
+    } else {
+      break;
+    }
+  }
+  if end_i < 8 || mem_load(text_ptr + end_i) != ']' {
+    -1
+  } else {
+    let min_scan = if end_i > 160 { end_i - 160 } else { 0 };
+    let mut i = end_i - 6;
+    let mut found = -1;
+    while i >= min_scan max 170 {
+      if mem_load(text_ptr + 1 + i) == '['
+        && mem_load(text_ptr + 2 + i) == 'P'
+        && mem_load(text_ptr + 3 + i) == 'L'
+        && mem_load(text_ptr + 4 + i) == 'A'
+        && mem_load(text_ptr + 5 + i) == 'Y'
+        && mem_load(text_ptr + 6 + i) == ':'
+      {
+        found = i;
+        break;
+      }
+      i -= 1;
+    }
+    if found > 0 && mem_load(text_ptr + found) == '\n' {
+      found - 1
+    } else {
+      found
+    }
+  }
+}
+
+fn extract_play_name(text_ptr: i64, tag_pos: i64, dst: i64) -[Mem]-> i64 {
+  let n = clamp_i64(mem_load(text_ptr), 0, MAX_MSG_CHARS);
+  let mut p = tag_pos;
+  if p < n && mem_load(text_ptr + 1 + p) == '\n' {
+    p += 1;
+  }
+  // Skip `[PLAY:` (6 chars)
+  p += 6;
+  let mut w = 0;
+  while p < n && w < 120 max 130 {
+    let ch = mem_load(text_ptr + 1 + p);
+    if ch == ']' || ch == '\n' || ch == '\r' {
+      break;
+    }
+    mem_store(dst + 1 + w, ch);
+    w += 1;
+    p += 1;
+  }
+  mem_store(dst, w);
+  w
+}
+
+fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem]-> unit {
+  let th = StudioMem.theme;
+  let scale = StudioMem.font_scale_pct;
+  let hdr_sz = sf(15);
+  let sm_sz = sf(12);
+  let vm = StudioMem.view_mode;
+
+  ui_rect(main_x, 0, main_w, top_h, 0, 1, 0, col_bg(th), col_border(th), ClipId::Root);
+  if vm == ViewMode::Web {
+    ui_text(main_x + 20, (top_h - hdr_sz) / 2, "infimum-web / Clean-Reader (0% JS)", hdr_sz, 1, col_text(th), ClipId::Root);
+  } else if mem_load(StudioMem::active_hdr_buf) > 0 {
+    emit_line_ptr(main_x + 20, (top_h - hdr_sz) / 2, StudioMem::active_hdr_buf, hdr_sz, 1, col_text(th), ClipId::Root);
+  } else {
+    ui_text(main_x + 20, (top_h - hdr_sz) / 2, "infimum-code.ifw / Автономный диалог Gemini 4", hdr_sz, 1, col_text(th), ClipId::Root);
+  }
+
+  // Emerald toast pill in top-right header when selection is copied
+  if StudioMem.copy_toast_ticks > 0 && StudioMem.copy_toast_ptr == 0 {
+    let tw_p = clamp_i64((178 * scale) / 100, 166, 260);
+    let th_p = sm_sz + 12;
+    let tx_p = w - tw_p - 16;
+    let ty_p = (top_h - th_p) / 2;
+    ui_rect(tx_p, ty_p, tw_p, th_p, 8, 1, 0, col_surf(th), col_emerald(), ClipId::Root);
+    ui_text(tx_p + 12, ty_p + 5, "✓ Скопировано в буфер", sm_sz, 1, col_emerald(), ClipId::Root);
+  }
+}
+
+fn render_feed(
+  w: i64, side_w: i64, main_x: i64, col_x: i64, col_w: i64,
+  feed_y: i64, feed_h: i64, in_scroll_capture: bool
+) -[Mem, Net]-> unit {
+  let th = StudioMem.theme;
+  let scale = StudioMem.font_scale_pct;
+  let body_sz = sf(15);
+  let line_h = sf(23);
+  let cur_id = StudioMem.currency_id;
+  let tick = StudioMem.tick;
+  let mx = StudioMem.frame_mx;
+  let my = StudioMem.frame_my;
+  let m_down = StudioMem.frame_m_down;
+  let m_clicked = StudioMem.frame_m_clicked;
+  let wheel_dy = StudioMem.frame_wheel_dy;
+  let vm = StudioMem.view_mode;
+
+  set_clip_rect(ClipId::Feed, col_x - 8, feed_y, col_x + col_w + 16, feed_y + feed_h);
+
+  let max_scr = clamp_i64(StudioMem.max_scroll_y, 0, 800000);
+  let feed_wheel = if StudioMem.frame_modal_blocked == 0 && StudioMem.model_dd_open == 0 && mx >= side_w && !in_scroll_capture {
+    wheel_dy
+  } else {
+    0
+  };
+  let mut next_scr = clamp_i64(StudioMem.scroll_y + feed_wheel, 0, max_scr);
+
+  // Smooth auto-scroll while drag-selecting chat text near top/bottom feed edge
+  if StudioMem.msg_sel_dragging == 1 && m_down == 1 {
+    if my < feed_y + 24 {
+      next_scr = clamp_i64(next_scr - 12, 0, max_scr);
+    } else if my > feed_y + feed_h - 24 {
+      next_scr = clamp_i64(next_scr + 12, 0, max_scr);
+    }
+  }
+
+  // Draggable Main Feed Scrollbar
+  if max_scr > 0 {
+    let fsb_x = w - 12;
+    let f_tot = feed_h + max_scr;
+    let f_th = clamp_i64((feed_h * feed_h) / f_tot, 28, feed_h);
+    let f_span = clamp_i64(feed_h - f_th, 1, 2000);
+    if point_in_rect(mx, my, fsb_x - 4, feed_y, 14, feed_h) && StudioMem.frame_modal_blocked == 0 {
+      gfx_set_cursor(CursorKind::Pointer);
+      if m_clicked == 1 { StudioMem.drag_sb = DragScrollbar::Feed; }
+    }
+    if StudioMem.drag_sb == DragScrollbar::Feed && m_down == 1 {
+      let rel = clamp_i64(my - feed_y - f_th / 2, 0, f_span);
+      next_scr = (rel * max_scr) / f_span;
+    }
+    let f_ty = feed_y + ((next_scr * f_span) / max_scr);
+    ui_rect(fsb_x, feed_y, 6, feed_h, 3, 0, 0, col_surf(th), 0, ClipId::Root);
+    ui_rect(fsb_x, f_ty, 6, f_th, 3, 0, 0, if StudioMem.drag_sb == DragScrollbar::Feed { col_accent() } else { col_border(th) }, 0, ClipId::Root);
+  }
+  StudioMem.scroll_y = next_scr;
+
+  let vis_y0 = feed_y - line_h;
+  let vis_y1 = feed_y + feed_h + line_h;
+  let mut cy = feed_y + 12 - next_scr;
+  let can_sel_feed = StudioMem.frame_modal_blocked == 0
+    && StudioMem.model_dd_open == 0
+    && StudioMem.ctx_open == 0
+    && StudioMem.drag_sb == DragScrollbar::None;
+  let in_feed_box = my >= feed_y && my <= feed_y + feed_h && mx >= main_x && mx < w - 16;
+  let mut feed_text_clicked = false;
+  if m_down == 0 { StudioMem.msg_sel_dragging = 0; }
+
+  if vm == ViewMode::Web {
+    let ch_h = measure_wrapped_ptr(col_w - 32, StudioMem::reply_buf, body_sz, line_h, 0);
+    let cr_tx = col_x + 16;
+    let cr_ty = cy + 16;
+    let cr_tw = col_w - 32;
+    if can_sel_feed && in_feed_box && point_in_rect(mx, my, cr_tx - 4, cr_ty - 4, cr_tw + 8, ch_h + 8) {
+      gfx_set_cursor(CursorKind::Text);
+      if m_clicked == 1 {
+        let hit_i = hit_wrapped_ptr(mx, my, cr_tx, cr_ty, cr_tw, StudioMem::reply_buf, body_sz, line_h, 0);
+        if StudioMem.last_msg_click_ptr == StudioMem::reply_buf && (tick - StudioMem.last_msg_click_tick) <= 24 && hit_i >= StudioMem.last_msg_click_idx - 2 && hit_i <= StudioMem.last_msg_click_idx + 2 {
+          select_word_in_msg(StudioMem::reply_buf, hit_i);
+        } else {
+          StudioMem.msg_sel_ptr = StudioMem::reply_buf;
+          StudioMem.msg_sel_anchor = hit_i;
+          StudioMem.msg_sel_focus = hit_i;
+          StudioMem.msg_sel_dragging = 1;
+        }
+        StudioMem.last_msg_click_tick = tick;
+        StudioMem.last_msg_click_ptr = StudioMem::reply_buf;
+        StudioMem.last_msg_click_idx = hit_i;
+        StudioMem.sel_anchor = StudioMem.cursor_pos;
+        feed_text_clicked = true;
+      }
+    }
+    if m_down == 1 && StudioMem.msg_sel_dragging == 1 && StudioMem.msg_sel_ptr == StudioMem::reply_buf {
+      StudioMem.msg_sel_focus = hit_wrapped_ptr(mx, my, cr_tx, cr_ty, cr_tw, StudioMem::reply_buf, body_sz, line_h, 0);
+    }
+    let cr_s0 = if StudioMem.msg_sel_ptr == StudioMem::reply_buf { min_i64(StudioMem.msg_sel_anchor, StudioMem.msg_sel_focus) } else { 0 };
+    let cr_s1 = if StudioMem.msg_sel_ptr == StudioMem::reply_buf { max_i64(StudioMem.msg_sel_anchor, StudioMem.msg_sel_focus) } else { 0 };
+    ui_rect(col_x, cy, col_w, clamp_i64(ch_h + 32, 200, 32000), 10, 1, 0, col_surf(th), col_border(th), ClipId::Feed);
+    emit_wrapped_sel_ptr(cr_tx, cr_ty, cr_tw, StudioMem::reply_buf, body_sz, line_h, 0, col_text(th), ClipId::Feed, vis_y0, vis_y1, cr_s0, cr_s1);
+    cy += ch_h + 44;
+  } else {
+    let mcnt = clamp_i64(StudioMem.msg_count, 0, MAX_MESSAGES);
+    if StudioMem.cached_layout_col_w != col_w || StudioMem.cached_layout_scale != scale {
+      StudioMem.cached_layout_col_w = col_w;
+      StudioMem.cached_layout_scale = scale;
+      for ci_inv in 0..mcnt max 128 {
+        StudioMem.msg_meta[ci_inv].cached_h = 0;
+      }
+    }
+
+    for mi in 0..mcnt max 128 {
+      let role = StudioMem.msg_meta[mi].role;
+      let text_ptr = StudioMem.msg_meta[mi].text_ptr;
+      let is_user = role == 0;
+      let u_btn_s = clamp_i64(sf(26), 26, 38);
+      let orig_text_len = mem_load(text_ptr);
+      let play_pos = if !is_user { find_play_tag(text_ptr) } else { -1 };
+      let cached = StudioMem.msg_meta[mi].cached_h;
+      let mh = if cached > 0 {
+        cached
+      } else {
+        let computed = if is_user {
+          measure_wrapped_ptr(col_w - 28 - u_btn_s - 6, text_ptr, body_sz, line_h, 0)
+        } else {
+          if play_pos >= 0 { mem_store(text_ptr, play_pos); }
+          let h_md = md::layout_md_ptr(0, 0, 0, 0, 0, col_w - 28, text_ptr, body_sz, line_h, th, ClipId::Feed, 0, 0, 0, 0);
+          if play_pos >= 0 { mem_store(text_ptr, orig_text_len); }
+          h_md
+        };
+        StudioMem.msg_meta[mi].cached_h = computed;
+        computed
+      };
+
+      if is_user {
+        let img_pack = StudioMem.msg_meta[mi].feedback_pack;
+        let m_img_start = clamp_i64(img_pack & 255, 0, 15);
+        let m_img_cnt = clamp_i64((img_pack >> 8) & 15, 0, 6);
+        let img_strip_h = if m_img_cnt > 0 { 66 } else { 0 };
+        let box_uh = clamp_i64(img_strip_h + mh + 22, 44, 24000);
+        let mtx = col_x + 14;
+        let mty = cy + 11 + img_strip_h;
+        let mtw = col_w - 28 - u_btn_s - 6;
+        if m_down == 1 && StudioMem.msg_sel_dragging == 1 && StudioMem.msg_sel_ptr == text_ptr {
+          StudioMem.msg_sel_focus = hit_wrapped_ptr(mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, 0);
+        }
+        if cy + box_uh >= vis_y0 && cy <= vis_y1 {
+          let ms0 = if StudioMem.msg_sel_ptr == text_ptr { min_i64(StudioMem.msg_sel_anchor, StudioMem.msg_sel_focus) } else { 0 };
+          let ms1 = if StudioMem.msg_sel_ptr == text_ptr { max_i64(StudioMem.msg_sel_anchor, StudioMem.msg_sel_focus) } else { 0 };
+          ui_rect(col_x, cy, col_w, box_uh, 10, 1, 0, col_surf(th), col_border(th), ClipId::Feed);
+
+          // Copy button (two sheets icon) in the top-right corner of the user question block
+          let u_cp_x = col_x + col_w - u_btn_s - 8;
+          let u_cp_y = cy + 8;
+          let u_ic_sz = clamp_i64(sf(16), 16, 24);
+          let u_ic_off = (u_btn_s - u_ic_sz) / 2;
+          let u_chk_sz = clamp_i64(sf(13), 13, 20);
+          let u_is_copied = StudioMem.copy_toast_ticks > 0 && StudioMem.copy_toast_ptr == text_ptr;
+          let u_cp_hov = can_sel_feed && in_feed_box && point_in_rect(mx, my, u_cp_x, u_cp_y, u_btn_s, u_btn_s);
+          let u_cp_bg = if u_is_copied { col_bg(th) } else if u_cp_hov { col_surf2(th) } else { col_surf(th) };
+          if u_cp_hov {
+            gfx_set_cursor(CursorKind::Pointer);
+            ui_rect(u_cp_x, u_cp_y, u_btn_s, u_btn_s, 7, 1, 0, col_surf2(th), if u_is_copied { col_emerald() } else { col_border(th) }, ClipId::Feed);
+            if m_clicked == 1 {
+              StudioMem.copy_override_ptr = text_ptr;
+              StudioMem.host_action = HostAction::Copy;
+              feed_text_clicked = true;
+            }
+          } else if u_is_copied {
+            ui_rect(u_cp_x, u_cp_y, u_btn_s, u_btn_s, 7, 1, 0, col_bg(th), col_emerald(), ClipId::Feed);
+          }
+          if u_is_copied {
+            ui_text(u_cp_x + (u_btn_s - u_chk_sz) / 2, u_cp_y + (u_btn_s - u_chk_sz) / 2, "✓", u_chk_sz, 1, col_emerald(), ClipId::Feed);
+          } else {
+            ui_icon_copy(u_cp_x + u_ic_off, u_cp_y + u_ic_off, u_ic_sz, if u_cp_hov { col_text(th) } else { col_muted(th) }, u_cp_bg, ClipId::Feed);
+          }
+
+          // Attached image thumbnails inside user message bubble (clickable for lightbox preview)
+          let mut img_clicked = false;
+          if m_img_cnt > 0 {
+            let th_h = 54;
+            let tile_h = th_h + 4;
+            let tile_y = cy + 10;
+            let mut cur_ix = col_x + 14;
+            for ik in 0..m_img_cnt max 6 {
+              let slot = clamp_i64(m_img_start + ik, 0, 15);
+              let iw = clamp_i64(StudioMem.img_w[slot], 1, 8192);
+              let ih = clamp_i64(StudioMem.img_h[slot], 1, 8192);
+              let th_w = clamp_i64((th_h * iw) / ih, 40, 96);
+              let tile_w = th_w + 4;
+              if cur_ix + tile_w <= u_cp_x - 8 {
+                let ihov = can_sel_feed && in_feed_box && point_in_rect(mx, my, cur_ix, tile_y, tile_w, tile_h);
+                ui_rect(cur_ix, tile_y, tile_w, tile_h, 8, 1, 0, col_bg(th), if ihov { col_accent() } else { col_border(th) }, ClipId::Feed);
+                ui_image_slot(cur_ix + 2, tile_y + 2, th_w, th_h, 6, slot, ClipId::Feed);
+                if ihov {
+                  gfx_set_cursor(CursorKind::Pointer);
+                  if m_clicked == 1 {
+                    StudioMem.img_preview_start = m_img_start;
+                    StudioMem.img_preview_count = m_img_cnt;
+                    StudioMem.img_preview_idx = slot;
+                    img_clicked = true;
+                    feed_text_clicked = true;
+                  }
+                }
+                cur_ix += tile_w + 8;
+              }
+            }
+          }
+
+          if !img_clicked && !u_cp_hov && can_sel_feed && in_feed_box && point_in_rect(mx, my, mtx - 4, mty - 4, mtw + 8, mh + 8) {
+            gfx_set_cursor(CursorKind::Text);
+            if m_clicked == 1 {
+              let hit_i = hit_wrapped_ptr(mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, 0);
+              if StudioMem.last_msg_click_ptr == text_ptr && (tick - StudioMem.last_msg_click_tick) <= 24 && hit_i >= StudioMem.last_msg_click_idx - 2 && hit_i <= StudioMem.last_msg_click_idx + 2 {
+                select_word_in_msg(text_ptr, hit_i);
+              } else {
+                StudioMem.msg_sel_ptr = text_ptr;
+                StudioMem.msg_sel_anchor = hit_i;
+                StudioMem.msg_sel_focus = hit_i;
+                StudioMem.msg_sel_dragging = 1;
+              }
+              StudioMem.last_msg_click_tick = tick;
+              StudioMem.last_msg_click_ptr = text_ptr;
+              StudioMem.last_msg_click_idx = hit_i;
+              StudioMem.sel_anchor = StudioMem.cursor_pos;
+              feed_text_clicked = true;
+            }
+          }
+          emit_wrapped_sel_ptr(mtx, mty, mtw, text_ptr, body_sz, line_h, 0, col_text(th), ClipId::Feed, vis_y0, vis_y1, ms0, ms1);
+        }
+        cy += box_uh + 12;
+      } else {
+        let tl_ptr = StudioMem.msg_meta[mi].tl_ptr;
+        let was_exp = StudioMem.msg_tl_expanded[mi];
+        let tl_h = tl::draw_msg_timeline(
+          mi, col_x, cy, col_w, tl_ptr, th, tick,
+          mx, my, m_clicked, can_sel_feed && in_feed_box, vis_y0, vis_y1
+        );
+        if StudioMem.msg_tl_expanded[mi] != was_exp {
+          feed_text_clicked = true;
+        }
+        let mtx = col_x + 14;
+        let mty = cy + tl_h + 10;
+        let mtw = col_w - 28;
+        let play_btn_h = if play_pos >= 0 { clamp_i64(sf(34), 32, 46) } else { 0 };
+        let play_gap = if play_pos >= 0 { play_btn_h + 10 } else { 0 };
+        let fy = mty + mh + play_gap + 4;
+        if play_pos >= 0 { mem_store(text_ptr, play_pos); }
+        if m_down == 1 && StudioMem.msg_sel_dragging == 1 && StudioMem.msg_sel_ptr == text_ptr {
+          StudioMem.msg_sel_focus = md::layout_md_ptr(1, mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, th, ClipId::Feed, vis_y0, vis_y1, 0, 0);
+        }
+        if fy >= vis_y0 && mty <= vis_y1 {
+          if can_sel_feed && in_feed_box && point_in_rect(mx, my, mtx - 4, mty - 4, mtw + 8, mh + 8) {
+            gfx_set_cursor(CursorKind::Text);
+            if m_clicked == 1 {
+              let hit_i = md::layout_md_ptr(1, mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, th, ClipId::Feed, vis_y0, vis_y1, 0, 0);
+              if StudioMem.last_msg_click_ptr == text_ptr && (tick - StudioMem.last_msg_click_tick) <= 24 && hit_i >= StudioMem.last_msg_click_idx - 2 && hit_i <= StudioMem.last_msg_click_idx + 2 {
+                select_word_in_msg(text_ptr, hit_i);
+              } else {
+                StudioMem.msg_sel_ptr = text_ptr;
+                StudioMem.msg_sel_anchor = hit_i;
+                StudioMem.msg_sel_focus = hit_i;
+                StudioMem.msg_sel_dragging = 1;
+              }
+              StudioMem.last_msg_click_tick = tick;
+              StudioMem.last_msg_click_ptr = text_ptr;
+              StudioMem.last_msg_click_idx = hit_i;
+              StudioMem.sel_anchor = StudioMem.cursor_pos;
+              feed_text_clicked = true;
+            }
+          }
+          let ms0 = if StudioMem.msg_sel_ptr == text_ptr { min_i64(StudioMem.msg_sel_anchor, StudioMem.msg_sel_focus) } else { 0 };
+          let ms1 = if StudioMem.msg_sel_ptr == text_ptr { max_i64(StudioMem.msg_sel_anchor, StudioMem.msg_sel_focus) } else { 0 };
+          md::layout_md_ptr(2, mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, th, ClipId::Feed, vis_y0, vis_y1, ms0, ms1);
+        }
+        if play_pos >= 0 { mem_store(text_ptr, orig_text_len); }
+
+        // Clickable Play button for the compiled `.ifw` app in the current project folder
+        if play_pos >= 0 {
+          let py_btn = mty + mh + 6;
+          if py_btn + play_btn_h >= vis_y0 && py_btn <= vis_y1 {
+            let pn_raw = scratch_alloc(128);
+            let play_name_buf = if pn_raw >= 0 { pn_raw } else { SYS_SCRATCH_BASE_WORD };
+            let name_len = extract_play_name(text_ptr, play_pos, play_name_buf);
+            if name_len > 0 {
+              let p_sz = clamp_i64(sf(13), 13, 20);
+              let lbl_w = (p_sz * 8) + tbuf_measure_word_px(play_name_buf, 0, name_len, p_sz, 1);
+              let pb_w = clamp_i64(lbl_w + 32, 150, mtw);
+              let pb_hov = can_sel_feed && in_feed_box && point_in_rect(mx, my, mtx, py_btn, pb_w, play_btn_h);
+              let pb_bg = if pb_hov { pack_rgba(16, 185, 129, 52) } else { pack_rgba(16, 185, 129, 28) };
+              ui_rect(mtx, py_btn, pb_w, play_btn_h, 8, 1, 0, pb_bg, col_emerald(), ClipId::Feed);
+              let p_ty = py_btn + (play_btn_h - p_sz) / 2;
+              let px_after = mtx + 14 + ui_text(mtx + 14, p_ty, "Play: ", p_sz, 1, col_emerald(), ClipId::Feed);
+              emit_line_ptr(px_after, p_ty, play_name_buf, p_sz, 1, col_text(th), ClipId::Feed);
+              if pb_hov {
+                gfx_set_cursor(CursorKind::Pointer);
+                if m_clicked == 1 {
+                  daemon::play_app(StudioMem::active_proj_buf, play_name_buf);
+                  feed_text_clicked = true;
+                }
+              }
+            }
+          }
+        }
+        let ftr_sz = clamp_i64(sf(13), 13, 22);
+        let btn_s = clamp_i64(sf(28), 28, 42);
+        let ic_sz = clamp_i64(sf(18), 18, 26);
+        let ic_off = (btn_s - ic_sz) / 2;
+        if fy + btn_s + 8 >= vis_y0 && fy - 12 <= vis_y1 {
+          let el_t = StudioMem.msg_meta[mi].elapsed_tenths;
+          let cm_v = StudioMem.msg_meta[mi].cost_milli;
+          let tok_v = StudioMem.msg_meta[mi].tokens;
+          let by_i = fy;
+          let ty_f = by_i + (btn_s - ftr_sz) / 2;
+          let mut fx = col_x + 14;
+          if tok_v > 0 {
+            fx += fmt_duration(fx, ty_f, el_t, ftr_sz, col_muted(th), col_muted(th), ClipId::Feed);
+            fx += ui_text(fx + 2, ty_f, " • ", ftr_sz, 0, col_muted(th), ClipId::Feed);
+            fx += emit_cost_in_currency(fx, ty_f, cm_v, cur_id, ftr_sz, 2, col_muted(th), ClipId::Feed);
+            fx += ui_text(fx + 2, ty_f, " • ", ftr_sz, 0, col_muted(th), ClipId::Feed);
+            ui_fmt(fx, ty_f, "{tok_v} ток.", ftr_sz, 0, col_muted(th), ClipId::Feed);
+          }
+
+          let btn_step = btn_s + 8;
+          let dl_x = col_x + col_w - btn_s - 8;
+          let lk_x = dl_x - btn_step;
+          let cp_x = lk_x - btn_step;
+          let fb = StudioMem.msg_meta[mi].feedback_pack;
+
+          // Copy Icon Button
+          let is_copied_btn = StudioMem.copy_toast_ticks > 0 && StudioMem.copy_toast_ptr == text_ptr;
+          let cp_hov = point_in_rect(mx, my, cp_x, by_i, btn_s, btn_s) && can_sel_feed && in_feed_box;
+          let cp_bg = if is_copied_btn { col_surf(th) } else if cp_hov { col_surf2(th) } else { col_bg(th) };
+          if cp_hov {
+            gfx_set_cursor(CursorKind::Pointer);
+            ui_rect(cp_x, by_i, btn_s, btn_s, 7, 1, 0, col_surf2(th), if is_copied_btn { col_emerald() } else { col_border(th) }, ClipId::Feed);
+            if m_clicked == 1 {
+              StudioMem.copy_override_ptr = text_ptr;
+              StudioMem.host_action = HostAction::Copy;
+              feed_text_clicked = true;
+            }
+          } else if is_copied_btn {
+            ui_rect(cp_x, by_i, btn_s, btn_s, 7, 1, 0, col_surf(th), col_emerald(), ClipId::Feed);
+          }
+          if is_copied_btn {
+            ui_text(cp_x + (btn_s - ftr_sz) / 2, ty_f, "✓", ftr_sz, 1, col_emerald(), ClipId::Feed);
+          } else {
+            ui_icon_copy(cp_x + ic_off, by_i + ic_off, ic_sz, if cp_hov { col_text(th) } else { col_muted(th) }, cp_bg, ClipId::Feed);
+          }
+
+          // Like Icon Button
+          let lk_hov = point_in_rect(mx, my, lk_x, by_i, btn_s, btn_s) && can_sel_feed && in_feed_box;
+          if lk_hov {
+            gfx_set_cursor(CursorKind::Pointer);
+            if m_clicked == 1 {
+              StudioMem.msg_meta[mi].feedback_pack = if fb == 1 { 0 } else { 1 };
+              feed_text_clicked = true;
+            }
+          }
+          let is_lk = StudioMem.msg_meta[mi].feedback_pack == 1;
+          if is_lk {
+            ui_rect(lk_x, by_i, btn_s, btn_s, 7, 1, 0, pack_rgba(16, 185, 129, 36), col_emerald(), ClipId::Feed);
+          } else if lk_hov {
+            ui_rect(lk_x, by_i, btn_s, btn_s, 7, 1, 0, col_surf2(th), col_border(th), ClipId::Feed);
+          }
+          ui_icon_thumb(lk_x + ic_off, by_i + ic_off, ic_sz, true, if is_lk { col_emerald() } else if lk_hov { col_text(th) } else { col_muted(th) }, ClipId::Feed);
+
+          // Dislike Icon Button
+          let dl_hov = point_in_rect(mx, my, dl_x, by_i, btn_s, btn_s) && can_sel_feed && in_feed_box;
+          if dl_hov {
+            gfx_set_cursor(CursorKind::Pointer);
+            if m_clicked == 1 {
+              StudioMem.msg_meta[mi].feedback_pack = if fb == 2 { 0 } else { 2 };
+              feed_text_clicked = true;
+            }
+          }
+          let is_dl = StudioMem.msg_meta[mi].feedback_pack == 2;
+          if is_dl {
+            ui_rect(dl_x, by_i, btn_s, btn_s, 7, 1, 0, pack_rgba(220, 38, 38, 38), col_red(), ClipId::Feed);
+          } else if dl_hov {
+            ui_rect(dl_x, by_i, btn_s, btn_s, 7, 1, 0, col_surf2(th), col_border(th), ClipId::Feed);
+          }
+          ui_icon_thumb(dl_x + ic_off, by_i + ic_off, ic_sz, false, if is_dl { col_red() } else if dl_hov { col_text(th) } else { col_muted(th) }, ClipId::Feed);
+        }
+        cy = fy + btn_s + 10;
+      }
+    }
+
+    // Live Non-Blocking Agent Activity Card ("Ход работы")
+    if StudioMem.ai_running == 1 {
+      let was_killing = StudioMem.live_cmd_killing;
+      let card_h = tl::draw_timeline_card(
+        col_x, cy, col_w, StudioMem::live_timeline_buf,
+        th, tick, mx, my, m_clicked, can_sel_feed && in_feed_box, vis_y0, vis_y1
+      );
+      if StudioMem.live_cmd_killing != was_killing {
+        feed_text_clicked = true;
+      }
+      cy += card_h + 12;
+    }
+
+    if m_clicked == 1 && can_sel_feed && in_feed_box && !feed_text_clicked {
+      clear_msg_sel();
+    }
+  }
+
+  let total_h = (cy + next_scr) - feed_y + 24;
+  let new_max = if total_h > feed_h { total_h - feed_h } else { 0 };
+  StudioMem.max_scroll_y = new_max;
+  if StudioMem.auto_scroll_bottom == 1 {
+    StudioMem.scroll_y = new_max;
+    StudioMem.auto_scroll_bottom = 0;
+  } else if StudioMem.ai_running == 1 && new_max > max_scr && (max_scr == 0 || next_scr >= max_scr - 32) {
+    StudioMem.scroll_y = new_max;
+  }
+}
+
+test "find_play_tag and extract_play_name parse trailing PLAY tag" {
+  // "Done\n[PLAY:app.ifw]"
+  scratch_reset();
+  let b = scratch_alloc(64);
+  let dst = scratch_alloc(64);
+  assert(b >= 0 && dst >= 0);
+  mem_store(b, 19);
+  mem_store(b + 1, 'D'); mem_store(b + 2, 'o'); mem_store(b + 3, 'n'); mem_store(b + 4, 'e');
+  mem_store(b + 5, '\n'); mem_store(b + 6, '['); mem_store(b + 7, 'P'); mem_store(b + 8, 'L');
+  mem_store(b + 9, 'A'); mem_store(b + 10, 'Y'); mem_store(b + 11, ':'); mem_store(b + 12, 'a');
+  mem_store(b + 13, 'p'); mem_store(b + 14, 'p'); mem_store(b + 15, '.'); mem_store(b + 16, 'a');
+  mem_store(b + 17, 'x'); mem_store(b + 18, 'w'); mem_store(b + 19, ']');
+  let pos = find_play_tag(b);
+  assert(pos == 4);
+  let nlen = extract_play_name(b, pos, dst);
+  assert(nlen == 7);
+  assert(mem_load(dst + 1) == 'a');
+  assert(mem_load(dst + 7) == 'w');
+}

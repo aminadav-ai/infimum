@@ -1,0 +1,711 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// Live "Ход работы" timeline card, model thought snippet, terminal output tail,
+// interactive shell-command kill button, and collapsible per-message timeline bar.
+
+use "abi.ifm";
+use "primitives.ifm";
+use "theme.ifm";
+use "icons.ifm";
+
+const TL_HEADER_WORDS: i64 = 7;
+const TL_STEP_MIN_WORDS: i64 = 6;
+const TL_MAX_STEPS: i64 = 32;
+const TL_MAX_THOUGHT_CHARS: i64 = 600;
+const TL_MAX_TITLE_CHARS: i64 = 100;
+const TL_MAX_DETAIL_CHARS: i64 = 180;
+const TL_MAX_TAIL_CHARS: i64 = 1000;
+const TL_THOUGHT_MAX_LINES: i64 = 8;
+const TL_THOUGHT_STEP_MAX_LINES: i64 = 14;
+const TL_DETAIL_MAX_LINES: i64 = 2;
+const TL_TAIL_MAX_LINES: i64 = 4;
+
+fn tl_steps_word(n: i64) -> str {
+  let m100 = n % 100;
+  let m10 = n % 10;
+  if m100 >= 11 && m100 <= 14 { " действий" }
+  else if m10 == 1 { " действие" }
+  else if m10 >= 2 && m10 <= 4 { " действия" }
+  else { " действий" }
+}
+
+fn tl_col_amber(th: i64) -> i64 {
+  if th == THEME_LIGHT { pack_rgba(180, 120, 12, 255) } else { pack_rgba(234, 179, 8, 255) }
+}
+
+fn tl_col_thought_bg(th: i64) -> i64 {
+  if th == THEME_LIGHT { pack_rgba(238, 243, 252, 255) } else { pack_rgba(23, 27, 36, 255) }
+}
+
+fn tl_col_term_bg(th: i64) -> i64 {
+  if th == THEME_LIGHT { pack_rgba(24, 28, 38, 255) } else { pack_rgba(14, 17, 23, 255) }
+}
+
+fn tl_col_term_text() -> i64 {
+  pack_rgba(204, 214, 232, 255)
+}
+
+fn tl_col_kill_bg(th: i64) -> i64 {
+  if th == THEME_LIGHT { pack_rgba(220, 38, 38, 26) } else { pack_rgba(220, 38, 38, 38) }
+}
+
+fn tl_icon_status(cx: i64, cy: i64, status: i64, tick: i64, th: i64, clip: i64) -[Mem]-> unit {
+  match status {
+    STEP_STATUS_RUNNING => {
+      let phase = (tick / 12) % 4;
+      let ring_r = if phase == 1 || phase == 2 { 6 } else { 5 };
+      let ring_a = if phase == 1 || phase == 2 { 110 } else { 60 };
+      ui_circle(cx, cy, ring_r, 0, pack_rgba(91, 155, 255, ring_a), clip);
+      ui_circle(cx, cy, 3, 0, col_accent(), clip);
+    },
+    STEP_STATUS_DONE => {
+      ui_circle(cx, cy, 6, 0, pack_rgba(52, 211, 153, 36), clip);
+      icon_check(cx, cy, 3, col_emerald(), clip);
+    },
+    STEP_STATUS_ERROR => {
+      ui_circle(cx, cy, 6, 0, pack_rgba(220, 38, 38, 38), clip);
+      icon_close(cx, cy, 3, col_red(), clip);
+    },
+    _ => {
+      let amb = tl_col_amber(th);
+      ui_circle(cx, cy, 5, 3, amb, clip);
+      ui_line(cx - 3, cy + 3, cx + 3, cy - 3, 2, amb, clip);
+    },
+  }
+}
+
+fn tl_word_px(ptr: i64, start: i64, total: i64, size: i64, style: i64) -[Mem]-> i64 {
+  let mut w = 0;
+  for i in start..total max 64 {
+    let ch = mem_load(ptr + 1 + i);
+    if ch == ' ' || ch == '\n' || ch == '\r' { break; }
+    w += glyph_px(ch, size, style);
+  }
+  w
+}
+
+fn tl_wrapped_text(
+  draw: bool, x: i64, y: i64, ptr: i64, max_chars: i64, max_w: i64,
+  size: i64, line_h: i64, style: i64, rgba: i64, clip: i64,
+  max_lines: i64, vis_y0: i64, vis_y1: i64
+) -[Mem]-> i64 {
+  let cap = clamp_i64(max_chars, 0, TL_MAX_TAIL_CHARS);
+  let n = clamp_i64(mem_load(ptr), 0, cap);
+  let lim_lines = clamp_i64(max_lines, 0, 20);
+  let safe_w = clamp_i64(max_w, 60, 1400);
+  if n == 0 || lim_lines == 0 {
+    0
+  } else {
+    let mut cx = 0;
+    let mut line_idx = 0;
+    let mut i = 0;
+    while i < n && line_idx < lim_lines max 420 {
+      let ch = mem_load(ptr + 1 + i);
+      if ch == '\r' {
+        i += 1;
+      } else if ch == '\n' {
+        cx = 0;
+        line_idx += 1;
+        i += 1;
+      } else if ch == ' ' {
+        let sp = glyph_px(' ', size, style);
+        if cx > 0 && cx + sp <= safe_w {
+          cx += sp;
+        }
+        i += 1;
+      } else {
+        let ww = tl_word_px(ptr, i, n, size, style);
+        if cx > 0 && cx + ww > safe_w {
+          cx = 0;
+          line_idx += 1;
+        }
+        for _ in 0..64 {
+          if i >= n || line_idx >= lim_lines { break; }
+          let c2 = mem_load(ptr + 1 + i);
+          if c2 == ' ' || c2 == '\n' || c2 == '\r' { break; }
+          let adv = glyph_px(c2, size, style);
+          if cx > 0 && cx + adv > safe_w {
+            cx = 0;
+            line_idx += 1;
+          }
+          if line_idx < lim_lines {
+            let ly = y + line_idx * line_h;
+            if draw && ly + line_h >= vis_y0 && ly <= vis_y1 {
+              ui_glyph(x + cx, ly, c2, size, style, rgba, clip);
+            }
+            cx += adv;
+            i += 1;
+          }
+        }
+      }
+    }
+    let lines = if line_idx >= lim_lines {
+      lim_lines
+    } else if cx > 0 || line_idx == 0 {
+      line_idx + 1
+    } else {
+      line_idx
+    };
+    lines * line_h
+  }
+}
+
+fn tl_emit_clipped_line(
+  x: i64, y: i64, ptr: i64, max_chars: i64, max_w: i64,
+  size: i64, style: i64, rgba: i64, clip: i64
+) -[Mem]-> i64 {
+  let cap = clamp_i64(max_chars, 0, 240);
+  let n = clamp_i64(mem_load(ptr), 0, cap);
+  let safe_w = clamp_i64(max_w, 20, 1400);
+  let mut cx = 0;
+  for i in 0..n max 240 {
+    let ch = mem_load(ptr + 1 + i);
+    if ch == '\n' || ch == '\r' { break; }
+    let adv = glyph_px(ch, size, style);
+    if cx + adv > safe_w { break; }
+    ui_glyph(x + cx, y, ch, size, style, rgba, clip);
+    cx += adv;
+  }
+  cx
+}
+
+fn tl_has_content(base: i64) -[Mem]-> bool {
+  if base <= 0 {
+    false
+  } else {
+    let total_w = clamp_i64(mem_load(base), 0, LIVE_TIMELINE_MAX_WORDS);
+    if total_w < TL_HEADER_WORDS {
+      false
+    } else {
+      let steps = clamp_i64(mem_load(base + 5) & 65535, 0, TL_MAX_STEPS);
+      let th_len = clamp_i64(mem_load(base + 6), 0, TL_MAX_THOUGHT_CHARS);
+      steps > 0 || th_len > 0
+    }
+  }
+}
+
+fn tl_body_layout(
+  draw: bool, x: i64, y: i64, w: i64, base: i64,
+  th: i64, tick: i64, clip: i64, vis_y0: i64, vis_y1: i64
+) -[Mem]-> i64 {
+  if base <= 0 {
+    0
+  } else {
+    let total_w = clamp_i64(mem_load(base), 0, LIVE_TIMELINE_MAX_WORDS);
+    if total_w < TL_HEADER_WORDS {
+      0
+    } else {
+      let sm_sz = sf(12);
+      let body_sz = sf(13);
+      let mono_sz = sf(12);
+      let sm_lh = sm_sz + 5;
+      let body_lh = body_sz + 6;
+      let mono_lh = mono_sz + 5;
+      let safe_w = clamp_i64(w, 160, 1200);
+      let mut cy = y;
+
+      // 1. Model thought snippet block
+      let thought_ptr = base + 6;
+      let thought_len = clamp_i64(mem_load(thought_ptr), 0, TL_MAX_THOUGHT_CHARS);
+      if thought_len > 0 {
+        let th_tx = x + 12;
+        let th_tw = clamp_i64(safe_w - 20, 100, 1180);
+        let th_text_y = cy + 6 + sm_lh + 2;
+        let th_text_h = tl_wrapped_text(
+          false, th_tx, th_text_y, thought_ptr, TL_MAX_THOUGHT_CHARS, th_tw,
+          sm_sz, sm_lh, 0, col_muted(th), clip, TL_THOUGHT_MAX_LINES, vis_y0, vis_y1
+        );
+        let th_box_h = 6 + sm_lh + 2 + th_text_h + 6;
+        if draw && cy + th_box_h >= vis_y0 && cy <= vis_y1 {
+          ui_rect(x, cy, safe_w, th_box_h, 6, 1, 0, tl_col_thought_bg(th), col_border(th), clip);
+          ui_rect(x, cy + 2, 3, clamp_i64(th_box_h - 4, 4, 400), 2, 0, 0, col_accent(), 0, clip);
+          ui_text(th_tx, cy + 6, "Мысли модели", sm_sz, 1, col_accent(), clip);
+          let _ = tl_wrapped_text(
+            true, th_tx, th_text_y, thought_ptr, TL_MAX_THOUGHT_CHARS, th_tw,
+            sm_sz, sm_lh, 0, col_muted(th), clip, TL_THOUGHT_MAX_LINES, vis_y0, vis_y1
+          );
+        }
+        cy += th_box_h + 8;
+      }
+
+      // 2. Vertical timeline step list
+      let step_count = clamp_i64(mem_load(base + 5) & 65535, 0, TL_MAX_STEPS);
+      let end_p = base + total_w;
+      let mut p = base + TL_HEADER_WORDS + thought_len;
+      let icon_cx = x + 10;
+      let content_x = x + 26;
+      let content_w = clamp_i64(safe_w - 30, 100, 1160);
+      let dur_col_w = sf(54);
+      let title_max_w = clamp_i64(content_w - dur_col_w - 8, 60, 1080);
+      let mut prev_icon_y = 0;
+      let mut si = 0;
+
+      while si < step_count && p + TL_STEP_MIN_WORDS <= end_p max 32 {
+        let st_status = mem_load(p);
+        let st_kind = mem_load(p + 1);
+        let st_dur = clamp_i64(mem_load(p + 2), 0, 99999);
+        let title_ptr = p + 3;
+        let title_len = clamp_i64(mem_load(title_ptr), 0, TL_MAX_TITLE_CHARS);
+        let detail_ptr = title_ptr + 1 + title_len;
+        let detail_len = if detail_ptr < end_p {
+          clamp_i64(mem_load(detail_ptr), 0, TL_MAX_DETAIL_CHARS)
+        } else {
+          0
+        };
+        let tail_ptr = detail_ptr + 1 + detail_len;
+        let tail_len = if tail_ptr < end_p {
+          clamp_i64(mem_load(tail_ptr), 0, TL_MAX_TAIL_CHARS)
+        } else {
+          0
+        };
+        let next_p = tail_ptr + 1 + tail_len;
+
+        let step_y = cy;
+        let cur_icon_y = step_y + body_sz / 2 + 2;
+        if draw && si > 0 && cur_icon_y - 7 > prev_icon_y + 7 {
+          if cur_icon_y >= vis_y0 && prev_icon_y <= vis_y1 {
+            ui_line(icon_cx, prev_icon_y + 7, icon_cx, cur_icon_y - 7, 1, col_border(th), clip);
+          }
+        }
+
+        if draw && step_y + body_lh >= vis_y0 && step_y <= vis_y1 {
+          if st_kind == STEP_KIND_THINK {
+            ui_circle(icon_cx, cur_icon_y, 4, 0, col_accent(), clip);
+            tl_emit_clipped_line(content_x, step_y, title_ptr, TL_MAX_TITLE_CHARS, content_w, body_sz, 1, col_accent(), clip);
+          } else {
+            tl_icon_status(icon_cx, cur_icon_y, st_status, tick, th, clip);
+            let title_col = match st_status {
+              STEP_STATUS_RUNNING => col_accent(),
+              STEP_STATUS_ERROR => col_red(),
+              STEP_STATUS_CANCELLED => tl_col_amber(th),
+              _ => col_text(th),
+            };
+            tl_emit_clipped_line(content_x, step_y, title_ptr, TL_MAX_TITLE_CHARS, title_max_w, body_sz, 1, title_col, clip);
+            let dur_x = x + safe_w - dur_col_w;
+            let dw = fmt_fixed_1(dur_x, step_y + 1, st_dur, sm_sz, 2, col_muted(th), clip);
+            ui_text(dur_x + dw, step_y + 1, " с", sm_sz, 0, col_muted(th), clip);
+          }
+        }
+        cy += body_lh;
+
+        if detail_len > 0 {
+          let det_style = if st_kind == STEP_KIND_CMD { 2 } else { 0 };
+          let det_h = tl_wrapped_text(
+            draw, content_x, cy, detail_ptr, TL_MAX_DETAIL_CHARS, content_w,
+            sm_sz, sm_lh, det_style, col_muted(th), clip, TL_DETAIL_MAX_LINES, vis_y0, vis_y1
+          );
+          cy += det_h + 2;
+        }
+
+        if tail_len > 0 {
+          if st_kind == STEP_KIND_THINK {
+            let th_tw = clamp_i64(content_w - 20, 60, 1140);
+            let th_text_h = tl_wrapped_text(
+              false, content_x + 12, cy + 6, tail_ptr, TL_MAX_TAIL_CHARS, th_tw,
+              sm_sz, sm_lh, 0, col_text(th), clip, TL_THOUGHT_STEP_MAX_LINES, vis_y0, vis_y1
+            );
+            let th_box_h = th_text_h + 12;
+            if draw && cy + th_box_h >= vis_y0 && cy <= vis_y1 {
+              ui_rect(content_x, cy, content_w, th_box_h, 6, 1, 0, tl_col_thought_bg(th), col_border(th), clip);
+              ui_rect(content_x, cy + 2, 3, clamp_i64(th_box_h - 4, 4, 800), 2, 0, 0, col_accent(), 0, clip);
+              let _ = tl_wrapped_text(
+                true, content_x + 12, cy + 6, tail_ptr, TL_MAX_TAIL_CHARS, th_tw,
+                sm_sz, sm_lh, 0, col_text(th), clip, TL_THOUGHT_STEP_MAX_LINES, vis_y0, vis_y1
+              );
+            }
+            cy += th_box_h + 4;
+          } else {
+            let tail_tw = clamp_i64(content_w - 16, 60, 1140);
+            let tail_text_h = tl_wrapped_text(
+              false, content_x + 8, cy + 5, tail_ptr, TL_MAX_TAIL_CHARS, tail_tw,
+              mono_sz, mono_lh, 2, tl_col_term_text(), clip, TL_TAIL_MAX_LINES, vis_y0, vis_y1
+            );
+            let tail_box_h = tail_text_h + 10;
+            if draw && cy + tail_box_h >= vis_y0 && cy <= vis_y1 {
+              ui_rect(content_x, cy, content_w, tail_box_h, 6, 1, 0, tl_col_term_bg(th), col_border(th), clip);
+              let _ = tl_wrapped_text(
+                true, content_x + 8, cy + 5, tail_ptr, TL_MAX_TAIL_CHARS, tail_tw,
+                mono_sz, mono_lh, 2, tl_col_term_text(), clip, TL_TAIL_MAX_LINES, vis_y0, vis_y1
+              );
+            }
+            cy += tail_box_h + 4;
+          }
+        }
+
+        cy += 4;
+        prev_icon_y = cur_icon_y;
+        p = next_p;
+        si += 1;
+      }
+
+      cy - y
+    }
+  }
+}
+
+pub fn draw_timeline_card(
+  col_x: i64, cy: i64, col_w: i64, base: i64,
+  th: i64, tick: i64, mx: i64, my: i64, m_clicked: i64,
+  can_interact: bool, vis_y0: i64, vis_y1: i64
+) -[Mem, Net]-> i64 {
+  let hdr_h = clamp_i64(sf(38), 36, 54);
+  let ftr_h = clamp_i64(sf(30), 28, 42);
+  let hdr_sz = sf(14);
+  let sm_sz = sf(12);
+  let has_blob = StudioMem.live_timeline_words >= TL_HEADER_WORDS && mem_load(base) >= TL_HEADER_WORDS;
+  let body_h = if has_blob && tl_has_content(base) {
+    tl_body_layout(false, col_x + 14, cy + hdr_h + 8, clamp_i64(col_w - 28, 160, 1200), base, th, tick, ClipId::Feed, vis_y0, vis_y1)
+  } else {
+    0
+  };
+  let card_h = if body_h > 0 { hdr_h + 8 + body_h + 8 + ftr_h } else { hdr_h + 8 };
+
+  if cy + card_h >= vis_y0 && cy <= vis_y1 {
+    ui_rect(col_x, cy, col_w, card_h, 10, 1, 0, col_surf(th), col_accent(), ClipId::Feed);
+
+    // Pulsing live indicator in header
+    let pulse_y = cy + hdr_h / 2;
+    let phase = (tick / 10) % 4;
+    let pr = if phase == 1 || phase == 2 { 6 } else { 5 };
+    let pa = if phase == 1 || phase == 2 { 120 } else { 55 };
+    ui_circle(col_x + 18, pulse_y, pr, 0, pack_rgba(91, 155, 255, pa), ClipId::Feed);
+    ui_circle(col_x + 18, pulse_y, 3, 0, col_accent(), ClipId::Feed);
+
+    // Right-aligned badges & optional kill-command button
+    let badge_h = clamp_i64(sm_sz + 10, 22, 34);
+    let badge_y = cy + (hdr_h - badge_h) / 2;
+    let mut right_x = col_x + col_w - 12;
+
+    // 1. Live timer badge (M мин S с when >= 60s)
+    let elapsed = if has_blob {
+      clamp_i64(mem_load(base + 3), 0, 999999)
+    } else {
+      clamp_i64(StudioMem.async_elapsed_tenths, 0, 999999)
+    };
+    let timer_w = clamp_i64(fmt_duration_width(elapsed, sm_sz) + 18, 54, 220);
+    right_x -= timer_w;
+    ui_rect(right_x, badge_y, timer_w, badge_h, 6, 1, 0, col_surf2(th), col_border(th), ClipId::Feed);
+    fmt_duration(right_x + 9, badge_y + (badge_h - sm_sz) / 2, elapsed, sm_sz, col_text(th), col_muted(th), ClipId::Feed);
+
+    // 2. Round badge ("Раунд X/Y")
+    if has_blob {
+      let round_v = clamp_i64(mem_load(base + 1), 1, 99);
+      let max_r = clamp_i64(mem_load(base + 2), 1, 99);
+      let step_txt_w = ui_fmt_width("Раунд {round_v}/{max_r}", sm_sz, 0);
+      let step_w = clamp_i64(step_txt_w + 18, 68, 220);
+      right_x -= step_w + 6;
+      ui_rect(right_x, badge_y, step_w, badge_h, 6, 1, 0, col_surf2(th), col_border(th), ClipId::Feed);
+      ui_fmt(right_x + 9, badge_y + (badge_h - sm_sz) / 2, "Раунд {round_v}/{max_r}", sm_sz, 0, col_text(th), ClipId::Feed);
+    }
+
+    // 3. Red interactive "Прервать команду" button when shell command is active
+    let has_running_cmd = has_blob && mem_load(base + 4) == 1;
+    if has_running_cmd {
+      let killing = StudioMem.live_cmd_killing == 1;
+      let kill_w = if killing {
+        clamp_i64(ui_text_width("Прерываю...", sm_sz, 0) + 20, 86, 220)
+      } else {
+        clamp_i64(ui_text_width("Прервать команду", sm_sz, 1) + 34, 136, 300)
+      };
+      right_x -= kill_w + 6;
+      let kill_hov = !killing && can_interact && point_in_rect(mx, my, right_x, badge_y, kill_w, badge_h);
+      if kill_hov {
+        gfx_set_cursor(CursorKind::Pointer);
+        if m_clicked == 1 {
+          daemon::agent_kill_cmd();
+          StudioMem.live_cmd_killing = 1;
+        }
+      }
+      if killing {
+        ui_rect(right_x, badge_y, kill_w, badge_h, 6, 1, 0, col_surf2(th), col_border(th), ClipId::Feed);
+        ui_text(right_x + 10, badge_y + (badge_h - sm_sz) / 2, "Прерываю...", sm_sz, 0, col_muted(th), ClipId::Feed);
+      } else {
+        let k_bg = if kill_hov { col_red() } else { tl_col_kill_bg(th) };
+        let k_fg = if kill_hov { pack_rgba(255, 255, 255, 255) } else { col_red() };
+        ui_rect(right_x, badge_y, kill_w, badge_h, 6, 1, 0, k_bg, col_red(), ClipId::Feed);
+        icon_close(right_x + 12, badge_y + badge_h / 2, 3, k_fg, ClipId::Feed);
+        ui_text(right_x + 22, badge_y + (badge_h - sm_sz) / 2, "Прервать команду", sm_sz, 1, k_fg, ClipId::Feed);
+      }
+    }
+
+    // Left status text (clipped so it never collides with right badges)
+    let st_x = col_x + 32;
+    let st_max_w = clamp_i64(right_x - st_x - 8, 40, 640);
+    let st_y = cy + (hdr_h - hdr_sz) / 2;
+    if mem_load(StudioMem::agent_status_buf) > 0 {
+      tl_emit_clipped_line(st_x, st_y, StudioMem::agent_status_buf, 200, st_max_w, hdr_sz, 1, col_accent(), ClipId::Feed);
+    } else {
+      ui_text(st_x, st_y, "Думаю...", hdr_sz, 1, col_accent(), ClipId::Feed);
+    }
+
+    // Body (thoughts + step list) + bottom live summary footer
+    if body_h > 0 {
+      ui_line(col_x + 12, cy + hdr_h, col_x + col_w - 12, cy + hdr_h, 1, col_border(th), ClipId::Feed);
+      let _ = tl_body_layout(
+        true, col_x + 14, cy + hdr_h + 8, clamp_i64(col_w - 28, 160, 1200),
+        base, th, tick, ClipId::Feed, vis_y0, vis_y1
+      );
+      let ftr_y = cy + hdr_h + 8 + body_h + 6;
+      if ftr_y + ftr_h >= vis_y0 && ftr_y <= vis_y1 {
+        ui_line(col_x + 12, ftr_y, col_x + col_w - 12, ftr_y, 1, col_border(th), ClipId::Feed);
+        let fy_t = ftr_y + (ftr_h - sm_sz) / 2;
+        ui_circle(col_x + 18, ftr_y + ftr_h / 2, 3, 0, col_accent(), ClipId::Feed);
+        let raw_st = mem_load(base + 5);
+        let enc_st = clamp_i64(raw_st & 65535, 0, TL_MAX_STEPS);
+        let hi_st = (raw_st >> 16) & 65535;
+        let tot_st = if hi_st > enc_st { hi_st } else { enc_st };
+        let round_f = clamp_i64(mem_load(base + 1), 1, 99);
+        let max_rf = clamp_i64(mem_load(base + 2), 1, 99);
+        let mut fx = col_x + 28;
+        fx += ui_text(fx, fy_t, "Ход работы: ", sm_sz, 1, col_text(th), ClipId::Feed);
+        fx += ui_int(fx, fy_t, tot_st, sm_sz, 2, col_accent(), ClipId::Feed);
+        fx += ui_text(fx, fy_t, tl_steps_word(tot_st), sm_sz, 0, col_muted(th), ClipId::Feed);
+        fx += ui_fmt(fx, fy_t, " • Раунд {round_f}/{max_rf} • ", sm_sz, 0, col_muted(th), ClipId::Feed);
+        fmt_duration(fx, fy_t, elapsed, sm_sz, col_text(th), col_muted(th), ClipId::Feed);
+      }
+    }
+  }
+  card_h
+}
+
+fn tl_draw_summary_left_slot(rx: i64, ry: i64, _rw: i64, rh: i64, _clip_id: i64) -[Mem]-> unit {
+  let tl_ptr = StudioMem.tl_bar_ptr;
+  let is_exp = StudioMem.tl_bar_exp == 1;
+  let hov = StudioMem.tl_bar_hov == 1;
+  let sm_sz = clamp_i64(StudioMem.tl_bar_sm_sz, 8, 24);
+  let th = StudioMem.theme;
+  if tl_ptr >= StudioMem::msg_pool && tl_ptr + TL_HEADER_WORDS < StudioMem::msg_pool + MSG_POOL_GUARD_OFFSET {
+    let chev_col = if hov { col_accent() } else { col_muted(th) };
+    if is_exp {
+      icon_chevron_down(rx + 5, ry + rh / 2, sm_sz, chev_col, ClipId::Feed);
+    } else {
+      icon_chevron_right(rx + 5, ry + rh / 2, sm_sz, chev_col, ClipId::Feed);
+    }
+
+    let raw_steps = mem_load(tl_ptr + 5);
+    let enc_steps = clamp_i64(raw_steps & 65535, 0, TL_MAX_STEPS);
+    let hi_steps = (raw_steps >> 16) & 65535;
+    let total_steps = if hi_steps > enc_steps { hi_steps } else { enc_steps };
+    let el_t = clamp_i64(mem_load(tl_ptr + 3), 0, 999999);
+    let ty = ry + (rh - sm_sz) / 2;
+    let mut lx = rx + 18;
+    lx += ui_text(lx, ty, "Ход работы: ", sm_sz, 1, col_text(th), ClipId::Feed);
+    if total_steps > 0 {
+      lx += ui_int(lx, ty, total_steps, sm_sz, 2, col_accent(), ClipId::Feed);
+      lx += ui_text(lx, ty, tl_steps_word(total_steps), sm_sz, 0, col_muted(th), ClipId::Feed);
+      if total_steps > enc_steps {
+        lx += ui_fmt(lx, ty, " (посл. {enc_steps})", sm_sz, 0, col_muted(th), ClipId::Feed);
+      }
+    } else {
+      lx += ui_text(lx, ty, "мысли", sm_sz, 0, col_muted(th), ClipId::Feed);
+    }
+    lx += ui_text(lx, ty, " за ", sm_sz, 0, col_muted(th), ClipId::Feed);
+    fmt_duration(lx, ty, el_t, sm_sz, col_text(th), col_muted(th), ClipId::Feed);
+  }
+}
+
+forma TimelineSummaryBar(
+  bar_x: i64,
+  row_y: i64,
+  bar_w: i64,
+  bar_h: i64,
+  sm_sz: i64,
+  hint_lbl: str,
+  hint_col: i64,
+  hint_vis: bool
+)
+  req bar_w >= 180 && bar_h >= 24 && bar_h <= 64 && sm_sz >= 8 && sm_sz <= 24
+  -[Mem]-> i64
+{
+  Row(x: bar_x, y: row_y, w: bar_w, h: bar_h, pad_x: 10, gap: 8, align: center) {
+    Box(grow: 1, h: bar_h) {
+      Slot(render: tl_draw_summary_left_slot)
+    }
+    Text(hint_lbl, size: sm_sz, style: 0, color: hint_col, shrink: 1, overflow: ellipsis, visible: hint_vis)
+  }
+}
+
+fn tl_draw_msg_summary_bar(
+  bar_x: i64, row_y: i64, bar_w: i64, bar_h: i64, sm_sz: i64,
+  tl_ptr: i64, is_exp: bool, hov: bool, th: i64, vis_y0: i64, vis_y1: i64
+) -[Mem]-> unit {
+  if row_y + bar_h >= vis_y0 && row_y <= vis_y1 {
+    StudioMem.tl_bar_ptr = tl_ptr;
+    StudioMem.tl_bar_exp = if is_exp { 1 } else { 0 };
+    StudioMem.tl_bar_hov = if hov { 1 } else { 0 };
+    StudioMem.tl_bar_sm_sz = clamp_i64(sm_sz, 8, 24);
+    let hint_lbl = if is_exp { "свернуть" } else { "развернуть" };
+    let hint_col = if hov { col_accent() } else { col_muted(th) };
+    let hint_vis = row_y >= vis_y0 && row_y + bar_h <= vis_y1;
+    let bw = clamp_i64(bar_w, 180, 1400);
+    let bh = clamp_i64(bar_h, 24, 64);
+    TimelineSummaryBar(bar_x, row_y, bw, bh, clamp_i64(sm_sz, 8, 24), hint_lbl, hint_col, hint_vis);
+  }
+}
+
+fn tl_copy_append_cp(pos: i64, cp: i64) -[Mem]-> i64 {
+  if pos >= 0 && pos < LARGE_COPY_MAX_CHARS {
+    mem_store(StudioMem::copy_mailbox + 1 + pos, cp);
+    pos + 1
+  } else {
+    pos
+  }
+}
+
+fn tl_copy_append_buf(pos: i64, ptr: i64, max_len: i64) -[Mem]-> i64 {
+  let n = clamp_i64(mem_load(ptr), 0, max_len);
+  let mut p = pos;
+  let mut i = 0;
+  while i < n && p < LARGE_COPY_MAX_CHARS max 1024 {
+    mem_store(StudioMem::copy_mailbox + 1 + p, mem_load(ptr + 1 + i));
+    p += 1;
+    i += 1;
+  }
+  p
+}
+
+fn tl_copy_to_mailbox(tl_ptr: i64) -[Mem]-> unit {
+  let total_w = clamp_i64(mem_load(tl_ptr), 0, LIVE_TIMELINE_MAX_WORDS);
+  if total_w >= TL_HEADER_WORDS {
+    let mut out_n = 0;
+    let thought_ptr = tl_ptr + 6;
+    let thought_len = clamp_i64(mem_load(thought_ptr), 0, TL_MAX_THOUGHT_CHARS);
+    if thought_len > 0 {
+      out_n = tl_copy_append_buf(out_n, thought_ptr, TL_MAX_THOUGHT_CHARS);
+      out_n = tl_copy_append_cp(out_n, '\n');
+      out_n = tl_copy_append_cp(out_n, '\n');
+    }
+    let step_count = clamp_i64(mem_load(tl_ptr + 5) & 65535, 0, TL_MAX_STEPS);
+    let end_p = tl_ptr + total_w;
+    let mut p = tl_ptr + TL_HEADER_WORDS + thought_len;
+    let mut si = 0;
+    while si < step_count && p + TL_STEP_MIN_WORDS <= end_p max 32 {
+      let title_ptr = p + 3;
+      let title_len = clamp_i64(mem_load(title_ptr), 0, TL_MAX_TITLE_CHARS);
+      let detail_ptr = title_ptr + 1 + title_len;
+      let detail_len = if detail_ptr < end_p { clamp_i64(mem_load(detail_ptr), 0, TL_MAX_DETAIL_CHARS) } else { 0 };
+      let tail_ptr = detail_ptr + 1 + detail_len;
+      let tail_len = if tail_ptr < end_p { clamp_i64(mem_load(tail_ptr), 0, TL_MAX_TAIL_CHARS) } else { 0 };
+      let next_p = tail_ptr + 1 + tail_len;
+
+      if title_len > 0 {
+        out_n = tl_copy_append_buf(out_n, title_ptr, TL_MAX_TITLE_CHARS);
+        out_n = tl_copy_append_cp(out_n, '\n');
+      }
+      if detail_len > 0 {
+        out_n = tl_copy_append_cp(out_n, ' ');
+        out_n = tl_copy_append_cp(out_n, ' ');
+        out_n = tl_copy_append_buf(out_n, detail_ptr, TL_MAX_DETAIL_CHARS);
+        out_n = tl_copy_append_cp(out_n, '\n');
+      }
+      if tail_len > 0 {
+        out_n = tl_copy_append_buf(out_n, tail_ptr, TL_MAX_TAIL_CHARS);
+        out_n = tl_copy_append_cp(out_n, '\n');
+      }
+      out_n = tl_copy_append_cp(out_n, '\n');
+      p = next_p;
+      si += 1;
+    }
+    mem_store(StudioMem::copy_mailbox, clamp_i64(out_n, 0, LARGE_COPY_MAX_CHARS));
+    StudioMem.copy_override_ptr = -1;
+    StudioMem.copy_toast_ticks = 90;
+    StudioMem.copy_toast_ptr = tl_ptr;
+    StudioMem.host_action = HostAction::Copy;
+  }
+}
+
+pub fn draw_msg_timeline(
+  mi: i64, col_x: i64, cy: i64, col_w: i64, tl_ptr: i64,
+  th: i64, tick: i64, mx: i64, my: i64, m_clicked: i64,
+  can_interact: bool, vis_y0: i64, vis_y1: i64
+) -[Mem]-> i64 {
+  if mi < 0 || mi >= MAX_MESSAGES || tl_ptr < StudioMem::msg_pool || tl_ptr + TL_HEADER_WORDS >= StudioMem::msg_pool + MSG_POOL_GUARD_OFFSET {
+    0
+  } else if !tl_has_content(tl_ptr) {
+    0
+  } else {
+    let is_exp = StudioMem.msg_tl_expanded[mi] == 1;
+    let bar_h = clamp_i64(sf(30), 28, 44);
+    let sm_sz = sf(12);
+    let bar_x = col_x + 12;
+    let bar_y = cy + 4;
+    let bar_w = clamp_i64(col_w - 24, 180, 1200);
+    let body_w = clamp_i64(bar_w - 24, 160, 1180);
+    let body_h = if is_exp {
+      tl_body_layout(false, bar_x + 12, bar_y + bar_h + 6, body_w, tl_ptr, th, tick, ClipId::Feed, vis_y0, vis_y1)
+    } else {
+      0
+    };
+    let ftr_y = bar_y + bar_h + 6 + body_h + 6;
+    let box_h = if is_exp { bar_h + 6 + body_h + 6 + bar_h } else { bar_h };
+    let total_h = box_h + 8;
+
+    if bar_y + box_h >= vis_y0 && bar_y <= vis_y1 {
+      let cp_s = clamp_i64(bar_h - 6, 22, 34);
+      let cp_x = bar_x + bar_w - cp_s - 4;
+      let cp_y = bar_y + (bar_h - cp_s) / 2;
+      let cp_hov = can_interact && point_in_rect(mx, my, cp_x, cp_y, cp_s, cp_s);
+      let top_hov = can_interact && !cp_hov && point_in_rect(mx, my, bar_x, bar_y, bar_w, bar_h);
+      let bot_hov = is_exp && can_interact && point_in_rect(mx, my, bar_x, ftr_y, bar_w, bar_h);
+      let bar_hov = top_hov || bot_hov;
+      if cp_hov {
+        gfx_set_cursor(CursorKind::Pointer);
+        if m_clicked == 1 {
+          tl_copy_to_mailbox(tl_ptr);
+        }
+      } else if bar_hov {
+        gfx_set_cursor(CursorKind::Pointer);
+        if m_clicked == 1 {
+          StudioMem.msg_tl_expanded[mi] = if is_exp { 0 } else { 1 };
+        }
+      }
+
+      let bg_col = if bar_hov && !is_exp { col_surf2(th) } else { col_surf(th) };
+      let brd_col = if bar_hov { col_accent() } else { col_border(th) };
+      ui_rect(bar_x, bar_y, bar_w, box_h, 8, 1, 0, bg_col, brd_col, ClipId::Feed);
+      if is_exp && top_hov {
+        ui_rect(bar_x + 1, bar_y + 1, bar_w - 2, bar_h - 1, 7, 0, 0, col_surf2(th), 0, ClipId::Feed);
+      }
+
+      // Top summary bar + copy button for the entire timeline (thoughts + steps)
+      let sum_w = clamp_i64(bar_w - cp_s - 6, 180, 1200);
+      tl_draw_msg_summary_bar(bar_x, bar_y, sum_w, bar_h, sm_sz, tl_ptr, is_exp, top_hov, th, vis_y0, vis_y1);
+      if cp_y + cp_s >= vis_y0 && cp_y <= vis_y1 {
+        let is_cp = StudioMem.copy_toast_ticks > 0 && StudioMem.copy_toast_ptr == tl_ptr;
+        let ic_sz = clamp_i64(sm_sz + 2, 13, 20);
+        let ic_off = (cp_s - ic_sz) / 2;
+        let cp_bg = if is_cp { col_bg(th) } else if cp_hov { col_surf2(th) } else { bg_col };
+        if cp_hov {
+          ui_rect(cp_x, cp_y, cp_s, cp_s, 6, 1, 0, col_surf2(th), if is_cp { col_emerald() } else { col_border(th) }, ClipId::Feed);
+        } else if is_cp {
+          ui_rect(cp_x, cp_y, cp_s, cp_s, 6, 1, 0, col_bg(th), col_emerald(), ClipId::Feed);
+        }
+        if is_cp {
+          ui_text(cp_x + (cp_s - sm_sz) / 2, cp_y + (cp_s - sm_sz) / 2, "✓", sm_sz, 1, col_emerald(), ClipId::Feed);
+        } else {
+          ui_icon_copy(cp_x + ic_off, cp_y + ic_off, ic_sz, if cp_hov { col_text(th) } else { col_muted(th) }, cp_bg, ClipId::Feed);
+        }
+      }
+
+      // Expanded body + bottom summary footer bar (so indicators & collapse are visible at the bottom!)
+      if is_exp {
+        if body_h > 0 {
+          ui_line(bar_x + 10, bar_y + bar_h, bar_x + bar_w - 10, bar_y + bar_h, 1, col_border(th), ClipId::Feed);
+          let _ = tl_body_layout(
+            true, bar_x + 12, bar_y + bar_h + 6, body_w,
+            tl_ptr, th, tick, ClipId::Feed, vis_y0, vis_y1
+          );
+        }
+        if ftr_y + bar_h >= vis_y0 && ftr_y <= vis_y1 {
+          if bot_hov {
+            ui_rect(bar_x + 1, ftr_y, bar_w - 2, bar_h - 1, 7, 0, 0, col_surf2(th), 0, ClipId::Feed);
+          }
+          ui_line(bar_x + 10, ftr_y, bar_x + bar_w - 10, ftr_y, 1, col_border(th), ClipId::Feed);
+          tl_draw_msg_summary_bar(bar_x, ftr_y, bar_w, bar_h, sm_sz, tl_ptr, is_exp, bot_hov, th, vis_y0, vis_y1);
+        }
+      }
+    }
+    total_h
+  }
+}

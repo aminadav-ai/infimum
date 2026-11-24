@@ -1,0 +1,13 @@
+/target/
+**/target/
+**/pkg/
+.infimum/
+**/.infimum/
+logs/*
+**/logs/*
+!logs/.gitkeep
+!**/logs/.gitkeep
+.env
+*.key
+*.pem
+.DS_Store

@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/infimum-lang",
+    "crates/infimum-web",
+    "apps/infimum-code/daemon",
+]
+
+[workspace.package]
+authors = ["Yehuda Aminadav"]
+edition = "2021"
+repository = "https://github.com/aminadav-ai/infimum"
+homepage = "https://infimum-lang.org"
+
+[profile.release]
+opt-level = 3
+strip = "symbols"

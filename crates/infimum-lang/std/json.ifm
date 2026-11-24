@@ -1,0 +1,203 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/json.ifm
+// Z3-safe zero-allocation JSON scanner and decoder over UTF-32 linear-memory buffers.
+
+use "std/math.ifm";
+use "std/buf.ifm";
+
+fn json_is_ws(cp: i64) -> bool {
+  cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r'
+}
+
+fn json_skip_ws(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+  let mut i = clamp_i64(pos, 0, max_i64(n, 0));
+  while i < n max 16384 {
+    if json_is_ws(mem_load(buf_ptr + 1 + i)) {
+      i += 1;
+    } else {
+      break;
+    }
+  }
+  i
+}
+
+// Given `pos` pointing to opening `"`, return index immediately after closing `"`.
+fn json_skip_string(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+  if pos < 0 || pos >= n || mem_load(buf_ptr + 1 + pos) != '"' {
+    pos
+  } else {
+    let mut i = pos + 1;
+    while i < n max 16384 {
+      let cp = mem_load(buf_ptr + 1 + i);
+      if cp == '\\' {
+        i += 2;
+      } else if cp == '"' {
+        i += 1;
+        break;
+      } else {
+        i += 1;
+      }
+    }
+    clamp_i64(i, 0, max_i64(n, 0))
+  }
+}
+
+// Skip any JSON value (string, number, bool, null, object, array) starting at `pos`.
+fn json_skip_value(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+  let s = json_skip_ws(buf_ptr, pos, n);
+  if s >= n {
+    n
+  } else {
+    let ch = mem_load(buf_ptr + 1 + s);
+    if ch == '"' {
+      json_skip_string(buf_ptr, s, n)
+    } else if ch == '{' || ch == '[' {
+      let mut i = s + 1;
+      let mut depth = 1;
+      while i < n && depth > 0 max 16384 {
+        let c = mem_load(buf_ptr + 1 + i);
+        if c == '"' {
+          i = json_skip_string(buf_ptr, i, n);
+        } else if c == '{' || c == '[' {
+          depth += 1;
+          i += 1;
+        } else if c == '}' || c == ']' {
+          depth -= 1;
+          i += 1;
+        } else {
+          i += 1;
+        }
+      }
+      clamp_i64(i, 0, max_i64(n, 0))
+    } else {
+      let mut i = s;
+      while i < n max 128 {
+        let c = mem_load(buf_ptr + 1 + i);
+        if json_is_ws(c) || c == ',' || c == '}' || c == ']' {
+          break;
+        }
+        i += 1;
+      }
+      i
+    }
+  }
+}
+
+// Parse a signed integer starting at `pos`.
+fn json_parse_int(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+  let mut i = json_skip_ws(buf_ptr, pos, n);
+  let mut neg = false;
+  if i < n && mem_load(buf_ptr + 1 + i) == '-' {
+    neg = true;
+    i += 1;
+  }
+  let mut acc = 0;
+  while i < n max 20 {
+    let c = mem_load(buf_ptr + 1 + i);
+    if c >= '0' && c <= '9' {
+      acc = acc * 10 + (c - '0');
+      i += 1;
+    } else {
+      break;
+    }
+  }
+  if neg { -acc } else { acc }
+}
+
+fn json_hex_val(c: i64) -> i64 {
+  if c >= '0' && c <= '9' { c - '0' }
+  else if c >= 'a' && c <= 'f' { 10 + (c - 'a') }
+  else if c >= 'A' && c <= 'F' { 10 + (c - 'A') }
+  else { -1 }
+}
+
+// Decode a JSON string starting at `pos` (pointing to `"`) into `dst_ptr`. Returns decoded length.
+fn json_decode_string(src_ptr: i64, pos: i64, n: i64, dst_ptr: i64, dst_max: i64) -[Mem]-> i64 {
+  buf_clear(dst_ptr);
+  let s = json_skip_ws(src_ptr, pos, n);
+  if s >= n || mem_load(src_ptr + 1 + s) != '"' {
+    0
+  } else {
+    let mut i = s + 1;
+    while i < n max 16384 {
+      let c = mem_load(src_ptr + 1 + i);
+      if c == '"' {
+        break;
+      } else if c == '\\' && i + 1 < n {
+        let nx = mem_load(src_ptr + 1 + i + 1);
+        if nx == 'n' {
+          buf_push_cp(dst_ptr, dst_max, '\n');
+          i += 2;
+        } else if nx == 'r' {
+          buf_push_cp(dst_ptr, dst_max, '\r');
+          i += 2;
+        } else if nx == 't' {
+          buf_push_cp(dst_ptr, dst_max, '\t');
+          i += 2;
+        } else if nx == 'u' && i + 5 < n {
+          let h0 = json_hex_val(mem_load(src_ptr + 1 + i + 2));
+          let h1 = json_hex_val(mem_load(src_ptr + 1 + i + 3));
+          let h2 = json_hex_val(mem_load(src_ptr + 1 + i + 4));
+          let h3 = json_hex_val(mem_load(src_ptr + 1 + i + 5));
+          if h0 >= 0 && h1 >= 0 && h2 >= 0 && h3 >= 0 {
+            let cp = (h0 << 12) | (h1 << 8) | (h2 << 4) | h3;
+            buf_push_cp(dst_ptr, dst_max, cp);
+            i += 6;
+          } else {
+            buf_push_cp(dst_ptr, dst_max, nx);
+            i += 2;
+          }
+        } else {
+          buf_push_cp(dst_ptr, dst_max, nx);
+          i += 2;
+        }
+      } else {
+        buf_push_cp(dst_ptr, dst_max, c);
+        i += 1;
+      }
+    }
+    buf_len(dst_ptr, dst_max)
+  }
+}
+
+// Find a top-level key inside a JSON object starting at `obj_pos` (pointing to `{`).
+// `key_ptr` is a length-prefixed UTF-32 buffer containing the raw key name.
+// Returns the start index of the value, or -1 if not found.
+fn json_find_key(src_ptr: i64, obj_pos: i64, n: i64, key_ptr: i64, key_max: i64) -[Mem]-> i64 {
+  let s = json_skip_ws(src_ptr, obj_pos, n);
+  let klen = buf_len(key_ptr, key_max);
+  if s >= n || mem_load(src_ptr + 1 + s) != '{' {
+    -1
+  } else {
+    let mut i = json_skip_ws(src_ptr, s + 1, n);
+    let mut found = -1;
+    while i < n max 512 {
+      let c = mem_load(src_ptr + 1 + i);
+      if c == '}' {
+        break;
+      } else if c == ',' {
+        i = json_skip_ws(src_ptr, i + 1, n);
+      } else if c == '"' {
+        let key_end = json_skip_string(src_ptr, i, n);
+        let raw_len = max_i64(key_end - i - 2, 0);
+        let after_key = json_skip_ws(src_ptr, key_end, n);
+        if after_key < n && mem_load(src_ptr + 1 + after_key) == ':' {
+          let val_start = json_skip_ws(src_ptr, after_key + 1, n);
+          if buf_eq_slice(src_ptr, i + 1, raw_len, key_ptr, 0, klen) {
+            found = val_start;
+            break;
+          } else {
+            i = json_skip_ws(src_ptr, json_skip_value(src_ptr, val_start, n), n);
+          }
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+    found
+  }
+}

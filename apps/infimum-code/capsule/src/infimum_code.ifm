@@ -1,0 +1,398 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: PolyForm-Noncommercial-1.0.0
+//
+// INFIMUM CODE NATIVE v3.0 (.ifw) — Modular Flagship Capsule
+// 100% Clean-Room Original IP • Written 100% in Infimum (Telos + Flux + Strata + Forma)
+// Runs natively on Vulkan/Wayland via `infimum-web` (0% Chromium, 0% HTML/CSS/JS).
+
+use "abi.ifm";
+use "primitives.ifm";
+use "theme.ifm";
+use "icons.ifm";
+use "daemon_client.ifm";
+use "text_buf.ifm";
+use "sidebar.ifm";
+use "feed.ifm";
+use "composer.ifm";
+use "modals.ifm";
+use "file_viewer.ifm";
+
+// --- Keyboard Dispatcher ---
+
+fn handle_keyboard(key_char: i64, key_special: i64) -[Mem, Net]-> unit {
+  if StudioMem.file_view_open == 1 {
+    if key_special == KeySpecial::Escape {
+      StudioMem.file_view_open = 0;
+      StudioMem.active_file_idx = -1;
+    }
+  } else if StudioMem.confirm_del_kind != 0 {
+    if key_special == KeySpecial::Escape {
+      StudioMem.confirm_del_kind = 0;
+    }
+  } else if StudioMem.settings_open == 1 {
+    if key_special == KeySpecial::Escape {
+      StudioMem.settings_open = 0;
+      StudioMem.cur_dd_open = 0;
+      forma_set_focus(0);
+    }
+  } else {
+    if key_char >= ' ' {
+      clear_msg_sel();
+      input_insert_char(key_char);
+    }
+    match key_special {
+      KeySpecial::Backspace => {
+        clear_msg_sel();
+        if !input_delete_selection() {
+          let c = StudioMem.cursor_pos;
+          if c > 0 { input_delete_range(c - 1, c); }
+        }
+      },
+      KeySpecial::Delete => {
+        clear_msg_sel();
+        if !input_delete_selection() {
+          let c = StudioMem.cursor_pos;
+          if c < input_len() { input_delete_range(c, c + 1); }
+        }
+      },
+      KeySpecial::ShiftEnter => {
+        clear_msg_sel();
+        input_insert_char('\n');
+      },
+      KeySpecial::Enter => {
+        clear_msg_sel();
+        start_gemini_async();
+      },
+      KeySpecial::Escape => {
+        if StudioMem.model_dd_open == 0 && StudioMem.cur_dd_open == 0 && StudioMem.ctx_open == 0 {
+          clear_msg_sel();
+        }
+      },
+      KeySpecial::ArrowLeft => {
+        clear_msg_sel();
+        let nx = clamp_i64(StudioMem.cursor_pos - 1, 0, input_len());
+        StudioMem.cursor_pos = nx;
+        StudioMem.sel_anchor = nx;
+        StudioMem.in_follow_cursor = 1;
+      },
+      KeySpecial::ArrowRight => {
+        clear_msg_sel();
+        let nx = clamp_i64(StudioMem.cursor_pos + 1, 0, input_len());
+        StudioMem.cursor_pos = nx;
+        StudioMem.sel_anchor = nx;
+        StudioMem.in_follow_cursor = 1;
+      },
+      KeySpecial::CtrlHome => {
+        clear_msg_sel();
+        StudioMem.cursor_pos = 0;
+        StudioMem.sel_anchor = 0;
+        StudioMem.in_follow_cursor = 1;
+      },
+      KeySpecial::CtrlEnd => {
+        clear_msg_sel();
+        let l = input_len();
+        StudioMem.cursor_pos = l;
+        StudioMem.sel_anchor = l;
+        StudioMem.in_follow_cursor = 1;
+      },
+      KeySpecial::CtrlA => {
+        let mp_a = StudioMem.msg_sel_ptr;
+        if mp_a > 0 {
+          StudioMem.msg_sel_anchor = 0;
+          StudioMem.msg_sel_focus = clamp_i64(mem_load(mp_a), 0, MAX_MSG_CHARS);
+        } else {
+          StudioMem.sel_anchor = 0;
+          StudioMem.cursor_pos = input_len();
+        }
+      },
+      KeySpecial::CtrlX => {
+        input_delete_selection();
+      },
+      KeySpecial::ShiftLeft => {
+        clear_msg_sel();
+        StudioMem.cursor_pos = clamp_i64(StudioMem.cursor_pos - 1, 0, input_len());
+        StudioMem.in_follow_cursor = 1;
+      },
+      KeySpecial::ShiftRight => {
+        clear_msg_sel();
+        StudioMem.cursor_pos = clamp_i64(StudioMem.cursor_pos + 1, 0, input_len());
+        StudioMem.in_follow_cursor = 1;
+      },
+      KeySpecial::CtrlShiftHome => {
+        clear_msg_sel();
+        StudioMem.cursor_pos = 0;
+        StudioMem.in_follow_cursor = 1;
+      },
+      KeySpecial::CtrlShiftEnd => {
+        clear_msg_sel();
+        StudioMem.cursor_pos = input_len();
+        StudioMem.in_follow_cursor = 1;
+      },
+      _ => {},
+    }
+  }
+}
+
+// --- Capsule Entry Points ---
+
+export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu, Net]-> i64 {
+  StudioMem.tick = 0;
+  StudioMem.theme = 0;
+  StudioMem.scroll_y = 0;
+  StudioMem.active_proj_idx = 0;
+  StudioMem.model_idx = ModelId::Gemini4Neon;
+  StudioMem.view_mode = ViewMode::Chat;
+  StudioMem.settings_open = 0;
+  StudioMem.font_scale_pct = DEFAULT_FONT_SCALE_PCT;
+  StudioMem.currency_id = Currency::Ils;
+  StudioMem.total_milli_ils = 0;
+  StudioMem.ai_running = 0;
+  StudioMem.copy_override_ptr = 0;
+  StudioMem.active_conv_idx = -1;
+  StudioMem.auto_scroll_bottom = 0;
+  StudioMem.proj_count = 0;
+  StudioMem.copy_toast_ticks = 0;
+  StudioMem.copy_toast_ptr = 0;
+  StudioMem.last_msg_click_tick = 0;
+  StudioMem.last_msg_click_ptr = 0;
+  StudioMem.last_msg_click_idx = 0;
+  StudioMem.in_scroll_y = 0;
+  StudioMem.in_follow_cursor = 0;
+  StudioMem.live_timeline_words = 0;
+  StudioMem.live_cmd_killing = 0;
+  StudioMem.img_count = 0;
+  StudioMem.img_pending_base = 0;
+  StudioMem.img_preview_idx = -1;
+  StudioMem.img_preview_start = 0;
+  StudioMem.img_preview_count = 0;
+  StudioMem.active_file_idx = -1;
+  StudioMem.file_view_open = 0;
+  StudioMem.file_view_scroll_y = 0;
+  StudioMem.file_view_lines = 0;
+  mem_store(StudioMem::agent_status_buf, 0);
+  mem_store(StudioMem::active_hdr_buf, 0);
+  reset_messages();
+
+  // Connect to local `infimum-agentd` over CAP_NET (127.0.0.1:<port> + Bearer token)
+  daemon::init();
+
+  // Restore saved native settings
+  let has_settings = daemon::settings_load();
+  if has_settings == 1 {
+    StudioMem.theme = clamp_i64(StudioMem.settings_theme, 0, 1);
+    StudioMem.font_scale_pct = clamp_i64(StudioMem.settings_scale, MIN_FONT_SCALE_PCT, MAX_FONT_SCALE_PCT);
+    StudioMem.currency_id = clamp_i64(StudioMem.settings_currency, 0, 2);
+    StudioMem.model_idx = clamp_i64(StudioMem.settings_model, 0, 21);
+  }
+
+  daemon::list_projects();
+  daemon::list_convs();
+  count_and_init_project_tree();
+  extract_active_project_to(StudioMem::active_proj_buf);
+  daemon::new_conv();
+
+  do Mem.store_str(SYS_STR_SCRATCH_WORD, "Добро пожаловать в **Infimum Code v3.1** (`.ifw`)! Нажмите **+** рядом с «ПРОЕКТЫ» слева, чтобы добавить рабочую папку. Агент и терминал изолированы строго внутри выбранной папки.");
+  append_message(1, mem_load(SYS_STR_SCRATCH_WORD), 0, 0, 0);
+  StudioMem.auto_scroll_bottom = 0;
+  1
+}
+
+export fn step_ui(
+  vw: i64, vh: i64,
+  mx: i64, my: i64,
+  m_down: i64, m_clicked: i64,
+  wheel_dy: i64, key_char: i64, key_special: i64
+) -[Mem, Gpu, Net]-> i64 {
+  let w = clamp_i64(vw, 680, 4096);
+  let h = clamp_i64(vh, 460, 2160);
+  let tick = StudioMem.tick + 1;
+  StudioMem.tick = tick;
+  if StudioMem.copy_toast_ticks > 0 { StudioMem.copy_toast_ticks -= 1; }
+  forma_begin_frame(w, h, mx, my, m_clicked, wheel_dy);
+  forma_set_input(m_down, key_char, key_special, tick);
+
+  // Store per-frame input state for Infimum.Forma Slot callbacks
+  StudioMem.frame_vw = w;
+  StudioMem.frame_vh = h;
+  StudioMem.frame_mx = mx;
+  StudioMem.frame_my = my;
+  StudioMem.frame_m_down = m_down;
+  StudioMem.frame_m_clicked = m_clicked;
+  StudioMem.frame_wheel_dy = wheel_dy;
+  StudioMem.frame_settings_just_opened = 0;
+  StudioMem.frame_confirm_just_opened = 0;
+  StudioMem.frame_modal_blocked = if StudioMem.settings_open == 1 || StudioMem.img_preview_idx >= 0 || StudioMem.confirm_del_kind != 0 { 1 } else { 0 };
+  if m_down == 0 { StudioMem.drag_sb = DragScrollbar::None; }
+
+  // Refresh live RAM every ~60 frames
+  if tick == 1 || tick % 60 == 0 {
+    do Net.call(HostOp::GetRssTenthsMb, 0, 0, 0);
+    StudioMem.rss_tenths_mb = host_ret();
+  }
+
+  // Poll non-blocking async agent worker over HTTP (`infimum-agentd`)
+  if StudioMem.ai_running == 1 {
+    let poll_st = daemon::agent_poll(StudioMem::reply_buf, StudioMem::agent_status_buf);
+    if poll_st == 2 {
+      StudioMem.ai_running = 0;
+      let el = StudioMem.async_elapsed_tenths;
+      let cm = StudioMem.async_cost_milli_ils;
+      let tok = StudioMem.async_total_tokens;
+      StudioMem.total_milli_ils += cm;
+      append_message(1, StudioMem::reply_buf, el, cm, tok);
+      attach_live_timeline_to_last_msg();
+      daemon::list_convs();
+      StudioMem.auto_scroll_bottom = 1;
+    }
+  }
+
+  // 1. Keyboard Input
+  handle_keyboard(key_char, key_special);
+
+  // 2. Global Background & Responsive Metrics (with draggable sidebar splitter!)
+  let th = StudioMem.theme;
+  let scale = StudioMem.font_scale_pct;
+  let body_sz = sf(15);
+  let max_side_w = clamp_i64(w / 2, 240, 560);
+  let default_side_w = clamp_i64((240 * scale) / 100, 200, max_side_w);
+  let mut side_w = if StudioMem.side_custom_w >= 180 {
+    clamp_i64(StudioMem.side_custom_w, 180, max_side_w)
+  } else {
+    default_side_w
+  };
+  let splitter_hov = StudioMem.frame_modal_blocked == 0 && StudioMem.model_dd_open == 0 && mx >= side_w - 5 && mx <= side_w + 5;
+  if splitter_hov && m_clicked == 1 {
+    StudioMem.drag_sb = DragScrollbar::SidebarResize;
+  }
+  if StudioMem.drag_sb == DragScrollbar::SidebarResize && m_down == 1 {
+    side_w = clamp_i64(mx, 180, max_side_w);
+    StudioMem.side_custom_w = side_w;
+    StudioMem.cached_layout_col_w = 0;
+  }
+  let top_h = clamp_i64((44 * scale) / 100, 42, 72);
+  let foot_h = clamp_i64((44 * scale) / 100, 42, 68);
+  ui_rect(0, 0, w, h, 0, 0, 0, col_bg(th), 0, ClipId::Root);
+
+  // 3. Left Sidebar (Infimum.Forma) + Interactive Splitter Line
+  render_sidebar(side_w, h, foot_h);
+  if splitter_hov || StudioMem.drag_sb == DragScrollbar::SidebarResize {
+    ui_rect(side_w - 1, 0, 2, h, 0, 0, 0, col_accent(), 0, ClipId::Root);
+    gfx_set_cursor(CursorKind::EwResize);
+  }
+
+  // 4. Main Workspace Geometry
+  let main_x = side_w;
+  let main_w = w - side_w;
+  if StudioMem.file_view_open == 1 {
+    render_file_viewer(main_x, main_w, h, top_h, key_special);
+  } else {
+    render_main_header(main_x, main_w, w, top_h);
+
+    let feed_y = top_h + 10;
+    let col_w = clamp_i64(main_w - 56, 360, 820);
+    let col_x = main_x + (main_w - col_w) / 2;
+    let in_lh = body_sz + 6;
+    let in_max_w = clamp_i64(col_w - 44, 200, 1200);
+    let in_total_lines = measure_input_lines(in_max_w, body_sz);
+    let in_vis_lines = clamp_i64(in_total_lines, 1, 6);
+    let in_view_h = in_vis_lines * in_lh;
+    let in_content_h = in_total_lines * in_lh;
+    let in_max_scroll = if in_content_h > in_view_h { in_content_h - in_view_h } else { 0 };
+    let has_img = StudioMem.pasted_img_w > 0 && StudioMem.pasted_img_h > 0;
+    let img_bar_h = if has_img { clamp_i64((68 * scale) / 100, 62, 92) } else { 0 };
+    let tb_h = clamp_i64((40 * scale) / 100, 38, 56);
+    let in_area_h = in_view_h + 14;
+    let box_h = img_bar_h + in_area_h + tb_h + 10;
+    let box_y = h - box_h - 14;
+    let feed_h = clamp_i64(box_y - feed_y - 10, 140, 2000);
+
+    StudioMem.frame_in_max_scroll = in_max_scroll;
+    StudioMem.frame_in_lh = in_lh;
+    StudioMem.frame_in_max_w = in_max_w;
+    StudioMem.frame_in_view_h = in_view_h;
+    StudioMem.frame_in_area_h = in_area_h;
+
+    let in_composer_hover = StudioMem.frame_modal_blocked == 0
+      && StudioMem.model_dd_open == 0
+      && point_in_rect(mx, my, col_x, box_y, col_w, box_h);
+    let in_scroll_capture = in_composer_hover && in_max_scroll > 0;
+
+    // 5. Scrollable Dialogue Feed & Clean-Reader
+    render_feed(w, side_w, main_x, col_x, col_w, feed_y, feed_h, in_scroll_capture);
+
+    // 6. Multiline Composer Card + Model Dropdown Overlay (Infimum.Forma)
+    render_composer(col_x, box_y, col_w, box_h, img_bar_h, h, key_special);
+  }
+
+  // 7. Native Modals & Context Menu Overlays (Infimum.Forma)
+  render_settings_modal(w, h);
+  render_confirm_delete_modal(w, h);
+  render_image_preview_modal(w, h, key_special);
+  render_context_menu(w, h, key_special);
+
+  gfx_end_frame()
+}
+
+// --- Host Clipboard & Protocol Exports ---
+// (Standard 7 .ifw GPU exports are auto-generated by infimum-lang!)
+
+export fn ifw_on_paste_text(ptr: i64, len: i64) -[Mem]-> i64 {
+  if forma_focus_id() != 0 {
+    forma_paste_text(ptr, len)
+  } else if StudioMem.settings_open == 1 {
+    buf_clear(StudioMem::key_input_buf);
+    forma_set_focus(320);
+    mem_store(SYS_FORMA_TEXT_BUF_WORD, StudioMem::key_input_buf);
+    mem_store(SYS_FORMA_TEXT_MAX_WORD, 180);
+    mem_store(SYS_FORMA_TEXT_MASK_WORD, 1);
+    forma_paste_text(ptr, len)
+  } else {
+    handle_paste_text(ptr, len)
+  }
+}
+export fn ifw_on_paste_image(w: i64, h: i64) -[Mem]-> i64 {
+  let cw = clamp_i64(w, 0, 4096);
+  let ch = clamp_i64(h, 0, 4096);
+  let base = clamp_i64(StudioMem.img_pending_base, 0, 16);
+  let cnt = clamp_i64(StudioMem.img_count, 0, 6);
+  let slot = base + cnt;
+  if cw > 0 && ch > 0 && cnt < 6 && slot < 16 {
+    StudioMem.img_w[slot] = cw;
+    StudioMem.img_h[slot] = ch;
+    StudioMem.img_count = cnt + 1;
+    StudioMem.pasted_img_w = StudioMem.img_w[base];
+    StudioMem.pasted_img_h = StudioMem.img_h[base];
+  }
+  1
+}
+export fn ifw_get_copy_mailbox_word() -> i64 { StudioMem::copy_mailbox }
+export fn ifw_get_paste_mailbox_word() -> i64 { StudioMem::paste_mailbox }
+export fn ifw_get_copy_text() -[Mem]-> i64 {
+  if forma_focus_id() != 0 {
+    forma_copy_text(StudioMem::copy_mailbox, 4096)
+  } else {
+    handle_copy_text()
+  }
+}
+export fn ifw_pop_host_action() -[Mem]-> i64 {
+  let act = StudioMem.host_action;
+  StudioMem.host_action = HostAction::None;
+  act
+}
+
+test "studio paste_image queues attachment dimensions" {
+  StudioMem.img_pending_base = 0;
+  StudioMem.img_count = 0;
+  ifw_on_paste_image(640, 480);
+  assert(StudioMem.img_count == 1);
+  assert(StudioMem.pasted_img_w == 640);
+  assert(StudioMem.pasted_img_h == 480);
+}
+
+test "studio pop_host_action drains action mailbox" {
+  StudioMem.host_action = HostAction::PickImage;
+  let a1 = ifw_pop_host_action();
+  let a2 = ifw_pop_host_action();
+  assert(a1 == HostAction::PickImage);
+  assert(a2 == HostAction::None);
+}

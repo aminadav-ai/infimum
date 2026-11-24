@@ -1,0 +1,126 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// INFIMUM SLIPGATE — Shared Typed ABI & Memory Layout (Z3-Verified, Large 6-Zone Citadel)
+
+use "std/prelude.ifm";
+use "std/mesh3d.ifm";
+
+const ENEMY_COUNT: i64 = 16;
+const ITEM_COUNT: i64 = 16;
+const PARTICLE_COUNT: i64 = 32;
+const MAX_WALLS: i64 = 112;
+const MAX_SECTORS: i64 = 40;
+const MAT_ROCK: i64 = 7;
+const MAT_TIMBER: i64 = 8;
+
+enum GameState {
+  Playing = 0,
+  Victory = 1,
+  Dead = 2,
+}
+
+enum CursorKind {
+  Default = 0,
+  Pointer = 1,
+}
+
+struct Sector {
+  x0: word,
+  z0: word,
+  x1: word,
+  z1: word,
+  fy: word,
+  mat: word,
+  col: word,
+  pad: word,
+}
+
+struct Wall {
+  x0: word,
+  z0: word,
+  x1: word,
+  z1: word,
+  y0: word,
+  y1: word,
+  mat: word,
+  col: word,
+}
+
+struct Enemy {
+  x: word,
+  y: word,
+  z: word,
+  kind: word,
+  hp: word,
+  state: word,
+  cd: word,
+  flash: word,
+  anim: word,
+  pad: word,
+  spawn_x: word,
+  spawn_z: word,
+}
+
+struct Item {
+  x: word,
+  y: word,
+  z: word,
+  kind: word,
+  active: word,
+  pad: word,
+}
+
+struct Particle {
+  x: word,
+  y: word,
+  z: word,
+  vx: word,
+  vy: word,
+  vz: word,
+  col: word,
+  life: word,
+}
+
+// Auto-placed non-overlapping linear memory layout (compiler safely places at word 705536+)
+layout FpsMem {
+  tick: word,
+  cam_x: word,
+  cam_y: word,
+  cam_z: word,
+  yaw: word,                      // 0..4095 (matching std/math.ifm sin_1024/cos_1024!)
+  pitch: word inv -260..=260,     // -260..260 vertical look offset
+  foot_y: word,
+  vel_y: word,
+  health: word,
+  armor: word,
+  ammo: word,
+  kills: word,
+  score: word,
+  muzzle_t: word,
+  recoil_t: word,
+  hurt_t: word,
+  pickup_t: word,
+  bob_t: word,
+  game_state: word inv 0..=2,
+  on_ground: word inv 0..=1,
+  rng_state: word,
+  wall_cnt: word,
+  sector_cnt: word,
+  has_key: word inv 0..=1,
+  gate_y: word,
+  prev_r_key: word,
+  prev_sp_key: word,
+  msg_timer: word,
+
+  // Walkable sectors: 40 typed Sector structs
+  sectors: Sector[40],
+  // Solid 3D box colliders/pillars/walls: 112 typed Wall structs
+  walls: Wall[112],
+  // 16 typed Enemy structs
+  enemies: Enemy[16],
+  // 16 typed Item structs
+  items: Item[16],
+  // 32 typed Particle structs
+  particles: Particle[32],
+}

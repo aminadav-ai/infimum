@@ -1,0 +1,46 @@
+[package]
+name = "infimum-web"
+version = "0.3.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license-file = "../../LICENSE"
+description = "Native zero-Chromium .ifw capsule runtime and browser with infimum.passport gatekeeper, 1-Draw-Call wgpu SDF + 3D PBR renderer, and wasmi fuel sandbox"
+
+[lib]
+name = "infimum_web"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "infimum-web"
+path = "src/main.rs"
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+fontdue = "0.9"
+jpeg-decoder = "0.3"
+png = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = "3"
+pollster = "0.4"
+wasmi = "0.40"
+wgpu = "24"
+winit = "0.30"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "24", default-features = false, features = ["webgl", "wgsl"] }
+wasm-bindgen = "=0.2.100"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+web-sys = { version = "0.3", features = [
+  "Window",
+  "Document",
+  "HtmlCanvasElement",
+  "Performance",
+] }

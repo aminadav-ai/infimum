@@ -1,0 +1,421 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Built-in Z3-verified runtime helpers for interactive Infimum.Forma widgets
+// (`Toggle`, `Slider`, `TextInput`). Parsed once and appended to `forma_runtime_helpers()`.
+
+use "std/text.ifm";
+
+// Toggle switch widget: returns 1 if clicked/toggled this frame, 0 otherwise.
+fn __forma_toggle(
+  rx: i64, ry: i64, rw: i64, rh: i64,
+  bind_addr: i64, checked_in: bool,
+  hovered_in: i64, clicked_in: i64,
+  bg: i64, accent: i64, border_col: i64, clip_id: i64
+) -[Mem]-> i64 {
+  let mut cur = if bind_addr > 0 {
+    if mem_load(bind_addr) != 0 { 1 } else { 0 }
+  } else {
+    if checked_in { 1 } else { 0 }
+  };
+  let mut changed = 0;
+  if hovered_in != 0 && clicked_in != 0 {
+    cur = if cur == 0 { 1 } else { 0 };
+    if bind_addr > 0 {
+      mem_store(bind_addr, cur);
+    }
+    changed = 1;
+  }
+  let rad = clamp_i64(rh / 2, 2, 60);
+  let track_bg = if cur != 0 { accent } else { bg };
+  let track_brd = if cur != 0 { accent } else if hovered_in != 0 { accent } else { border_col };
+  ui_rect(rx, ry, rw, rh, rad, 1, 0, track_bg, track_brd, clip_id);
+
+  let pad = 3;
+  let knob_sz = clamp_i64(rh - pad * 2, 8, 60);
+  let knob_x = if cur != 0 {
+    clamp_i64(rx + rw - knob_sz - pad, rx + pad, rx + rw - pad)
+  } else {
+    rx + pad
+  };
+  let knob_y = ry + (rh - knob_sz) / 2;
+  ui_rect(knob_x, knob_y, knob_sz, knob_sz, knob_sz / 2, 0, 0, -1, 0, clip_id);
+  changed
+}
+
+// Horizontal Slider widget: updates `bind_addr` in `min_v..=max_v` (with optional `step_v`),
+// supports smooth drag capture via `SYS_FORMA_DRAG_ID_WORD (138)`. Returns 1 if value changed.
+fn __forma_slider(
+  rx: i64, ry: i64, rw: i64, rh: i64,
+  bind_addr: i64, min_v: i64, max_v: i64, step_v: i64,
+  wid: i64, hovered_in: i64, clicked_in: i64,
+  bg: i64, accent: i64, border_col: i64, clip_id: i64
+) -[Mem]-> i64 {
+  let mx = mem_load(SYS_FORMA_MX_WORD);
+  let m_down = mem_load(SYS_FORMA_MDOWN_WORD);
+  let mut drag_id = mem_load(SYS_FORMA_DRAG_ID_WORD);
+
+  if hovered_in != 0 && clicked_in != 0 {
+    drag_id = wid;
+    mem_store(SYS_FORMA_DRAG_ID_WORD, wid);
+  } else if m_down == 0 && drag_id == wid {
+    drag_id = 0;
+    mem_store(SYS_FORMA_DRAG_ID_WORD, 0);
+  }
+
+  let lo = min_v;
+  let hi = if max_v > min_v { max_v } else { min_v + 1 };
+  let span = hi - lo;
+  let safe_w = clamp_i64(rw, 1, 4096);
+  let mut cur = if bind_addr > 0 {
+    clamp_i64(mem_load(bind_addr), lo, hi)
+  } else {
+    lo
+  };
+
+  let mut changed = 0;
+  let active = (hovered_in != 0 && clicked_in != 0) || (m_down != 0 && drag_id == wid);
+  if active && bind_addr > 0 {
+    let rel_x = clamp_i64(mx - rx, 0, safe_w);
+    let raw = lo + ((rel_x * span) + safe_w / 2) / safe_w;
+    let stepped = if step_v > 1 {
+      let s = clamp_i64(step_v, 1, 1000000);
+      lo + (((raw - lo) + s / 2) / s) * s
+    } else {
+      raw
+    };
+    let next_v = clamp_i64(stepped, lo, hi);
+    if next_v != cur {
+      mem_store(bind_addr, next_v);
+      cur = next_v;
+      changed = 1;
+    }
+  }
+
+  let knob_sz = clamp_i64(rh - 6, 12, 24);
+  let usable_w = clamp_i64(rw - knob_sz, 1, 4096);
+  let fill_px = ((cur - lo) * usable_w) / span;
+  let track_h = 6;
+  let track_y = ry + (rh - track_h) / 2;
+
+  ui_rect(rx, track_y, rw, track_h, 3, 1, 0, bg, border_col, clip_id);
+  let active_w = clamp_i64(fill_px + knob_sz / 2, 0, rw);
+  if active_w > 0 {
+    ui_rect(rx, track_y, active_w, track_h, 3, 0, 0, accent, 0, clip_id);
+  }
+
+  let knob_x = rx + fill_px;
+  let knob_y = ry + (rh - knob_sz) / 2;
+  let knob_brd = if active || hovered_in != 0 { accent } else { border_col };
+  ui_rect(knob_x, knob_y, knob_sz, knob_sz, knob_sz / 2, 2, 0, -1, knob_brd, clip_id);
+  changed
+}
+
+fn __fw_text_hit_test(buf_addr: i64, cur_len: i64, mask_in: bool, sz: i64, st: i64, click_rel: i64) -[Mem]-> i64 {
+  if click_rel <= 0 || buf_addr <= 0 || cur_len <= 0 {
+    0
+  } else {
+    let mut best_i = cur_len;
+    let mut acc_w = 0;
+    for i in 0..cur_len max 1024 {
+      let ch = if mask_in { 8226 } else { mem_load(buf_addr + 1 + i) };
+      let adv = glyph_px(ch, sz, st);
+      if click_rel < acc_w + adv / 2 {
+        best_i = i;
+        break;
+      }
+      acc_w += adv;
+    }
+    clamp_i64(best_i, 0, cur_len)
+  }
+}
+
+fn __fw_text_delete_range(buf_addr: i64, cur_len: i64, lo: i64, hi: i64) -[Mem]-> i64 {
+  let c_lo = clamp_i64(lo, 0, cur_len);
+  let c_hi = clamp_i64(hi, c_lo, cur_len);
+  if c_hi <= c_lo {
+    cur_len
+  } else {
+    let del_n = c_hi - c_lo;
+    let tail = cur_len - c_hi;
+    for i in 0..tail max 1024 {
+      mem_store(buf_addr + 1 + c_lo + i, mem_load(buf_addr + 1 + c_hi + i));
+    }
+    let next_len = cur_len - del_n;
+    mem_store(buf_addr, next_len);
+    next_len
+  }
+}
+
+// Single-line UTF-32 TextInput widget with focus, click-to-caret & drag selection,
+// Shift+Arrows/Home/End, Ctrl+A/C/X/V clipboard integration, smooth horizontal scroll,
+// full password masking, and placeholder.
+// Returns: 0 = unchanged, 1 = text changed, 2 = Enter submitted.
+fn __forma_text_input(
+  rx: i64, ry: i64, rw: i64, rh: i64,
+  buf_addr: i64, max_len_in: i64, wid: i64,
+  hovered_in: i64, clicked_in: i64,
+  bg: i64, border_col: i64, accent: i64,
+  text_col: i64, muted_col: i64,
+  sz_in: i64, mask_in: bool, ph_ptr: i64, clip_id: i64
+) -[Mem]-> i64 {
+  let max_len = clamp_i64(max_len_in, 1, 1024);
+  let sz = clamp_i64(sz_in, 10, 32);
+  let pad_x = 10;
+  let inner_w = clamp_i64(rw - pad_x * 2, 16, 4096);
+  let st = if mask_in { 2 } else { 0 };
+  let mut cur_len = if buf_addr > 0 {
+    clamp_i64(mem_load(buf_addr), 0, max_len)
+  } else {
+    0
+  };
+  let mut focus_id = mem_load(SYS_FORMA_FOCUS_ID_WORD);
+  let mut caret = clamp_i64(mem_load(SYS_FORMA_CARET_POS_WORD), 0, cur_len);
+  let mut anchor = clamp_i64(mem_load(SYS_FORMA_SEL_ANCHOR_WORD), 0, cur_len);
+  let mut scroll_x = clamp_i64(mem_load(SYS_FORMA_TEXT_SCROLL_WORD), 0, 65536);
+  let m_down = mem_load(SYS_FORMA_MDOWN_WORD);
+  let mut drag_id = mem_load(SYS_FORMA_DRAG_ID_WORD);
+
+  if hovered_in != 0 && clicked_in != 0 {
+    let was_focused = focus_id == wid;
+    focus_id = wid;
+    mem_store(SYS_FORMA_FOCUS_ID_WORD, wid);
+    if !was_focused {
+      scroll_x = 0;
+      mem_store(SYS_FORMA_TEXT_SCROLL_WORD, 0);
+    }
+    let click_rel = mem_load(SYS_FORMA_MX_WORD) - (rx + pad_x) + scroll_x;
+    let hit_i = __fw_text_hit_test(buf_addr, cur_len, mask_in, sz, st, click_rel);
+    caret = hit_i;
+    anchor = hit_i;
+    drag_id = wid;
+    mem_store(SYS_FORMA_DRAG_ID_WORD, wid);
+    mem_store(SYS_FORMA_CARET_POS_WORD, caret);
+    mem_store(SYS_FORMA_SEL_ANCHOR_WORD, anchor);
+  } else if m_down != 0 && drag_id == wid && focus_id == wid {
+    let drag_rel = mem_load(SYS_FORMA_MX_WORD) - (rx + pad_x) + scroll_x;
+    caret = __fw_text_hit_test(buf_addr, cur_len, mask_in, sz, st, drag_rel);
+    mem_store(SYS_FORMA_CARET_POS_WORD, caret);
+  } else if m_down == 0 && drag_id == wid {
+    drag_id = 0;
+    mem_store(SYS_FORMA_DRAG_ID_WORD, 0);
+  } else if clicked_in != 0 && focus_id == wid && mem_load(SYS_FORMA_FOCUS_SET_THIS_FRAME_WORD) == 0 {
+    focus_id = 0;
+    mem_store(SYS_FORMA_FOCUS_ID_WORD, 0);
+    mem_store(SYS_FORMA_CARET_POS_WORD, 0);
+    mem_store(SYS_FORMA_SEL_ANCHOR_WORD, 0);
+    mem_store(SYS_FORMA_TEXT_SCROLL_WORD, 0);
+    mem_store(SYS_FORMA_TEXT_BUF_WORD, 0);
+    mem_store(SYS_FORMA_TEXT_MAX_WORD, 0);
+    mem_store(SYS_FORMA_TEXT_MASK_WORD, 0);
+    mem_store(SYS_FORMA_TEXT_CHANGED_WORD, 0);
+  }
+
+  let mut ev = 0;
+  if focus_id == wid && buf_addr > 0 {
+    mem_store(SYS_FORMA_TEXT_BUF_WORD, buf_addr);
+    mem_store(SYS_FORMA_TEXT_MAX_WORD, max_len);
+    mem_store(SYS_FORMA_TEXT_MASK_WORD, if mask_in { 1 } else { 0 });
+    if mem_load(SYS_FORMA_TEXT_CHANGED_WORD) != 0 {
+      mem_store(SYS_FORMA_TEXT_CHANGED_WORD, 0);
+      ev = 1;
+    }
+
+    let key_char = mem_load(SYS_FORMA_KEY_CHAR_WORD);
+    let key_special = mem_load(SYS_FORMA_KEY_SPECIAL_WORD);
+    let sel_lo = if caret < anchor { caret } else { anchor };
+    let sel_hi = if caret > anchor { caret } else { anchor };
+    let has_sel = sel_hi > sel_lo;
+
+    if key_special == 3 {
+      // Escape -> blur
+      focus_id = 0;
+      mem_store(SYS_FORMA_FOCUS_ID_WORD, 0);
+      mem_store(SYS_FORMA_SEL_ANCHOR_WORD, 0);
+      mem_store(SYS_FORMA_TEXT_BUF_WORD, 0);
+      mem_store(SYS_FORMA_TEXT_MAX_WORD, 0);
+      mem_store(SYS_FORMA_TEXT_MASK_WORD, 0);
+    } else if key_special == 2 {
+      // Enter -> submit
+      ev = 2;
+    } else if key_special == 20 {
+      // Ctrl+A -> select all
+      anchor = 0;
+      caret = cur_len;
+    } else if key_special == 23 {
+      // Ctrl+X -> cut selected range (host already copied via forma_copy_text)
+      if has_sel {
+        cur_len = __fw_text_delete_range(buf_addr, cur_len, sel_lo, sel_hi);
+        caret = sel_lo;
+        anchor = sel_lo;
+        ev = 1;
+      }
+    } else if key_special == 1 {
+      // Backspace
+      if has_sel {
+        cur_len = __fw_text_delete_range(buf_addr, cur_len, sel_lo, sel_hi);
+        caret = sel_lo;
+        anchor = sel_lo;
+        ev = 1;
+      } else if caret > 0 && cur_len > 0 {
+        cur_len = __fw_text_delete_range(buf_addr, cur_len, caret - 1, caret);
+        caret -= 1;
+        anchor = caret;
+        ev = 1;
+      }
+    } else if key_special == 11 {
+      // Delete
+      if has_sel {
+        cur_len = __fw_text_delete_range(buf_addr, cur_len, sel_lo, sel_hi);
+        caret = sel_lo;
+        anchor = sel_lo;
+        ev = 1;
+      } else if caret < cur_len && cur_len > 0 {
+        cur_len = __fw_text_delete_range(buf_addr, cur_len, caret, caret + 1);
+        anchor = caret;
+        ev = 1;
+      }
+    } else if key_special == 5 {
+      // ArrowLeft
+      if has_sel {
+        caret = sel_lo;
+      } else if caret > 0 {
+        caret -= 1;
+      }
+      anchor = caret;
+    } else if key_special == 6 {
+      // ArrowRight
+      if has_sel {
+        caret = sel_hi;
+      } else if caret < cur_len {
+        caret += 1;
+      }
+      anchor = caret;
+    } else if key_special == 9 {
+      // Home
+      caret = 0;
+      anchor = 0;
+    } else if key_special == 10 {
+      // End
+      caret = cur_len;
+      anchor = cur_len;
+    } else if key_special == 25 {
+      // Shift+Left
+      if caret > 0 { caret -= 1; }
+    } else if key_special == 26 {
+      // Shift+Right
+      if caret < cur_len { caret += 1; }
+    } else if key_special == 29 {
+      // Shift+Home
+      caret = 0;
+    } else if key_special == 30 {
+      // Shift+End
+      caret = cur_len;
+    } else if key_char >= 32 && key_char != 127 {
+      // Insert printable codepoint (replacing selection if active)
+      if has_sel {
+        cur_len = __fw_text_delete_range(buf_addr, cur_len, sel_lo, sel_hi);
+        caret = sel_lo;
+        anchor = sel_lo;
+        ev = 1;
+      }
+      if cur_len < max_len {
+        let mut j = cur_len;
+        while j > caret max 1024 {
+          mem_store(buf_addr + 1 + j, mem_load(buf_addr + j));
+          j -= 1;
+        }
+        mem_store(buf_addr + 1 + caret, key_char);
+        cur_len += 1;
+        caret += 1;
+        anchor = caret;
+        mem_store(buf_addr, cur_len);
+        ev = 1;
+      }
+    }
+    caret = clamp_i64(caret, 0, cur_len);
+    anchor = clamp_i64(anchor, 0, cur_len);
+    mem_store(SYS_FORMA_CARET_POS_WORD, caret);
+    mem_store(SYS_FORMA_SEL_ANCHOR_WORD, anchor);
+  }
+
+  let is_focused = focus_id == wid;
+  let brd = if is_focused { accent } else if hovered_in != 0 { accent } else { border_col };
+  ui_rect(rx, ry, rw, rh, 6, 1, 0, bg, brd, clip_id);
+
+  let text_y = ry + (rh - sz) / 2;
+  let max_x = rx + rw - pad_x;
+  let mut caret_x = rx + pad_x;
+
+  if cur_len == 0 {
+    if is_focused {
+      mem_store(SYS_FORMA_TEXT_SCROLL_WORD, 0);
+    }
+    if ph_ptr > 0 {
+      let ph_n = clamp_i64(mem_load(ph_ptr), 0, 256);
+      let mut px = rx + pad_x;
+      for i in 0..ph_n max 256 {
+        let ch = mem_load(ph_ptr + 1 + i);
+        let adv = glyph_px(ch, sz, 0);
+        if px + adv > max_x { break; }
+        ui_glyph(px, text_y, ch, sz, 0, muted_col, clip_id);
+        px += adv;
+      }
+    }
+  } else {
+    let draw_lo = if caret < anchor { caret } else { anchor };
+    let draw_hi = if caret > anchor { caret } else { anchor };
+    let mut caret_px = 0;
+    let mut sel_px0 = 0;
+    let mut sel_px1 = 0;
+    let mut acc_px = 0;
+    for i in 0..cur_len max 1024 {
+      if i == caret { caret_px = acc_px; }
+      if i == draw_lo { sel_px0 = acc_px; }
+      if i == draw_hi { sel_px1 = acc_px; }
+      let ch = if mask_in { 8226 } else { mem_load(buf_addr + 1 + i) };
+      acc_px += glyph_px(ch, sz, st);
+    }
+    if caret == cur_len { caret_px = acc_px; }
+    if draw_lo == cur_len { sel_px0 = acc_px; }
+    if draw_hi == cur_len { sel_px1 = acc_px; }
+
+    let eff_scroll = if is_focused {
+      let s1 = if caret_px < scroll_x { caret_px } else { scroll_x };
+      let s2 = if caret_px > s1 + inner_w - 4 { caret_px - (inner_w - 4) } else { s1 };
+      let s3 = clamp_i64(s2, 0, 65536);
+      mem_store(SYS_FORMA_TEXT_SCROLL_WORD, s3);
+      s3
+    } else {
+      0
+    };
+
+    if is_focused && draw_hi > draw_lo {
+      let sx0 = clamp_i64(rx + pad_x + sel_px0 - eff_scroll, rx + pad_x, max_x);
+      let sx1 = clamp_i64(rx + pad_x + sel_px1 - eff_scroll, rx + pad_x, max_x);
+      if sx1 > sx0 {
+        let sel_h = clamp_i64(sz + 4, 12, rh - 6);
+        let sel_col = (accent & 16777215) | (96 << 24);
+        ui_rect(sx0, ry + (rh - sel_h) / 2, sx1 - sx0, sel_h, 3, 0, 0, sel_col, 0, clip_id);
+      }
+    }
+
+    let mut cx = rx + pad_x - eff_scroll;
+    for i in 0..cur_len max 1024 {
+      let ch = if mask_in { 8226 } else { mem_load(buf_addr + 1 + i) };
+      let adv = glyph_px(ch, sz, st);
+      if cx >= rx + pad_x - 2 && cx + adv <= max_x {
+        ui_glyph(cx, text_y, ch, sz, st, text_col, clip_id);
+      }
+      cx += adv;
+    }
+    caret_x = clamp_i64(rx + pad_x + caret_px - eff_scroll, rx + pad_x, max_x);
+  }
+
+  let tick = mem_load(SYS_FORMA_TICK_WORD);
+  if is_focused && ((tick / 30) % 2 == 0) {
+    let ch_h = clamp_i64(sz + 4, 12, rh - 6);
+    ui_rect(caret_x, ry + (rh - ch_h) / 2, 2, ch_h, 1, 0, 0, accent, 0, clip_id);
+  }
+  ev
+}

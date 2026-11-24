@@ -1,0 +1,290 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum.Forma 2.1 Reference Demo Capsule (.ifm -> .ifw)
+// Demonstrates declarative spatial UI with Z3-verified geometry, reusable Forma
+// sub-components, `for` loops inside Forma, interactive widgets (Toggle, Slider, TextInput),
+// 1-Draw-Call GPU primitives via std/prelude, Scroll clipping, Slot Flux bridges,
+// deferred Overlay dropdowns, and built-in tests.
+
+use "std/prelude.ifm";
+
+const BG_APP: i64 = 0xFF141210;
+const BG_SIDEBAR: i64 = 0xFF1C1A17;
+const BG_PANEL: i64 = 0xFF24211D;
+const BG_BTN: i64 = 0xFF332F2A;
+const BG_BTN_HOVER: i64 = 0xFF474139;
+const BG_ACCENT: i64 = 0xFFE5983B;
+const BG_ACCENT_HOVER: i64 = 0xFFF2AD52;
+const COL_BORDER: i64 = 0xFF3D3832;
+const COL_DIVIDER: i64 = 0xFF302C27;
+const COL_CARD: i64 = 0xFF2B2722;
+const COL_TEXT: i64 = 0xFFF3EFEA;
+const COL_TEXT_HINT: i64 = 0xFF9C948A;
+
+enum Action {
+  NavChat = 10,
+  NavFiles = 11,
+  NavSettings = 12,
+  ToggleDd = 20,
+  PickM1 = 21,
+  PickM2 = 22,
+  Attach = 30,
+  Send = 31,
+  ToggleFast = 32,
+}
+
+layout AppState {
+  tick: word,
+  active_tab: word inv 0..=2,
+  dd_open: word inv 0..=1,
+  model_idx: word inv 0..=1,
+  scroll_y: word inv 0..=240,
+  fast_mode: word inv 0..=1,
+  temp_pct: word inv 0..=100,
+  last_action: word,
+  query_buf: words[128],
+}
+
+fn draw_feed_cards(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+  let sy = AppState.scroll_y;
+  let card_w = if rw > 32 { rw - 32 } else { rw };
+  for i in 0..4 {
+    let cy = ry + 16 + i * 76 - sy;
+    if cy + 60 > ry && cy < ry + rh {
+      ui_rect(rx + 16, cy, card_w, 60, 10, 1, 0, COL_CARD, COL_BORDER, clip_id);
+      let title = if i == 0 {
+        "Z3-verified layout & zero overflow"
+      } else if i == 1 {
+        "1-Draw-Call GPU primitive stream"
+      } else if i == 2 {
+        "Reusable Forma 2.0 sub-components"
+      } else {
+        "Deferred Overlay dropdowns & Scroll clipping"
+      };
+      ui_text(rx + 30, cy + 12, title, 14, 1, COL_TEXT, clip_id);
+      ui_text(rx + 30, cy + 34, "Rendered from pure Infimum .ifw capsule", 12, 0, COL_TEXT_HINT, clip_id);
+    }
+  }
+}
+
+fn handle_feed_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
+  let dy = forma_wheel_dy();
+  AppState.scroll_y = clamp_i64(AppState.scroll_y - dy, 0, 240);
+}
+
+// Reusable Forma 2.0 sub-component for sidebar navigation buttons
+forma NavBtn(w: i64, label: str, active: bool, action: i64)
+  req w >= 80
+  -[Mem]-> i64
+{
+  Button(
+    w: w,
+    h: 36,
+    radius: 8,
+    bg: if active { BG_ACCENT } else { BG_BTN },
+    hover_bg: if active { BG_ACCENT_HOVER } else { BG_BTN_HOVER },
+    pad_x: 12,
+    align: center,
+    on_click: action
+  ) {
+    Text(
+      label,
+      size: 13,
+      style: 1,
+      color: if active { BG_APP } else { COL_TEXT },
+      shrink: 1,
+      overflow: ellipsis
+    )
+  }
+}
+
+forma StudioShell(vw: i64, vh: i64, active_tab: i64, model_idx: i64, dd_open: bool)
+  req vw >= 640 && vh >= 400
+  -[Mem]-> i64
+{
+  Box(x: 0, y: 0, w: vw, h: vh, bg: BG_APP) {
+    Row(gap: 0) {
+      // Left sidebar
+      Box(w: 220, bg: BG_SIDEBAR, border: 1, border_col: COL_BORDER, pad: 12) {
+        Col(gap: 8) {
+          Box(h: 36, radius: 8, bg: BG_PANEL, border: 1, border_col: COL_BORDER, pad_x: 10, align: center) {
+            Text("Infimum.Forma 2.1", size: 14, style: 1, color: BG_ACCENT, shrink: 1, overflow: ellipsis)
+          }
+          Divider(h: 1, bg: COL_DIVIDER)
+          NavBtn(196, "Chat", active_tab == 0, Action::NavChat)
+          NavBtn(196, "Files", active_tab == 1, Action::NavFiles)
+          Spacer(grow: 1)
+          NavBtn(196, "Settings", active_tab == 2, Action::NavSettings)
+        }
+      }
+
+      // Main workspace column
+      Col(grow: 1, pad: 16, gap: 12) {
+        // Header bar with model Dropdown + deferred Overlay menu
+        Box(h: 48, radius: 10, bg: BG_PANEL, border: 1, border_col: COL_BORDER, pad_x: 12, pad_y: 8) {
+          Row(gap: 8, align: center) {
+            Text(
+              if active_tab == 0 { "Chat Workspace" } else if active_tab == 1 { "Project Files" } else { "Settings" },
+              size: 15,
+              style: 1,
+              color: COL_TEXT,
+              shrink: 1,
+              overflow: ellipsis
+            )
+            Spacer(grow: 1)
+            Dropdown(
+              id: 20,
+              w: 160,
+              h: 32,
+              radius: 8,
+              bg: BG_BTN,
+              hover_bg: BG_BTN_HOVER,
+              border: 1,
+              border_col: COL_BORDER,
+              pad_x: 10,
+              align: center,
+              on_click: Action::ToggleDd
+            ) {
+              Text(
+                if model_idx == 0 { "Gemini Pro" } else { "Infimum Local" },
+                size: 13,
+                style: 1,
+                color: COL_TEXT,
+                shrink: 1,
+                overflow: ellipsis
+              )
+              Overlay(
+                x: vw - 196,
+                y: 68,
+                w: 168,
+                h: 92,
+                radius: 10,
+                bg: BG_PANEL,
+                border: 1,
+                border_col: COL_BORDER,
+                shadow: 14,
+                pad: 8,
+                visible: dd_open
+              ) {
+                Col(gap: 6) {
+                  Button(id: 21, h: 34, radius: 6, bg: BG_BTN, hover_bg: BG_ACCENT, pad_x: 10, align: center, on_click: Action::PickM1) {
+                    Text("Gemini Pro", size: 13, style: 1, color: COL_TEXT, shrink: 1, overflow: ellipsis)
+                  }
+                  Button(id: 22, h: 34, radius: 6, bg: BG_BTN, hover_bg: BG_ACCENT, pad_x: 10, align: center, on_click: Action::PickM2) {
+                    Text("Infimum Local", size: 13, style: 1, color: COL_TEXT, shrink: 1, overflow: ellipsis)
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Scrollable message feed with hardware clip rect #3
+        Scroll(id: 30, grow: 1, clip: 3, radius: 10, bg: BG_PANEL, border: 1, border_col: COL_BORDER) {
+          Slot(render: draw_feed_cards, on_wheel: handle_feed_wheel)
+        }
+
+        // Bottom composer bar with Forma 2.1 `for` badges + Toggle + Slider + TextInput
+        Box(h: 88, radius: 12, bg: BG_PANEL, border: 1, border_col: COL_BORDER, pad: 10) {
+          Col(gap: 8) {
+            Row(h: 24, gap: 6, align: center) {
+              for i in 0..3 {
+                Box(w: 64, h: 24, radius: 6, bg: BG_BTN, border: 1, border_col: COL_BORDER, align: center) {
+                  Text(
+                    if i == 0 { "Z3 SMT" } else if i == 1 { "1 Draw" } else { "Wasm" },
+                    size: 11,
+                    style: 1,
+                    color: COL_TEXT_HINT,
+                    shrink: 1,
+                    overflow: ellipsis
+                  )
+                }
+              }
+              Spacer(grow: 1)
+              Toggle(id: 43, w: 40, h: 22, bind: AppState::fast_mode, bg: BG_BTN, border_col: COL_BORDER, accent: BG_ACCENT, on_change: Action::ToggleFast)
+              Slider(id: 44, w: 96, h: 22, bind: AppState::temp_pct, min: 0, max: 100, step: 5, bg: BG_BTN, border_col: COL_BORDER, accent: BG_ACCENT)
+            }
+            Row(h: 34, gap: 8, align: center) {
+              Button(id: 40, w: 84, h: 34, radius: 8, bg: BG_BTN, hover_bg: BG_BTN_HOVER, align: center, on_click: Action::Attach) {
+                Text("Attach", size: 13, style: 1, color: COL_TEXT)
+              }
+              TextInput(id: 42, grow: 1, h: 34, buf: AppState::query_buf, max_len: 120, bg: BG_APP, border_col: COL_BORDER, accent: BG_ACCENT, color: COL_TEXT, size: 13, placeholder: "Ask Infimum AI...", on_submit: Action::Send)
+              Button(id: 41, w: 84, h: 34, radius: 17, bg: BG_ACCENT, hover_bg: BG_ACCENT_HOVER, align: center, on_click: Action::Send) {
+                Text("Send", size: 13, style: 1, color: BG_APP)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn apply_action(act: i64) -[Mem]-> unit {
+  match act {
+    Action::NavChat => { AppState.active_tab = 0; },
+    Action::NavFiles => { AppState.active_tab = 1; },
+    Action::NavSettings => { AppState.active_tab = 2; },
+    Action::ToggleDd => { AppState.dd_open = if AppState.dd_open != 0 { 0 } else { 1 }; },
+    Action::PickM1 => { AppState.model_idx = 0; AppState.dd_open = 0; },
+    Action::PickM2 => { AppState.model_idx = 1; AppState.dd_open = 0; },
+    _ => {
+      if act != 0 { AppState.last_action = act; }
+    },
+  }
+}
+
+export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem]-> i64 {
+  AppState.tick = 0;
+  AppState.active_tab = 0;
+  AppState.dd_open = 1;
+  AppState.model_idx = 0;
+  AppState.scroll_y = 0;
+  AppState.fast_mode = 1;
+  AppState.temp_pct = 50;
+  buf_clear(AppState::query_buf);
+  AppState.last_action = 0;
+  0
+}
+
+export fn step_ui(
+  vw: i64,
+  vh: i64,
+  mx: i64,
+  my: i64,
+  m_down: i64,
+  m_clicked: i64,
+  wheel_dy: i64,
+  key_char: i64,
+  key_special: i64
+) -[Mem, Gpu]-> i64 {
+  AppState.tick += 1;
+  let safe_vw = if vw < 640 { 640 } else { vw };
+  let safe_vh = if vh < 400 { 400 } else { vh };
+
+  forma_begin_frame(safe_vw, safe_vh, mx, my, m_clicked, wheel_dy);
+  forma_set_input(m_down, key_char, key_special, AppState.tick);
+
+  let act = StudioShell(safe_vw, safe_vh, AppState.active_tab, AppState.model_idx, AppState.dd_open != 0);
+  apply_action(act);
+
+  let cur = forma_cursor();
+  if cur != 0 { gfx_set_cursor(cur); }
+  gfx_end_frame()
+}
+
+test "navigation, dropdown toggle, and model selection work" {
+  let _ = init_app(0, 960, 640);
+  assert(AppState.active_tab == 0);
+  assert(AppState.dd_open == 1);
+  apply_action(Action::NavFiles);
+  assert(AppState.active_tab == 1);
+  apply_action(Action::PickM2);
+  assert(AppState.model_idx == 1);
+  assert(AppState.dd_open == 0);
+  apply_action(Action::ToggleDd);
+  assert(AppState.dd_open == 1);
+  apply_action(Action::Send);
+  assert(AppState.last_action == Action::Send);
+}

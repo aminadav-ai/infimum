@@ -1,0 +1,514 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Z3-Verified Procedural Fixed-Point PCM Sound Synthesizer (44.1 kHz).
+// Synthesizes all 18 game presets (clack, hop, click, spawn, clear, error, win,
+// shotgun, monster hit/die, player hurt, step, gate, jump, lion roar, sheep baa, laser, missile)
+// plus arbitrary waveform tones (sine, triangle, square, FM glass bell) in
+// deterministic integer fixed-point math (`-10000..10000` => `-1.0..1.0`).
+
+use "std/math.ifm";
+
+const SAMPLE_RATE: i64 = 44100;
+const MAX_SAMPLES: i64 = 66150; // 1.5s @ 44.1 kHz
+
+enum SfxPreset {
+  Clack = 1,
+  Hop = 2,
+  Click = 3,
+  Spawn = 4,
+  Clear = 5,
+  Error = 6,
+  Win = 7,
+  Shotgun = 8,
+  MonsterHit = 9,
+  MonsterDie = 10,
+  PlayerHurt = 11,
+  Step = 12,
+  Gate = 13,
+  Jump = 14,
+  LionRoar = 15,
+  SheepBaa = 16,
+  Laser = 17,
+  Missile = 18,
+}
+
+// Binary ABI shared with Rust host (`infimum-web/src/audio.rs`): words 0, 1, 64..66213
+layout AudioMem at 0 {
+  sample_count: word at 0 inv 0..=66150,
+  rng: word at 1,
+  pcm_buf: words[66150] at 64 inv -15000..=15000,
+}
+
+fn pcm_clear(n: i64) -[Mem]-> unit {
+  let lim = clamp_i64(n, 0, MAX_SAMPLES);
+  for i in 0..lim max 66150 {
+    AudioMem.pcm_buf[i] = 0;
+  }
+  AudioMem.sample_count = lim;
+}
+
+fn pcm_add(idx: i64, delta: i64) -[Mem]-> unit {
+  if idx >= 0 && idx < MAX_SAMPLES {
+    let cur = AudioMem.pcm_buf[idx];
+    AudioMem.pcm_buf[idx] = clamp_i64(cur + delta, -15000, 15000);
+  }
+}
+
+fn noise_1024() -[Mem]-> i64 {
+  let s = (AudioMem.rng * 1103515 + 12345) % 2147483647;
+  let ns = if s < 0 { -s } else { s };
+  AudioMem.rng = ns;
+  (ns % 2049) - 1024
+}
+
+// Add a single decaying sine partial starting at `start_i` for `len_i` samples.
+// `decay_per_step`: 9900..9999 (applied every 16 samples for smooth exponential decay).
+fn add_sine_note(start_i: i64, len_i: i64, freq_hz: i64, amp_10000: i64, atk_samples: i64, decay_16: i64) -[Mem]-> unit {
+  let s0 = clamp_i64(start_i, 0, MAX_SAMPLES);
+  let n = clamp_i64(len_i, 0, MAX_SAMPLES - s0);
+  let f = clamp_i64(freq_hz, 40, 12000);
+  let atk = clamp_i64(atk_samples, 1, 4410);
+  let dec = clamp_i64(decay_16, 8000, 10000);
+  // phase step in 4096 * 256 fixed-point units per sample: (f * 4096 * 256) / 44100
+  let step_fp = (f * 1048576) / SAMPLE_RATE;
+  let mut phase_fp = 0;
+  let mut env = 10000;
+  for i in 0..n max 66150 {
+    let a_env = if i < atk { (env * i) / atk } else { env };
+    let ang = (phase_fp / 256) % 4096;
+    let s = sin_1024(ang);
+    let sample = ((s * a_env) / 1024 * amp_10000) / 10000;
+    pcm_add(s0 + i, sample);
+    phase_fp += step_fp;
+    if phase_fp >= 1048576 {
+      phase_fp = phase_fp % 1048576;
+    }
+    if (i & 15) == 15 {
+      env = (env * dec) / 10000;
+    }
+  }
+}
+
+// Add a pitch-swept sine tone (e.g. hop / error thud).
+fn add_sweep_note(start_i: i64, len_i: i64, f_start: i64, f_end: i64, amp_10000: i64, atk_samples: i64, decay_16: i64) -[Mem]-> unit {
+  let s0 = clamp_i64(start_i, 0, MAX_SAMPLES);
+  let n = clamp_i64(len_i, 1, MAX_SAMPLES - s0);
+  let fs = clamp_i64(f_start, 40, 10000);
+  let fe = clamp_i64(f_end, 40, 10000);
+  let atk = clamp_i64(atk_samples, 1, 4410);
+  let dec = clamp_i64(decay_16, 8000, 10000);
+  let mut phase_fp = 0;
+  let mut env = 10000;
+  for i in 0..n max 66150 {
+    let cur_f = fs + ((fe - fs) * i) / n;
+    let step_fp = (clamp_i64(cur_f, 40, 12000) * 1048576) / SAMPLE_RATE;
+    let a_env = if i < atk { (env * i) / atk } else { env };
+    let ang = (phase_fp / 256) % 4096;
+    let s = sin_1024(ang);
+    let sample = ((s * a_env) / 1024 * amp_10000) / 10000;
+    pcm_add(s0 + i, sample);
+    phase_fp += step_fp;
+    if phase_fp >= 1048576 {
+      phase_fp = phase_fp % 1048576;
+    }
+    if (i & 15) == 15 {
+      env = (env * dec) / 10000;
+    }
+  }
+}
+
+// Warm multi-tap crystal room reverb/echo (pure integer fixed-point)
+fn apply_room_reverb(n: i64, delay1: i64, delay2: i64, wet_pct: i64) -[Mem]-> unit {
+  let lim = clamp_i64(n, 0, MAX_SAMPLES);
+  let d1 = clamp_i64(delay1, 64, 8000);
+  let d2 = clamp_i64(delay2, 128, 12000);
+  let wet = clamp_i64(wet_pct, 0, 55);
+  for i in d1..lim max 66150 {
+    let e1 = (AudioMem.pcm_buf[i - d1] * wet) / 100;
+    let e2 = if i >= d2 { (AudioMem.pcm_buf[i - d2] * (wet * 55 / 100)) / 100 } else { 0 };
+    pcm_add(i, e1 + e2);
+  }
+}
+
+// Filtered noise burst (one-pole lowpass `lp_pct` = 4..95; lower = deeper thunder/boom, higher = crisp metallic crack)
+fn add_filtered_noise(start_i: i64, len_i: i64, lp_pct: i64, amp_10000: i64, decay_16: i64) -[Mem]-> unit {
+  let s0 = clamp_i64(start_i, 0, MAX_SAMPLES);
+  let n = clamp_i64(len_i, 1, MAX_SAMPLES - s0);
+  let lp = clamp_i64(lp_pct, 4, 95);
+  let dec = clamp_i64(decay_16, 8200, 10000);
+  let mut env = 10000;
+  let mut filt = 0;
+  for i in 0..n max 66150 {
+    let raw = noise_1024();
+    filt = (filt * (100 - lp) + raw * lp) / 100;
+    let sample = ((filt * env) / 1024 * amp_10000) / 10000;
+    pcm_add(s0 + i, sample);
+    if (i & 15) == 15 {
+      env = (env * dec) / 10000;
+    }
+  }
+}
+
+// Gritty distorted FM monster growl / roar (pitch-swept carrier + rough modulator)
+fn add_growl(start_i: i64, len_i: i64, f_start: i64, f_end: i64, mod_hz: i64, amp_10000: i64, decay_16: i64) -[Mem]-> unit {
+  let s0 = clamp_i64(start_i, 0, MAX_SAMPLES);
+  let n = clamp_i64(len_i, 1, MAX_SAMPLES - s0);
+  let fs = clamp_i64(f_start, 40, 2000);
+  let fe = clamp_i64(f_end, 35, 2000);
+  let m_step = (clamp_i64(mod_hz, 15, 600) * 1048576) / SAMPLE_RATE;
+  let dec = clamp_i64(decay_16, 8500, 10000);
+  let mut phase_fp = 0;
+  let mut mod_fp = 0;
+  let mut env = 10000;
+  for i in 0..n max 66150 {
+    let cur_f = fs + ((fe - fs) * i) / n;
+    let step_fp = (clamp_i64(cur_f, 35, 2500) * 1048576) / SAMPLE_RATE;
+    let m_ang = (mod_fp / 256) % 4096;
+    let m_val = sin_1024(m_ang);
+    let c_ang = ((phase_fp / 256) + (m_val * 2) + 8192) % 4096;
+    // Soft-clipped gritty waveform
+    let s = clamp_i64(sin_1024(c_ang) * 2, -1024, 1024);
+    let a_env = if i < 220 { (env * i) / 220 } else { env };
+    let sample = ((s * a_env) / 1024 * amp_10000) / 10000;
+    pcm_add(s0 + i, sample);
+    phase_fp = (phase_fp + step_fp) % 1048576;
+    mod_fp = (mod_fp + m_step) % 1048576;
+    if (i & 15) == 15 {
+      env = (env * dec) / 10000;
+    }
+  }
+}
+
+export fn synth_preset_ifm(preset: i64, pitch_pct: i64, vol_pct: i64) -[Mem]-> i64 {
+  let p = clamp_i64(preset, 1, 18);
+  let pit = clamp_i64(pitch_pct, 40, 250);
+  let g = clamp_i64(vol_pct, 0, 100) * 44; // 0..4400 safe headroom
+  AudioMem.rng = 1337 + p * 7919;
+
+  match p {
+    SfxPreset::Clack => {
+      // Refractive glass marble landing on carved marble (170ms + room tail)
+      let n = 7497;
+      pcm_clear(n);
+      add_sine_note(0, 4200, (980 * pit) / 100, (g * 55) / 100, 14, 9830);
+      add_sine_note(0, 4800, (1960 * pit) / 100, (g * 48) / 100, 10, 9800);
+      add_sine_note(0, 3200, (3420 * pit) / 100, (g * 28) / 100, 8, 9740);
+      let mut nenv = 10000;
+      for i in 0..220 max 220 {
+        let ns = ((noise_1024() * nenv) / 1024 * ((g * 42) / 100)) / 10000;
+        pcm_add(i, ns);
+        nenv = (nenv * 9720) / 10000;
+      }
+      apply_room_reverb(n, 1100, 2350, 24);
+      n
+    },
+    SfxPreset::Hop => {
+      // Tactile crystal marimba tick-hop (110ms)
+      let n = 4851;
+      pcm_clear(n);
+      add_sweep_note(0, 3200, (440 * pit) / 100, (820 * pit) / 100, (g * 72) / 100, 44, 9870);
+      add_sine_note(0, 3400, (1320 * pit) / 100, (g * 32) / 100, 20, 9820);
+      apply_room_reverb(n, 880, 1760, 18);
+      n
+    },
+    SfxPreset::Click => {
+      // Sparkling glass jewel pickup chime (120ms)
+      let n = 5292;
+      pcm_clear(n);
+      add_sine_note(0, 3800, (1046 * pit) / 100, (g * 52) / 100, 18, 9880);
+      add_sine_note(0, 3800, (1568 * pit) / 100, (g * 36) / 100, 16, 9840);
+      add_sine_note(0, 2600, (3136 * pit) / 100, (g * 20) / 100, 12, 9760);
+      apply_room_reverb(n, 950, 1920, 22);
+      n
+    },
+    SfxPreset::Spawn => {
+      // Shimmering 3-jewel crystalline cascade (240ms)
+      let n = 10584;
+      pcm_clear(n);
+      add_sine_note(0, 6200, (587 * pit) / 100, (g * 45) / 100, 90, 9910);
+      add_sine_note(1400, 6200, (740 * pit) / 100, (g * 45) / 100, 90, 9910);
+      add_sine_note(2800, 6500, (880 * pit) / 100, (g * 50) / 100, 90, 9915);
+      add_sine_note(2800, 6500, (1760 * pit) / 100, (g * 24) / 100, 90, 9885);
+      apply_room_reverb(n, 1450, 2900, 28);
+      n
+    },
+    SfxPreset::Clear => {
+      // Lush polyphonic crystal shatter + major-9th arpeggio + reverb (550ms)
+      let n = 24255;
+      pcm_clear(n);
+      add_sine_note(0, n, (523 * pit) / 100, (g * 52) / 100, 80, 9960);
+      add_sine_note(0, n, (1046 * pit) / 100, (g * 24) / 100, 60, 9945);
+      add_sine_note(1900, n - 1900, (659 * pit) / 100, (g * 52) / 100, 80, 9960);
+      add_sine_note(3800, n - 3800, (784 * pit) / 100, (g * 52) / 100, 80, 9962);
+      add_sine_note(5700, n - 5700, (1046 * pit) / 100, (g * 56) / 100, 80, 9965);
+      add_sine_note(5700, n - 5700, (1175 * pit) / 100, (g * 28) / 100, 80, 9955);
+      add_sine_note(5700, n - 5700, (2093 * pit) / 100, (g * 24) / 100, 60, 9935);
+      let mut nenv = 10000;
+      for i in 0..900 max 900 {
+        let ns = ((noise_1024() * nenv) / 1024 * ((g * 28) / 100)) / 10000;
+        pcm_add(i, ns);
+        nenv = (nenv * 9940) / 10000;
+      }
+      apply_room_reverb(n, 2200, 4650, 34);
+      n
+    },
+    SfxPreset::Error => {
+      // Muted woody double-thud (200ms)
+      let n = 8820;
+      pcm_clear(n);
+      add_sweep_note(0, 3600, (185 * pit) / 100, (125 * pit) / 100, (g * 85) / 100, 70, 9865);
+      add_sweep_note(3800, n - 3800, (150 * pit) / 100, (98 * pit) / 100, (g * 85) / 100, 70, 9865);
+      apply_room_reverb(n, 1100, 2100, 14);
+      n
+    },
+    SfxPreset::Win => {
+      // Lush 5-note celebratory fanfare + reverb (650ms)
+      let n = 28665;
+      pcm_clear(n);
+      add_sine_note(0, n, (523 * pit) / 100, (g * 48) / 100, 110, 9965);
+      add_sine_note(2600, n - 2600, (659 * pit) / 100, (g * 48) / 100, 110, 9965);
+      add_sine_note(5200, n - 5200, (784 * pit) / 100, (g * 48) / 100, 110, 9965);
+      add_sine_note(7800, n - 7800, (1046 * pit) / 100, (g * 56) / 100, 110, 9970);
+      add_sine_note(7800, n - 7800, (1568 * pit) / 100, (g * 30) / 100, 110, 9960);
+      add_sine_note(7800, n - 7800, (2093 * pit) / 100, (g * 22) / 100, 100, 9945);
+      apply_room_reverb(n, 2600, 5200, 36);
+      n
+    },
+    SfxPreset::Shotgun => {
+      // Thunderous Quake Super-Shotgun blast + cavern echo + steel pump clack (480ms)
+      let n = 21168;
+      pcm_clear(n);
+      add_sweep_note(0, 6200, (175 * pit) / 100, 38, (g * 165) / 100, 22, 9875);
+      add_filtered_noise(0, 13000, 16, (g * 175) / 100, 9920);
+      add_filtered_noise(0, 2400, 72, (g * 140) / 100, 9620);
+      add_filtered_noise(9200, 900, 82, (g * 55) / 100, 9450);
+      add_sine_note(9200, 700, (1650 * pit) / 100, (g * 36) / 100, 10, 9500);
+      add_filtered_noise(12100, 1100, 78, (g * 68) / 100, 9480);
+      add_sine_note(12100, 900, (2150 * pit) / 100, (g * 42) / 100, 10, 9540);
+      apply_room_reverb(n, 2400, 5100, 38);
+      n
+    },
+    SfxPreset::MonsterHit => {
+      // Visceral meaty pellet impact + grunt flinch (190ms)
+      let n = 8379;
+      pcm_clear(n);
+      add_sweep_note(0, 4200, (220 * pit) / 100, (78 * pit) / 100, (g * 125) / 100, 24, 9860);
+      add_filtered_noise(0, 3400, 32, (g * 115) / 100, 9820);
+      add_growl(600, 5200, (190 * pit) / 100, (125 * pit) / 100, 55, (g * 75) / 100, 9890);
+      apply_room_reverb(n, 1350, 2700, 24);
+      n
+    },
+    SfxPreset::MonsterDie => {
+      // Deep guttural Quake monster death roar + cavern echo (560ms)
+      let n = 24696;
+      pcm_clear(n);
+      add_growl(0, 20000, (165 * pit) / 100, (52 * pit) / 100, (44 * pit) / 100, (g * 145) / 100, 9955);
+      add_sweep_note(0, 14000, (110 * pit) / 100, 42, (g * 95) / 100, 80, 9940);
+      add_filtered_noise(0, 16000, 22, (g * 85) / 100, 9935);
+      apply_room_reverb(n, 2800, 5600, 40);
+      n
+    },
+    SfxPreset::PlayerHurt => {
+      // Heavy armor/flesh thud + pain grunt (210ms)
+      let n = 9261;
+      pcm_clear(n);
+      add_sweep_note(0, 4600, (195 * pit) / 100, 56, (g * 140) / 100, 20, 9875);
+      add_growl(0, 6200, (150 * pit) / 100, (92 * pit) / 100, 38, (g * 95) / 100, 9895);
+      add_filtered_noise(0, 2800, 28, (g * 95) / 100, 9780);
+      apply_room_reverb(n, 1400, 2800, 22);
+      n
+    },
+    SfxPreset::Step => {
+      // Grounded boot footstep on stone flagstones (75ms)
+      let n = 3307;
+      pcm_clear(n);
+      add_sweep_note(0, 1900, (135 * pit) / 100, 54, (g * 88) / 100, 18, 9720);
+      add_filtered_noise(0, 1600, 26, (g * 74) / 100, 9680);
+      apply_room_reverb(n, 700, 1400, 16);
+      n
+    },
+    SfxPreset::Gate => {
+      // Massive grinding iron sanctum gate rumble (720ms)
+      let n = 31752;
+      pcm_clear(n);
+      add_growl(0, n, 68, 58, 24, (g * 125) / 100, 9972);
+      add_sine_note(0, n, 52, (g * 105) / 100, 220, 9975);
+      add_filtered_noise(0, n, 14, (g * 110) / 100, 9968);
+      apply_room_reverb(n, 3200, 6400, 42);
+      n
+    },
+    SfxPreset::Jump => {
+      // Punchy Quake-style athletic jump grunt + boot pushoff (160ms)
+      let n = 7056;
+      pcm_clear(n);
+      add_sweep_note(0, 2600, (125 * pit) / 100, (210 * pit) / 100, (g * 95) / 100, 30, 9850);
+      add_growl(400, 4400, (185 * pit) / 100, (132 * pit) / 100, 48, (g * 82) / 100, 9875);
+      add_filtered_noise(0, 1400, 22, (g * 55) / 100, 9700);
+      n
+    },
+    SfxPreset::LionRoar => {
+      // Deep swelling African Lion roar (780ms, smooth vocal swell)
+      let n = 34398;
+      pcm_clear(n);
+      let mut phase_fp = 0;
+      let mut mod_fp = 0;
+      let mut filt = 0;
+      let m_step = (30 * 1048576) / SAMPLE_RATE;
+      for i in 0..n max 66150 {
+        let atk_e = if i < 3800 { (10000 * i) / 3800 } else { 10000 };
+        let rel_e = if i > 14000 { clamp_i64(10000 - ((i - 14000) * 10000) / (n - 14000), 0, 10000) } else { 10000 };
+        let env = if atk_e < rel_e { atk_e } else { rel_e };
+        let base_f = if i < 6500 {
+          122 + (58 * i) / 6500
+        } else {
+          180 - (108 * (i - 6500)) / (n - 6500)
+        };
+        let cur_f = clamp_i64((base_f * pit) / 100, 48, 600);
+        let step_fp = (cur_f * 1048576) / SAMPLE_RATE;
+        let m_val = sin_1024((mod_fp / 256) % 4096);
+        let c_ang = ((phase_fp / 256) + (m_val * 3) / 2 + 8192) % 4096;
+        let v1 = sin_1024(c_ang);
+        let v2 = sin_1024((c_ang * 2) % 4096) / 2;
+        let voice = clamp_i64(((v1 + v2) * 14) / 10, -1024, 1024);
+        let raw_n = noise_1024();
+        filt = (filt * 86 + raw_n * 14) / 100;
+        let mix_s = (voice * 72 + filt * 36) / 100;
+        let sample = ((mix_s * env) / 1024 * ((g * 130) / 100)) / 10000;
+        pcm_add(i, sample);
+        phase_fp = (phase_fp + step_fp) % 1048576;
+        mod_fp = (mod_fp + m_step) % 1048576;
+      }
+      apply_room_reverb(n, 3100, 6200, 32);
+      n
+    },
+    SfxPreset::SheepBaa => {
+      // SfxPreset::SheepBaa: expressive vibrato sheep bleat "Baa-aa!" (310ms)
+      let n = 13671;
+      pcm_clear(n);
+      let mut phase_fp = 0;
+      let mut vib_fp = 0;
+      let vib_step = (19 * 1048576) / SAMPLE_RATE;
+      for i in 0..n max 66150 {
+        let atk_e = if i < 900 { (10000 * i) / 900 } else { 10000 };
+        let rel_e = if i > 7500 { clamp_i64(10000 - ((i - 7500) * 10000) / (n - 7500), 0, 10000) } else { 10000 };
+        let env = if atk_e < rel_e { atk_e } else { rel_e };
+        let vib = sin_1024((vib_fp / 256) % 4096);
+        let trem = 7200 + (vib * 2800) / 1024;
+        let cur_f = clamp_i64(((410 - (55 * i) / n + (vib * 18) / 1024) * pit) / 100, 180, 1200);
+        let step_fp = (cur_f * 1048576) / SAMPLE_RATE;
+        let ang = (phase_fp / 256) % 4096;
+        let raw = (sin_1024(ang) * 55 + sin_1024((ang * 2) % 4096) * 35 + sin_1024((ang * 3) % 4096) * 20) / 100;
+        let sample = (((raw * env) / 1024 * trem) / 10000 * ((g * 85) / 100)) / 10000;
+        pcm_add(i, sample);
+        phase_fp = (phase_fp + step_fp) % 1048576;
+        vib_fp = (vib_fp + vib_step) % 1048576;
+      }
+      apply_room_reverb(n, 1400, 2800, 20);
+      n
+    },
+    SfxPreset::Laser => {
+      // SfxPreset::Laser: crisp sci-fi plasma laser zap "pchew!" (120ms)
+      let n = 5292;
+      pcm_clear(n);
+      // Fast exponential-feel two-stage downward chirp: 1950 -> 520 -> 190 Hz
+      add_sweep_note(0, 1600, (1950 * pit) / 100, (520 * pit) / 100, (g * 92) / 100, 14, 9890);
+      add_sweep_note(1400, 3400, (560 * pit) / 100, (190 * pit) / 100, (g * 74) / 100, 40, 9865);
+      // Bright sci-fi harmonic overtone sweep
+      add_sweep_note(0, 2400, (3100 * pit) / 100, (640 * pit) / 100, (g * 34) / 100, 10, 9830);
+      // Tight plasma trigger snap transient
+      add_filtered_noise(0, 720, 48, (g * 54) / 100, 9550);
+      apply_room_reverb(n, 900, 1750, 15);
+      n
+    },
+    _ => {
+      // SfxPreset::Missile: pneumatic tube launch + rocket thruster whoosh (300ms)
+      let n = 13230;
+      pcm_clear(n);
+      // Launch tube mechanical pop + ignition bass thump
+      add_sweep_note(0, 2800, (165 * pit) / 100, (52 * pit) / 100, (g * 115) / 100, 20, 9895);
+      add_sine_note(0, 900, (680 * pit) / 100, (g * 32) / 100, 12, 9650);
+      // Sweeping rocket exhaust whoosh (filtered noise with ignition swell + jet tail)
+      let mut filt = 0;
+      for i in 0..n max 66150 {
+        let atk = if i < 1600 { (10000 * i) / 1600 } else { 10000 };
+        let rel = if i > 3200 { clamp_i64(10000 - ((i - 3200) * 10000) / (n - 3200), 0, 10000) } else { 10000 };
+        let env = (if atk < rel { atk } else { rel });
+        // Cutoff rises during ignition then narrows as missile flies away
+        let lp = if i < 2400 { 22 + (32 * i) / 2400 } else { clamp_i64(54 - (38 * (i - 2400)) / (n - 2400), 14, 54) };
+        let raw = noise_1024();
+        filt = (filt * (100 - lp) + raw * lp) / 100;
+        let sample = ((filt * env) / 1024 * ((g * 135) / 100)) / 10000;
+        pcm_add(i, sample);
+      }
+      apply_room_reverb(n, 1600, 3200, 18);
+      n
+    },
+  }
+}
+
+export fn synth_tone_ifm(freq_hz: i64, dur_ms: i64, wave: i64, vol_pct: i64) -[Mem]-> i64 {
+  let f = clamp_i64(freq_hz, 60, 4000);
+  let d = clamp_i64(dur_ms, 10, 1500);
+  let w = clamp_i64(wave, 0, 3);
+  let amp = clamp_i64(vol_pct, 0, 100) * 45;
+  let n = clamp_i64((SAMPLE_RATE * d) / 1000, 441, MAX_SAMPLES);
+  pcm_clear(n);
+
+  let step_fp = (f * 1048576) / SAMPLE_RATE;
+  let mod_step_fp = (((f * 24) / 10) * 1048576) / SAMPLE_RATE;
+  let atk = 176; // 4ms
+  let rel = 661; // 15ms
+  let mut phase_fp = 0;
+  let mut mod_fp = 0;
+  let mut mod_env = 10000;
+  for i in 0..n max 66150 {
+    let ang = (phase_fp / 256) % 4096;
+    let raw = match w {
+      1 => if ang < 2048 { ang - 1024 } else { 3072 - ang },
+      2 => if ang < 2048 { 720 } else { -720 },
+      3 => {
+        let m_ang = (mod_fp / 256) % 4096;
+        let m_shift = (sin_1024(m_ang) * mod_env) / 10000;
+        let c_ang = (ang + m_shift + 8192) % 4096;
+        sin_1024(c_ang)
+      },
+      _ => sin_1024(ang),
+    };
+    let a_env = if i < atk { (10000 * i) / atk } else { 10000 };
+    let rem = n - i;
+    let r_env = if rem < rel { (10000 * rem) / rel } else { 10000 };
+    let env = if a_env < r_env { a_env } else { r_env };
+    let sample = ((raw * env) / 1024 * amp) / 10000;
+    AudioMem.pcm_buf[i] = clamp_i64(sample, -15000, 15000);
+
+    phase_fp = (phase_fp + step_fp) % 1048576;
+    mod_fp = (mod_fp + mod_step_fp) % 1048576;
+    if (i & 15) == 15 {
+      mod_env = (mod_env * 9935) / 10000;
+    }
+  }
+  n
+}
+
+test "synth_tone_ifm generates bounded non-silent PCM" {
+  let n = synth_tone_ifm(440, 20, 0, 80);
+  assert(n == 882);
+  assert(AudioMem.sample_count == 882);
+  let mut energy = 0;
+  for i in 0..200 {
+    let s = AudioMem.pcm_buf[i];
+    if s != 0 { energy += 1; }
+  }
+  assert(energy > 50);
+}
+
+test "synth_preset_ifm generates Laser SFX" {
+  let nl = synth_preset_ifm(SfxPreset::Laser, 100, 80);
+  assert(nl > 2000 && AudioMem.sample_count == nl);
+}
+
+test "synth_preset_ifm generates Missile SFX" {
+  let nm = synth_preset_ifm(SfxPreset::Missile, 100, 80);
+  assert(nm > 4000 && AudioMem.sample_count == nm);
+}
