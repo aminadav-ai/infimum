@@ -8,7 +8,6 @@ pub mod diag;
 pub mod eval;
 pub mod forma;
 pub mod lexer;
-pub mod light_verify;
 pub mod mcp;
 pub mod parser;
 pub mod showcase;
