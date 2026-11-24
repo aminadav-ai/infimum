@@ -413,16 +413,21 @@ where
                     callee_types.insert(format!("p{i}"), callee_ast.params[i].ty.clone());
                     if let Expr::TupleLit(elems) = &args[i] {
                         for (fi, elem) in elems.iter().enumerate() {
+                            let fty = self.infer_expr_type(elem, types);
                             let mut tmp_env = env.clone();
                             let mut tmp_types = types.clone();
                             let esmt = self.encode_expr(elem, &mut tmp_env, &mut tmp_types, guard, false)?;
                             callee_env.insert(format!("p{i}#{fi}"), esmt);
+                            callee_types.insert(format!("p{i}#{fi}"), fty);
                         }
                     } else if let Expr::Var(src) = &args[i] {
                         let prefix = format!("{src}#");
                         for (k, v) in env.iter() {
                             if let Some(fi) = k.strip_prefix(&prefix) {
                                 callee_env.insert(format!("p{i}#{fi}"), v.clone());
+                                if let Some(fty) = types.get(k) {
+                                    callee_types.insert(format!("p{i}#{fi}"), fty.clone());
+                                }
                             }
                         }
                     }
@@ -545,11 +550,14 @@ where
                         .unwrap_or_else(|| self.infer_expr_type(value, local_types));
                     if let Expr::TupleLit(elems) = value {
                         let mut fsyms = Vec::with_capacity(elems.len());
+                        let mut ftys = Vec::with_capacity(elems.len());
                         for e in elems {
+                            ftys.push(self.infer_expr_type(e, local_types));
                             fsyms.push(self.encode_expr(e, local_env, local_types, guard, emit_checks)?);
                         }
-                        for (i, fsym) in fsyms.into_iter().enumerate() {
+                        for (i, (fsym, fty)) in fsyms.into_iter().zip(ftys.into_iter()).enumerate() {
                             local_env.insert(format!("{name}#{i}"), fsym);
+                            local_types.insert(format!("{name}#{i}"), fty);
                         }
                         let v_smt = self.fresh_sym("tup", &Type::I64);
                         local_env.insert(name.clone(), v_smt);
@@ -558,15 +566,19 @@ where
                         local_env.insert(name.clone(), v_smt);
                         if let Expr::Var(src) = value {
                             let prefix = format!("{src}#");
-                            let copied: Vec<(String, String)> = local_env
+                            let copied: Vec<(String, String, Option<Type>)> = local_env
                                 .iter()
                                 .filter_map(|(k, v)| {
-                                    k.strip_prefix(&prefix)
-                                        .map(|idx| (format!("{name}#{idx}"), v.clone()))
+                                    k.strip_prefix(&prefix).map(|idx| {
+                                        (format!("{name}#{idx}"), v.clone(), local_types.get(k).cloned())
+                                    })
                                 })
                                 .collect();
-                            for (k, v) in copied {
-                                local_env.insert(k, v);
+                            for (k, v, fty) in copied {
+                                local_env.insert(k.clone(), v);
+                                if let Some(t) = fty {
+                                    local_types.insert(k, t);
+                                }
                             }
                         }
                     }
@@ -597,11 +609,14 @@ where
                 Stmt::Assign { name, value } => {
                     if let Expr::TupleLit(elems) = value {
                         let mut fsyms = Vec::with_capacity(elems.len());
+                        let mut ftys = Vec::with_capacity(elems.len());
                         for e in elems {
+                            ftys.push(self.infer_expr_type(e, local_types));
                             fsyms.push(self.encode_expr(e, local_env, local_types, guard, emit_checks)?);
                         }
-                        for (i, fsym) in fsyms.into_iter().enumerate() {
+                        for (i, (fsym, fty)) in fsyms.into_iter().zip(ftys.into_iter()).enumerate() {
                             local_env.insert(format!("{name}#{i}"), fsym);
+                            local_types.insert(format!("{name}#{i}"), fty);
                         }
                         let v_smt = self.fresh_sym("tup", &Type::I64);
                         local_env.insert(name.clone(), v_smt);
@@ -616,6 +631,7 @@ where
                             .collect();
                         for k in stale {
                             local_env.remove(&k);
+                            local_types.remove(&k);
                         }
                     }
                 }
@@ -1477,6 +1493,24 @@ fn sound_branch(flag: bool) -> i64
   let mut x = 1;
   if flag { x = 2; }
   x
+}
+"#;
+        verify_single_fn_src(src).unwrap();
+    }
+
+    #[test]
+    fn z3_merges_bool_tuple_field_across_if_without_sort_mismatch() {
+        let src = r#"
+fn bool_tuple_branch(flag: bool) -> i64
+  ens result == 1
+{
+  let mut st = (false, 0);
+  if flag {
+    st = (true, 1);
+  } else {
+    st = (true, 1);
+  }
+  if st.0 { st.1 } else { 0 }
 }
 "#;
         verify_single_fn_src(src).unwrap();
