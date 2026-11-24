@@ -37,7 +37,7 @@ pub use tools::{
     save_allowed_workspaces,
 };
 
-pub(crate) use tools::resolve_infimum_bin;
+pub(crate) use tools::{resolve_infimum_bin, resolve_infimum_web_bin};
 
 #[cfg(test)]
 #[allow(unused_imports)]
