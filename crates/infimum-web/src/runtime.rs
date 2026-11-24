@@ -37,9 +37,10 @@ pub fn load_core_axw(file_name: &str, embedded: &[u8]) -> (Engine, Module) {
         let mut candidates = Vec::new();
         if let Ok(exe) = std::env::current_exe() {
             if let Some(root) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
-                candidates.push(root.join("capsules/core").join(file_name));
+                candidates.push(root.join("crates/infimum-web/capsules/core").join(file_name));
             }
         }
+        candidates.push(std::path::PathBuf::from("crates/infimum-web/capsules/core").join(file_name));
         candidates.push(std::path::PathBuf::from("capsules/core").join(file_name));
 
         for p in candidates {
