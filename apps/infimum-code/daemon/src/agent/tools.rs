@@ -2018,7 +2018,7 @@ pub(super) fn execute_native_tool(
                     "Complete Rust source code of the infimum-code daemon (infimum-agentd: AI agent loop, sandbox policy, HTTP server, hot-reloading core_loader, studio_abi)",
                     &[
                         "agent/mod.rs", "agent/timeline.rs", "agent/conversations.rs",
-                        "agent/tools.rs", "agent/providers.rs", "core_loader.rs",
+                        "agent/tools.rs", "agent/providers.rs", "agent/tests.rs", "core_loader.rs",
                         "http_server.rs", "main.rs", "policy.rs", "studio_abi.rs",
                     ],
                 ),
@@ -2028,7 +2028,7 @@ pub(super) fn execute_native_tool(
                     &[
                         "run_checks.sh", "ci_verify_corpus.sh", "build_studio.sh",
                         "generate_cleanroom_icon.py", "ci.yml",
-                        "lang-Cargo.toml", "web-Cargo.toml", "daemon-Cargo.toml",
+                        "workspace-Cargo.toml", "lang-Cargo.toml", "web-Cargo.toml", "daemon-Cargo.toml",
                         "INFIMUM_FORMA_SPEC.md", "system_prompt.md",
                     ],
                 ),
@@ -2036,9 +2036,10 @@ pub(super) fn execute_native_tool(
                     "web-site",
                     "Cloudflare Worker, Online Infimum Code Studio, WebGPU Player, and infimum-lang.org frontend sources",
                     &[
-                        "src/worker.js", "wrangler.toml",
+                        "src/worker.js", "wrangler.toml", "public/_headers",
                         "public/code/code.js", "public/code/agent_worker.js", "public/code/z3_worker.js",
-                        "public/code/index.html", "public/player/player.js", "public/player/index.html",
+                        "public/code/studio_abi.js", "public/code/index.html",
+                        "public/player/player.js", "public/player/index.html",
                         "public/index.html", "public/app.js", "public/styles.css",
                     ],
                 ),
@@ -2158,6 +2159,9 @@ pub(super) fn execute_native_tool(
                             .unwrap_or_default(),
                         "ci.yml" => monorepo
                             .map(|m| vec![m.join(".github").join("workflows").join("ci.yml")])
+                            .unwrap_or_default(),
+                        "workspace-Cargo.toml" => monorepo
+                            .map(|m| vec![m.join("Cargo.toml")])
                             .unwrap_or_default(),
                         "lang-Cargo.toml" => lang_root
                             .as_ref()
