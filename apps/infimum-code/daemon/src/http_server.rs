@@ -19,42 +19,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-fn resolve_infimum_web_bin() -> PathBuf {
-    if let Ok(p) = env::var("INFIMUM_WEB_BIN") {
-        let pb = PathBuf::from(p);
-        if pb.is_file() {
-            return pb;
-        }
-    }
-    if let Ok(exe) = env::current_exe() {
-        if let Some(studio_root) = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-        {
-            if let Some(ws) = studio_root.parent() {
-                for rel in [
-                    "infimum-web/target/release/infimum-web",
-                    "infimum-web/target/debug/infimum-web",
-                ] {
-                    let cand = ws.join(rel);
-                    if cand.is_file() {
-                        return cand;
-                    }
-                }
-            }
-        }
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join("infimum-web");
-            if sibling.is_file() {
-                return sibling;
-            }
-        }
-    }
-    PathBuf::from("infimum-web")
-}
-
 #[derive(Default)]
 struct AsyncAgentState {
     status: i64, // 0=idle, 1=running, 2=done
@@ -1426,7 +1390,7 @@ pub fn handle_request(
                 return (403, "Forbidden", json!({ "ok": false, "error": "ifw_outside_workspace" }));
             }
 
-            let web_bin = resolve_infimum_web_bin();
+            let web_bin = agent::resolve_infimum_web_bin();
             let launch_dir = ifw_canon.parent().unwrap_or(&ws_canon);
             match std::process::Command::new(&web_bin)
                 .arg(&ifw_canon)
@@ -1522,7 +1486,7 @@ pub fn handle_request(
                 if let Some(ifw_path) = target_ifw {
                     if let Ok(ifw_canon) = fs::canonicalize(&ifw_path) {
                         if ifw_canon.starts_with(&ws_canon) && ifw_canon.is_file() {
-                            let web_bin = resolve_infimum_web_bin();
+                            let web_bin = agent::resolve_infimum_web_bin();
                             let launch_dir = ifw_canon.parent().unwrap_or(&ws_canon);
                             let _ = std::process::Command::new(&web_bin)
                                 .arg(&ifw_canon)

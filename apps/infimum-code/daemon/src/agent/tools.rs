@@ -1384,7 +1384,7 @@ pub(super) fn resolve_z3_bin() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-pub(super) fn resolve_infimum_web_bin() -> PathBuf {
+pub(crate) fn resolve_infimum_web_bin() -> PathBuf {
     if let Ok(p) = env::var("INFIMUM_WEB_BIN") {
         let pb = PathBuf::from(p);
         if pb.is_file() {
@@ -1412,14 +1412,6 @@ pub(super) fn resolve_infimum_web_bin() -> PathBuf {
         if let Some(mono) = root.parent().and_then(|p| p.parent()) {
             for rel in ["target/release/infimum-web", "target/debug/infimum-web"] {
                 let p = mono.join(rel);
-                if p.is_file() {
-                    return p;
-                }
-            }
-        }
-        if let Some(ws) = root.parent() {
-            for rel in ["infimum-web/target/release/infimum-web", "infimum-web/target/debug/infimum-web"] {
-                let p = ws.join(rel);
                 if p.is_file() {
                     return p;
                 }
