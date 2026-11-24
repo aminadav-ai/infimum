@@ -46,7 +46,8 @@ struct Evaluator<'a> {
 }
 
 const MAX_EVAL_STEPS: usize = 5_000_000;
-const EVAL_STR_POOL_BASE: i64 = 1_500_000;
+const EVAL_STR_POOL_MIN_BASE: i64 = 2_030_000;
+const MAX_EVAL_MEM_WORDS: i64 = 16_777_216;
 
 impl<'a> Evaluator<'a> {
     fn new(module: &'a Module) -> Self {
@@ -54,11 +55,13 @@ impl<'a> Evaluator<'a> {
         for f in &module.functions {
             fns.insert(f.name.as_str(), f);
         }
+        let str_pool_cursor = (crate::strata_wasm::compute_module_layout_end_word(module) as i64)
+            .max(EVAL_STR_POOL_MIN_BASE);
         Self {
             fns,
             mem: vec![0; 65536],
             str_pool: BTreeMap::new(),
-            str_pool_cursor: EVAL_STR_POOL_BASE,
+            str_pool_cursor,
             steps: 0,
         }
     }
@@ -70,7 +73,7 @@ impl<'a> Evaluator<'a> {
         let chars: Vec<i64> = s.chars().map(|c| c as i64).collect();
         let ptr = self.str_pool_cursor;
         let end = ptr + 1 + chars.len() as i64;
-        if end > 2_000_000 {
+        if end > MAX_EVAL_MEM_WORDS {
             return Err("Test evaluator string pool exhausted".to_string());
         }
         if (end as usize) > self.mem.len() {
@@ -324,7 +327,7 @@ impl<'a> Evaluator<'a> {
                 if effect == "Mem" && op == "store_str" && args.len() == 2 {
                     let slot = self.eval_expr(&args[0], scopes, cur_fn)?.as_int()?;
                     let val = self.eval_expr(&args[1], scopes, cur_fn)?;
-                    if !(0..=2_000_000).contains(&slot) {
+                    if !(0..MAX_EVAL_MEM_WORDS).contains(&slot) {
                         return Err(format!("Out-of-bounds Mem.store_str({slot})"));
                     }
                     let ptr = match val {
@@ -347,7 +350,7 @@ impl<'a> Evaluator<'a> {
             }
             Expr::MemLoad { index, .. } => {
                 let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
-                if !(0..=2_000_000).contains(&idx) {
+                if !(0..MAX_EVAL_MEM_WORDS).contains(&idx) {
                     return Err(format!("Out-of-bounds mem_load({idx})"));
                 }
                 let u = idx as usize;
@@ -356,7 +359,7 @@ impl<'a> Evaluator<'a> {
             Expr::MemStore { index, value, .. } => {
                 let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
                 let val = self.eval_expr(value, scopes, cur_fn)?.as_int()?;
-                if !(0..=2_000_000).contains(&idx) {
+                if !(0..MAX_EVAL_MEM_WORDS).contains(&idx) {
                     return Err(format!("Out-of-bounds mem_store({idx})"));
                 }
                 let u = idx as usize;
@@ -435,4 +438,35 @@ pub fn run_module_tests(module: &Module) -> Vec<TestCaseResult> {
         }
     }
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_module;
+
+    #[test]
+    fn str_pool_does_not_collide_with_large_layouts_above_2m() {
+        let src = r#"
+use "std/buf.ifm";
+
+layout BigMem at 1500000 {
+  vbo: words[700000],
+  tail_marker: word,
+}
+
+test "str_len does not overwrite layout words above 1.5M or 2.2M" {
+  BigMem.vbo[0] = 424242;
+  BigMem.tail_marker = 987654;
+  let n = str_len("hello world from 3d test");
+  assert(n == 24);
+  assert(BigMem.vbo[0] == 424242);
+  assert(BigMem.tail_marker == 987654);
+}
+"#;
+        let m = parse_module(src).unwrap();
+        let res = run_module_tests(&m);
+        assert_eq!(res.len(), 1);
+        assert!(res[0].passed, "Test failed: {:?}", res[0].error);
+    }
 }
