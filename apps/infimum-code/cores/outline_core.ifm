@@ -65,39 +65,9 @@ fn kw_boundary(pos: i64, end: i64) -[Mem]-> bool {
   pos >= end || !is_ident(OutMem.src_buf[pos])
 }
 
-fn kw2(p: i64, e: i64, c0: i64, c1: i64) -[Mem]-> bool {
-  p + 2 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1 && kw_boundary(p + 2, e)
-}
-
-fn kw3(p: i64, e: i64, c0: i64, c1: i64, c2: i64) -[Mem]-> bool {
-  p + 3 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
-    && OutMem.src_buf[p + 2] == c2 && kw_boundary(p + 3, e)
-}
-
-fn kw4(p: i64, e: i64, c0: i64, c1: i64, c2: i64, c3: i64) -[Mem]-> bool {
-  p + 4 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
-    && OutMem.src_buf[p + 2] == c2 && OutMem.src_buf[p + 3] == c3
-    && kw_boundary(p + 4, e)
-}
-
-fn kw5(p: i64, e: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64) -[Mem]-> bool {
-  p + 5 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
-    && OutMem.src_buf[p + 2] == c2 && OutMem.src_buf[p + 3] == c3
-    && OutMem.src_buf[p + 4] == c4 && kw_boundary(p + 5, e)
-}
-
-fn kw6(p: i64, e: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64) -[Mem]-> bool {
-  p + 6 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
-    && OutMem.src_buf[p + 2] == c2 && OutMem.src_buf[p + 3] == c3
-    && OutMem.src_buf[p + 4] == c4 && OutMem.src_buf[p + 5] == c5
-    && kw_boundary(p + 6, e)
-}
-
-fn kw7(p: i64, e: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64, c6: i64) -[Mem]-> bool {
-  p + 7 <= e && OutMem.src_buf[p] == c0 && OutMem.src_buf[p + 1] == c1
-    && OutMem.src_buf[p + 2] == c2 && OutMem.src_buf[p + 3] == c3
-    && OutMem.src_buf[p + 4] == c4 && OutMem.src_buf[p + 5] == c5
-    && OutMem.src_buf[p + 6] == c6 && kw_boundary(p + 7, e)
+fn kw(p: i64, e: i64, word: str) -[Mem]-> bool {
+  let n = str_len(word);
+  p + n <= e && slice_eq_str(OutMem::src_buf + p, n, word) && kw_boundary(p + n, e)
 }
 
 fn index_lines(n: i64) -[Mem]-> i64 {
@@ -263,22 +233,22 @@ fn scan_item_span(start_idx: i64, lc: i64, is_rust: bool) -[Mem]-> ItemSpan {
 // Returns 0 = none, 1 = non-container decl, 2 = container decl (`mod`)
 fn detect_ifm_decl(start: i64, e: i64) -[Mem]-> i64 {
   let mut p = start;
-  if kw3(p, e, 'p', 'u', 'b') {
+  if kw(p, e, "pub") {
     p = skip_ws_range(p + 3, e);
   }
-  if kw6(p, e, 'e', 'x', 'p', 'o', 'r', 't') {
+  if kw(p, e, "export") {
     let p2 = skip_ws_range(p + 6, e);
-    if kw2(p2, e, 'f', 'n') { 1 } else { 0 }
-  } else if kw3(p, e, 'm', 'o', 'd') {
+    if kw(p2, e, "fn") { 1 } else { 0 }
+  } else if kw(p, e, "mod") {
     2
-  } else if kw2(p, e, 'f', 'n')
-    || kw5(p, e, 'c', 'o', 'n', 's', 't')
-    || kw4(p, e, 'e', 'n', 'u', 'm')
-    || kw6(p, e, 's', 't', 'r', 'u', 'c', 't')
-    || kw6(p, e, 'l', 'a', 'y', 'o', 'u', 't')
-    || kw5(p, e, 'f', 'o', 'r', 'm', 'a')
-    || kw3(p, e, 'u', 's', 'e')
-    || kw4(p, e, 't', 'e', 's', 't')
+  } else if kw(p, e, "fn")
+    || kw(p, e, "const")
+    || kw(p, e, "enum")
+    || kw(p, e, "struct")
+    || kw(p, e, "layout")
+    || kw(p, e, "forma")
+    || kw(p, e, "use")
+    || kw(p, e, "test")
   {
     1
   } else {
@@ -289,7 +259,7 @@ fn detect_ifm_decl(start: i64, e: i64) -[Mem]-> i64 {
 // Returns 0 = none, 1 = non-container decl, 2 = container decl (impl/trait/mod)
 fn detect_rs_decl(start: i64, e: i64) -[Mem]-> i64 {
   let mut p = start;
-  if kw3(p, e, 'p', 'u', 'b') {
+  if kw(p, e, "pub") {
     p = skip_ws_range(p + 3, e);
     if p < e && OutMem.src_buf[p] == '(' {
       for k in (p + 1)..e max 64 {
@@ -302,13 +272,13 @@ fn detect_rs_decl(start: i64, e: i64) -[Mem]-> i64 {
   }
   let mut early_const = false;
   for _qit in 0..6 max 6 {
-    if kw7(p, e, 'd', 'e', 'f', 'a', 'u', 'l', 't') {
+    if kw(p, e, "default") {
       p = skip_ws_range(p + 7, e);
-    } else if kw5(p, e, 'a', 's', 'y', 'n', 'c') {
+    } else if kw(p, e, "async") {
       p = skip_ws_range(p + 5, e);
-    } else if kw6(p, e, 'u', 'n', 's', 'a', 'f', 'e') {
+    } else if kw(p, e, "unsafe") {
       p = skip_ws_range(p + 6, e);
-    } else if kw6(p, e, 'e', 'x', 't', 'e', 'r', 'n') {
+    } else if kw(p, e, "extern") {
       p = skip_ws_range(p + 6, e);
       if p < e && OutMem.src_buf[p] == '"' {
         for k in (p + 1)..e max 32 {
@@ -318,9 +288,9 @@ fn detect_rs_decl(start: i64, e: i64) -[Mem]-> i64 {
           }
         }
       }
-    } else if kw5(p, e, 'c', 'o', 'n', 's', 't') {
+    } else if kw(p, e, "const") {
       let p2 = skip_ws_range(p + 5, e);
-      if kw2(p2, e, 'f', 'n') || kw6(p2, e, 'u', 'n', 's', 'a', 'f', 'e') {
+      if kw(p2, e, "fn") || kw(p2, e, "unsafe") {
         p = p2;
       } else {
         early_const = true;
@@ -332,22 +302,20 @@ fn detect_rs_decl(start: i64, e: i64) -[Mem]-> i64 {
   }
   if early_const {
     1
-  } else if kw4(p, e, 'i', 'm', 'p', 'l') || kw5(p, e, 't', 'r', 'a', 'i', 't') || kw3(p, e, 'm', 'o', 'd') {
+  } else if kw(p, e, "impl") || kw(p, e, "trait") || kw(p, e, "mod") {
     2
-  } else if kw2(p, e, 'f', 'n') || kw6(p, e, 's', 't', 'r', 'u', 'c', 't') || kw4(p, e, 'e', 'n', 'u', 'm') || kw5(p, e, 'c', 'o', 'n', 's', 't') {
+  } else if kw(p, e, "fn") || kw(p, e, "struct") || kw(p, e, "enum") || kw(p, e, "const") {
     1
   } else {
     0
   }
 }
 
-fn hdr_kw3_at(pos: i64, n: i64, c0: i64, c1: i64, c2: i64) -[Mem]-> bool {
+fn hdr_kw_at(pos: i64, n: i64, word: str) -[Mem]-> bool {
+  let wl = str_len(word);
   let b_before = pos == 0 || !is_ident(OutMem.hdr_buf[pos]);
-  let b_after = pos + 3 >= n || !is_ident(OutMem.hdr_buf[pos + 4]);
-  b_before && b_after && pos + 3 <= n
-    && OutMem.hdr_buf[pos + 1] == c0
-    && OutMem.hdr_buf[pos + 2] == c1
-    && OutMem.hdr_buf[pos + 3] == c2
+  let b_after = pos + wl >= n || !is_ident(OutMem.hdr_buf[pos + wl + 1]);
+  b_before && b_after && pos + wl <= n && slice_eq_str(OutMem::hdr_buf + 1 + pos, wl, word)
 }
 
 // Emit one outline line into OutMem::out_buf: `<indent>L<start>..L<end>: <header>\n`
@@ -386,10 +354,10 @@ fn emit_outline_entry(indent_levels: i64, start_line: i64, end_line: i64, format
     if rp > 0 {
       let mut cstart = -1;
       for j in rp..hlen max 480 {
-        if hdr_kw3_at(j, hlen, 'r', 'e', 'q') {
+        if hdr_kw_at(j, hlen, "req") {
           has_req = true;
           if cstart < 0 { cstart = j; }
-        } else if hdr_kw3_at(j, hlen, 'e', 'n', 's') {
+        } else if hdr_kw_at(j, hlen, "ens") {
           has_ens = true;
           if cstart < 0 { cstart = j; }
         }
@@ -409,21 +377,15 @@ fn emit_outline_entry(indent_levels: i64, start_line: i64, end_line: i64, format
     }
   }
   if has_req || has_ens {
-    buf_push_cp(OutMem::out_buf, MAX_OUT, ' ');
-    buf_push_cp(OutMem::out_buf, MAX_OUT, '[');
+    buf_push_str(OutMem::out_buf, MAX_OUT, " [");
     if has_req {
-      buf_push_cp(OutMem::out_buf, MAX_OUT, 'r');
-      buf_push_cp(OutMem::out_buf, MAX_OUT, 'e');
-      buf_push_cp(OutMem::out_buf, MAX_OUT, 'q');
+      buf_push_str(OutMem::out_buf, MAX_OUT, "req");
     }
     if has_req && has_ens {
-      buf_push_cp(OutMem::out_buf, MAX_OUT, ',');
-      buf_push_cp(OutMem::out_buf, MAX_OUT, ' ');
+      buf_push_str(OutMem::out_buf, MAX_OUT, ", ");
     }
     if has_ens {
-      buf_push_cp(OutMem::out_buf, MAX_OUT, 'e');
-      buf_push_cp(OutMem::out_buf, MAX_OUT, 'n');
-      buf_push_cp(OutMem::out_buf, MAX_OUT, 's');
+      buf_push_str(OutMem::out_buf, MAX_OUT, "ens");
     }
     buf_push_cp(OutMem::out_buf, MAX_OUT, ']');
   }
@@ -497,14 +459,16 @@ export fn extract_outline_ifm() -[Mem]-> i64 {
   olen
 }
 
+fn set_src_str(s: str) -[Mem]-> unit {
+  let n = str_len(s);
+  for i in 0..n max 4096 {
+    OutMem.src_buf[i] = str_char(s, i);
+  }
+  OutMem.src_len = n;
+}
+
 test "extract_outline_ifm finds top-level fn declaration" {
-  // "fn hi() -> i64 { 1 }"
-  OutMem.src_buf[0] = 'f'; OutMem.src_buf[1] = 'n'; OutMem.src_buf[2] = ' ';
-  OutMem.src_buf[3] = 'h'; OutMem.src_buf[4] = 'i'; OutMem.src_buf[5] = '('; OutMem.src_buf[6] = ')';
-  OutMem.src_buf[7] = ' '; OutMem.src_buf[8] = '-'; OutMem.src_buf[9] = '>'; OutMem.src_buf[10] = ' ';
-  OutMem.src_buf[11] = 'i'; OutMem.src_buf[12] = '6'; OutMem.src_buf[13] = '4'; OutMem.src_buf[14] = ' ';
-  OutMem.src_buf[15] = '{'; OutMem.src_buf[16] = ' '; OutMem.src_buf[17] = '1'; OutMem.src_buf[18] = ' '; OutMem.src_buf[19] = '}';
-  OutMem.src_len = 20;
+  set_src_str("fn hi() -> i64 { 1 }");
   OutMem.is_rust = 0;
   let olen = extract_outline_ifm();
   assert(OutMem.entry_count == 1);
@@ -512,24 +476,7 @@ test "extract_outline_ifm finds top-level fn declaration" {
 }
 
 test "extract_outline_ifm descends into mod and recognizes pub fn and test" {
-  // "mod ai {\n  pub fn p() -> i64 { 1 }\n}\ntest \"ok\" {}"
-  let mut k = 0;
-  OutMem.src_buf[k] = 'm'; k += 1; OutMem.src_buf[k] = 'o'; k += 1; OutMem.src_buf[k] = 'd'; k += 1;
-  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = 'a'; k += 1; OutMem.src_buf[k] = 'i'; k += 1;
-  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '{'; k += 1; OutMem.src_buf[k] = '\n'; k += 1;
-  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = ' '; k += 1;
-  OutMem.src_buf[k] = 'p'; k += 1; OutMem.src_buf[k] = 'u'; k += 1; OutMem.src_buf[k] = 'b'; k += 1; OutMem.src_buf[k] = ' '; k += 1;
-  OutMem.src_buf[k] = 'f'; k += 1; OutMem.src_buf[k] = 'n'; k += 1; OutMem.src_buf[k] = ' '; k += 1;
-  OutMem.src_buf[k] = 'p'; k += 1; OutMem.src_buf[k] = '('; k += 1; OutMem.src_buf[k] = ')'; k += 1;
-  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '-'; k += 1; OutMem.src_buf[k] = '>'; k += 1; OutMem.src_buf[k] = ' '; k += 1;
-  OutMem.src_buf[k] = 'i'; k += 1; OutMem.src_buf[k] = '6'; k += 1; OutMem.src_buf[k] = '4'; k += 1;
-  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '{'; k += 1; OutMem.src_buf[k] = ' '; k += 1;
-  OutMem.src_buf[k] = '1'; k += 1; OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '}'; k += 1; OutMem.src_buf[k] = '\n'; k += 1;
-  OutMem.src_buf[k] = '}'; k += 1; OutMem.src_buf[k] = '\n'; k += 1;
-  OutMem.src_buf[k] = 't'; k += 1; OutMem.src_buf[k] = 'e'; k += 1; OutMem.src_buf[k] = 's'; k += 1; OutMem.src_buf[k] = 't'; k += 1;
-  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '"'; k += 1; OutMem.src_buf[k] = 'o'; k += 1; OutMem.src_buf[k] = 'k'; k += 1; OutMem.src_buf[k] = '"'; k += 1;
-  OutMem.src_buf[k] = ' '; k += 1; OutMem.src_buf[k] = '{'; k += 1; OutMem.src_buf[k] = '}'; k += 1;
-  OutMem.src_len = k;
+  set_src_str("mod ai {\n  pub fn p() -> i64 { 1 }\n}\ntest \"ok\" {}");
   OutMem.is_rust = 0;
   let olen = extract_outline_ifm();
   // Expect 3 entries: mod ai, nested pub fn p, and test "ok"
