@@ -23,14 +23,24 @@ jobs:
           components: clippy
           targets: wasm32-unknown-unknown
 
+      - name: Lint workspace with Clippy
+        run: cargo clippy --workspace --all-targets
+
       - name: Run full workspace test suite
         run: cargo test --workspace
 
-      - name: Run infimum-lang corpus & checks
+      - name: Check wasm32 browser targets (infimum-lang & infimum-web)
+        run: |
+          cargo check -p infimum-lang --lib --target wasm32-unknown-unknown
+          cargo check -p infimum-web --lib --target wasm32-unknown-unknown
+
+      - name: Run infimum-lang corpus, ABI sync & checks
         working-directory: crates/infimum-lang
         run: |
           ./scripts/run_checks.sh
           ./scripts/ci_verify_corpus.sh
 
-      - name: Verify precompiled Infimum Code capsule exists
-        run: test -s apps/infimum-code/capsule/infimum_code.ifw
+      - name: Headless runtime & passport check on Infimum Code capsule
+        run: |
+          test -s apps/infimum-code/capsule/infimum_code.ifw
+          cargo run --release -p infimum-web -- --headless-check apps/infimum-code/capsule/infimum_code.ifw --allow-net=127.0.0.1:1 --allow-net=infimum-lang.org --allow-clipboard
