@@ -92,6 +92,13 @@ if [[ -n "$INFIMUM_CODE_DIR" ]]; then
   cmp -s "$REPO_ROOT/docs/INFIMUM_LANG_GUIDE.md" "$INFIMUM_CODE_DIR/docs/INFIMUM_LANG_GUIDE.md" \
     || { echo "ERROR: infimum-code/docs/INFIMUM_LANG_GUIDE.md is out of sync!"; exit 1; }
   echo "  [sync]   infimum-code/docs/INFIMUM_LANG_GUIDE.md matches canonical guide"
+
+  if [[ -f "$INFIMUM_CODE_DIR/daemon/src/studio_abi.rs" ]]; then
+    "$INF_BIN" export-abi "$INFIMUM_CODE_DIR/capsule/src/abi.ifm" -o "$TMP_DIR/studio_abi.rs" >/dev/null
+    cmp -s "$TMP_DIR/studio_abi.rs" "$INFIMUM_CODE_DIR/daemon/src/studio_abi.rs" \
+      || { echo "ERROR: apps/infimum-code/daemon/src/studio_abi.rs is out of sync with abi.ifm!"; exit 1; }
+    echo "  [sync]   apps/infimum-code/daemon/src/studio_abi.rs matches canonical abi.ifm"
+  fi
 fi
 
 SITE_DIR=""
