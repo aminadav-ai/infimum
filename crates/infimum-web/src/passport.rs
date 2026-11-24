@@ -239,8 +239,21 @@ pub fn verify_capsule_passport(
 ) -> Result<SecurityPassport, GatekeeperError> {
     let raw_opt = extract_passport_raw(wasm_bytes)?;
     let passport = match raw_opt {
-        Some(raw) => serde_json::from_slice::<SecurityPassport>(&raw)
-            .map_err(|e| GatekeeperError::InvalidPassportJson(e.to_string()))?,
+        Some(raw) => {
+            let p = serde_json::from_slice::<SecurityPassport>(&raw)
+                .map_err(|e| GatekeeperError::InvalidPassportJson(e.to_string()))?;
+            if policy.require_passport
+                && p.root_hash.is_empty()
+                && p.entrypoint.is_empty()
+                && p.aliases.is_empty()
+            {
+                return Err(GatekeeperError::InvalidPassportJson(
+                    "Empty or incomplete `infimum.passport` (missing root_hash/entrypoint/aliases)"
+                        .to_string(),
+                ));
+            }
+            p
+        }
         None => {
             if policy.require_passport {
                 return Err(GatekeeperError::MissingPassport);
@@ -345,6 +358,13 @@ mod tests {
         let wasm = build_minimal_wasm_with_passport(None);
         let res = verify_capsule_passport(&wasm, &CapabilityPolicy::default());
         assert_eq!(res.unwrap_err(), GatekeeperError::MissingPassport);
+    }
+
+    #[test]
+    fn blocks_empty_json_passport_object() {
+        let wasm = build_minimal_wasm_with_passport(Some("{}"));
+        let res = verify_capsule_passport(&wasm, &CapabilityPolicy::default());
+        assert!(matches!(res, Err(GatekeeperError::InvalidPassportJson(_))));
     }
 
     #[test]

@@ -65,36 +65,10 @@ pub fn build_strata_wasm_from_module_with_cache(
 
     // Embed SecurityPassport in Wasm custom section `infimum.passport`.
     // For capsule UIs (`step_ui`/`init_app`), merge all exported external capabilities so none can be hidden.
-    let passport_bytes = if let Some((ui_alias, _)) = export_pairs
-        .iter()
-        .find(|(n, _)| n == "step_ui" || n == "init_app")
-    {
-        let mut merged = store.compute_passport(ui_alias)?;
-        let mut seen_effs: std::collections::BTreeSet<String> = merged
-            .capabilities
-            .iter()
-            .map(|c| c.effect.clone())
-            .collect();
-        for (alias, _) in &export_pairs {
-            if let Ok(other) = store.compute_passport(alias) {
-                if other.uses_secret_types {
-                    merged.uses_secret_types = true;
-                }
-                for cap in other.capabilities {
-                    if seen_effs.insert(cap.effect.clone()) {
-                        merged.capabilities.push(cap);
-                    }
-                }
-            }
-        }
-        merged.is_pure = merged.capabilities.is_empty();
-        serde_json::to_vec(&merged).unwrap_or_default()
-    } else if let Some((alias, _)) = export_pairs.first() {
-        let p = store.compute_passport(alias)?;
-        serde_json::to_vec(&p).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let passport_bytes =
+        crate::store::build_merged_passport_bytes(&export_pairs, |alias| {
+            store.compute_passport(alias)
+        })?;
 
     let layout_end_word = compute_module_layout_end_word(module);
     let wasm_bytes =
