@@ -63,22 +63,18 @@ Path(sys.argv[2]).write_text(md[s:e] + "\n", encoding="utf-8")
 PY
 check_ifm "INFIMUM_LANG_GUIDE.md Example 1" "$TMP_DIR/guide_ex1.ifm" 0 1
 
-SIBLINGS_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
-
-if [[ -d "$SIBLINGS_ROOT/infimum-web/capsules" ]]; then
+if [[ -d "$MONOREPO_ROOT/crates/infimum-web/capsules" ]]; then
   echo ""
-  echo "=== [3/4] Verifying sibling infimum-web cores & demos ==="
-  check_ifm "web-cores/audio_core.ifm" "$SIBLINGS_ROOT/infimum-web/capsules/core/audio_core.ifm" 1 1
-  check_ifm "web-cores/passport_core.ifm" "$SIBLINGS_ROOT/infimum-web/capsules/core/passport_core.ifm" 0 1
-  check_ifm "web-cores/sanitizer_core.ifm" "$SIBLINGS_ROOT/infimum-web/capsules/core/sanitizer_core.ifm" 0 1
-  check_ifm "web-cores/text_demo.ifm" "$SIBLINGS_ROOT/infimum-web/capsules/m2_text_demo/src/text_demo.ifm" 1 1
+  echo "=== [3/4] Verifying infimum-web cores & demos ==="
+  check_ifm "web-cores/audio_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/audio_core.ifm" 1 1
+  check_ifm "web-cores/passport_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/passport_core.ifm" 0 1
+  check_ifm "web-cores/sanitizer_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/sanitizer_core.ifm" 0 1
+  check_ifm "web-cores/text_demo.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/m2_text_demo/src/text_demo.ifm" 1 1
 fi
 
 INFIMUM_CODE_DIR=""
 if [[ -d "$MONOREPO_ROOT/apps/infimum-code/capsule/src" ]]; then
   INFIMUM_CODE_DIR="$MONOREPO_ROOT/apps/infimum-code"
-elif [[ -d "$SIBLINGS_ROOT/infimum-code/capsule/src" ]]; then
-  INFIMUM_CODE_DIR="$SIBLINGS_ROOT/infimum-code"
 fi
 
 if [[ -n "$INFIMUM_CODE_DIR" ]]; then
@@ -104,8 +100,6 @@ fi
 SITE_DIR=""
 if [[ -f "$MONOREPO_ROOT/../infimum-site/public/code/agent_worker.js" ]]; then
   SITE_DIR="$(cd "$MONOREPO_ROOT/../infimum-site" && pwd)"
-elif [[ -f "$SIBLINGS_ROOT/infimum-site/public/code/agent_worker.js" ]]; then
-  SITE_DIR="$SIBLINGS_ROOT/infimum-site"
 fi
 
 if [[ -n "$SITE_DIR" ]]; then

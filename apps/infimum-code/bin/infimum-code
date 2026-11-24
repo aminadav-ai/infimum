@@ -10,8 +10,6 @@ if [[ -n "${INFIMUM_AGENTD_BIN:-}" ]]; then
   AGENTD_BIN="$INFIMUM_AGENTD_BIN"
 elif [[ -n "$MONOREPO_ROOT" && -x "$MONOREPO_ROOT/target/release/infimum-agentd" ]]; then
   AGENTD_BIN="$MONOREPO_ROOT/target/release/infimum-agentd"
-elif [[ -x "$STUDIO_ROOT/daemon/target/release/infimum-agentd" ]]; then
-  AGENTD_BIN="$STUDIO_ROOT/daemon/target/release/infimum-agentd"
 else
   AGENTD_BIN="${MONOREPO_ROOT:-$STUDIO_ROOT}/target/release/infimum-agentd"
 fi
@@ -22,8 +20,6 @@ elif [[ -n "$MONOREPO_ROOT" && -x "$MONOREPO_ROOT/target/release/infimum-web" ]]
   BROWSER_BIN="$MONOREPO_ROOT/target/release/infimum-web"
 elif command -v infimum-web >/dev/null 2>&1; then
   BROWSER_BIN="$(command -v infimum-web)"
-elif [[ -x "$STUDIO_ROOT/../infimum-web/target/release/infimum-web" ]]; then
-  BROWSER_BIN="$STUDIO_ROOT/../infimum-web/target/release/infimum-web"
 elif [[ -x "$HOME/.local/bin/infimum-web" ]]; then
   BROWSER_BIN="$HOME/.local/bin/infimum-web"
 else

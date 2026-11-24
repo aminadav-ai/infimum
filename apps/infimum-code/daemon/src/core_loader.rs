@@ -17,15 +17,6 @@ pub fn load_core_axw(file_name: &str, embedded: &[u8]) -> (Engine, Module) {
         if let Some(root) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
             candidates.push(root.join("apps/infimum-code/cores").join(file_name));
         }
-        // daemon/target/release/infimum-agentd -> infimum-code/cores/<file>
-        if let Some(root) = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-        {
-            candidates.push(root.join("cores").join(file_name));
-        }
         // Installed side-by-side layout: <prefix>/bin/infimum-agentd -> <prefix>/cores/<file>
         if let Some(root) = exe.parent().and_then(|p| p.parent()) {
             candidates.push(root.join("cores").join(file_name));
