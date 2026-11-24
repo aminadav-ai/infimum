@@ -73,11 +73,11 @@ fn fv_is_builtin_type(ptr: i64, len: i64) -[Mem]-> bool {
   if c0 >= 'A' && c0 <= 'Z' {
     true
   } else if len == 3 {
-    fv_eq3(ptr, 'i', '6', '4') || fv_eq3(ptr, 's', 't', 'r')
+    slice_eq_str(ptr, len, "i64") || slice_eq_str(ptr, len, "str")
   } else if len == 4 {
-    fv_eq4(ptr, 'b', 'o', 'o', 'l') || fv_eq4(ptr, 'u', 'n', 'i', 't') || fv_eq4(ptr, 'w', 'o', 'r', 'd')
+    slice_eq_str(ptr, len, "bool") || slice_eq_str(ptr, len, "unit") || slice_eq_str(ptr, len, "word")
   } else if len == 5 {
-    fv_eq5(ptr, 'f', 'i', 'x', 'e', 'd') || fv_eq5(ptr, 'w', 'o', 'r', 'd', 's')
+    slice_eq_str(ptr, len, "fixed") || slice_eq_str(ptr, len, "words")
   } else {
     false
   }

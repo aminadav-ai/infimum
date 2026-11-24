@@ -4,10 +4,21 @@ set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INF_BIN="${INF_BIN:-$REPO_ROOT/target/release/infimum}"
-if [[ ! -x "$INF_BIN" ]]; then
-  echo "Building infimum compiler (release)..."
-  cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml"
+MONOREPO_ROOT="$(cd "$REPO_ROOT/../.." && pwd)"
+if [[ -z "${INF_BIN:-}" ]]; then
+  if [[ -x "$MONOREPO_ROOT/target/release/infimum" ]]; then
+    INF_BIN="$MONOREPO_ROOT/target/release/infimum"
+  elif [[ -x "$REPO_ROOT/target/release/infimum" ]]; then
+    INF_BIN="$REPO_ROOT/target/release/infimum"
+  else
+    echo "Building infimum compiler (release)..."
+    cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml"
+    if [[ -x "$MONOREPO_ROOT/target/release/infimum" ]]; then
+      INF_BIN="$MONOREPO_ROOT/target/release/infimum"
+    else
+      INF_BIN="$REPO_ROOT/target/release/infimum"
+    fi
+  fi
 fi
 
 TMP_DIR="$(mktemp -d)"
@@ -63,15 +74,22 @@ if [[ -d "$SIBLINGS_ROOT/infimum-web/capsules" ]]; then
   check_ifm "web-cores/text_demo.ifm" "$SIBLINGS_ROOT/infimum-web/capsules/m2_text_demo/src/text_demo.ifm" 1 1
 fi
 
-if [[ -d "$SIBLINGS_ROOT/infimum-code/capsule/src" ]]; then
-  echo ""
-  echo "=== [4/4] Verifying sibling infimum-code capsule, cores, templates & guide sync ==="
-  check_ifm "infimum-code/infimum_code.ifm" "$SIBLINGS_ROOT/infimum-code/capsule/src/infimum_code.ifm" 1 1
-  check_ifm "infimum-code/agent_core.ifm" "$SIBLINGS_ROOT/infimum-code/cores/agent_core.ifm" 1 1
-  check_ifm "infimum-code/editor_core.ifm" "$SIBLINGS_ROOT/infimum-code/cores/editor_core.ifm" 0 1
-  check_ifm "infimum-code/outline_core.ifm" "$SIBLINGS_ROOT/infimum-code/cores/outline_core.ifm" 0 1
+INFIMUM_CODE_DIR=""
+if [[ -d "$MONOREPO_ROOT/apps/infimum-code/capsule/src" ]]; then
+  INFIMUM_CODE_DIR="$MONOREPO_ROOT/apps/infimum-code"
+elif [[ -d "$SIBLINGS_ROOT/infimum-code/capsule/src" ]]; then
+  INFIMUM_CODE_DIR="$SIBLINGS_ROOT/infimum-code"
+fi
 
-  cmp -s "$REPO_ROOT/docs/INFIMUM_LANG_GUIDE.md" "$SIBLINGS_ROOT/infimum-code/docs/INFIMUM_LANG_GUIDE.md" \
+if [[ -n "$INFIMUM_CODE_DIR" ]]; then
+  echo ""
+  echo "=== [4/4] Verifying infimum-code capsule, cores, templates & guide sync ==="
+  check_ifm "infimum-code/infimum_code.ifm" "$INFIMUM_CODE_DIR/capsule/src/infimum_code.ifm" 1 1
+  check_ifm "infimum-code/agent_core.ifm" "$INFIMUM_CODE_DIR/cores/agent_core.ifm" 1 1
+  check_ifm "infimum-code/editor_core.ifm" "$INFIMUM_CODE_DIR/cores/editor_core.ifm" 0 1
+  check_ifm "infimum-code/outline_core.ifm" "$INFIMUM_CODE_DIR/cores/outline_core.ifm" 0 1
+
+  cmp -s "$REPO_ROOT/docs/INFIMUM_LANG_GUIDE.md" "$INFIMUM_CODE_DIR/docs/INFIMUM_LANG_GUIDE.md" \
     || { echo "ERROR: infimum-code/docs/INFIMUM_LANG_GUIDE.md is out of sync!"; exit 1; }
   echo "  [sync]   infimum-code/docs/INFIMUM_LANG_GUIDE.md matches canonical guide"
 fi
