@@ -44,28 +44,11 @@ pub(super) const EMBEDDED_STUDIO_SYSTEM_PROMPT: &str = include_str!("../../../ca
 /// so prompt tweaks take effect immediately without recompiling Rust or restarting Infimum Code.
 pub(super) fn render_studio_system_prompt(proj_dir: &Path, imported_plan: &str, imported_task: &str) -> String {
     let mut tpl = None;
-    if let Ok(exe) = env::current_exe() {
-        for root in [
-            exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent()),
-            exe.parent().and_then(|p| p.parent()),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Ok(s) = fs::read_to_string(root.join("capsule/system_prompt.md")) {
-                if !s.trim().is_empty() {
-                    tpl = Some(s);
-                    break;
-                }
-            }
-        }
-    }
-    if tpl.is_none() {
-        if let Ok(home) = env::var("INFIMUM_CODE_HOME") {
-            if let Ok(s) = fs::read_to_string(Path::new(&home).join("capsule/system_prompt.md")) {
-                if !s.trim().is_empty() {
-                    tpl = Some(s);
-                }
+    for root in studio_root_candidates() {
+        if let Ok(s) = fs::read_to_string(root.join("capsule/system_prompt.md")) {
+            if !s.trim().is_empty() {
+                tpl = Some(s);
+                break;
             }
         }
     }
