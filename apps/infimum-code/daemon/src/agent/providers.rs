@@ -4,7 +4,6 @@
 use crate::policy::CapabilityPolicy;
 use crate::studio_abi::*;
 use serde_json::{json, Value};
-use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
