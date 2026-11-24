@@ -6,7 +6,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license-file = "../../../LICENSE"
-description = "Local developer agent daemon for Infimum Code (filesystem, bwrap sandbox, infimumc, LLM orchestration)"
+description = "Local developer agent daemon for Infimum Code (filesystem, bwrap sandbox, infimum, LLM orchestration)"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
