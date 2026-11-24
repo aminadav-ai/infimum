@@ -210,66 +210,69 @@ fn test_provider_key_live(prov_idx: usize) -> String {
     let Some(api_key) = load_env_key_host_only(key_name) else {
         return "Ошибка: ключ не задан".to_string();
     };
-    let mut cmd = Command::new("curl");
-    cmd.args(["-sS", "-m", "8", "-o", "/dev/null", "-w", "%{http_code}"]);
-    match prov_idx {
-        0 => {
-            // Google Gemini
-            cmd.arg(format!(
-                "https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-            ));
-        }
-        1 => {
-            // OpenAI
-            cmd.args([
-                "-H",
-                &format!("Authorization: Bearer {api_key}"),
-                "https://api.openai.com/v1/models",
-            ]);
-        }
-        2 => {
-            // DeepSeek
-            cmd.args([
-                "-H",
-                &format!("Authorization: Bearer {api_key}"),
-                "https://api.deepseek.com/v1/models",
-            ]);
-        }
-        3 => {
-            // OpenRouter
-            cmd.args([
-                "-H",
-                &format!("Authorization: Bearer {api_key}"),
-                "https://openrouter.ai/api/v1/auth/key",
-            ]);
-        }
-        4 => {
-            // Groq
-            cmd.args([
-                "-H",
-                &format!("Authorization: Bearer {api_key}"),
-                "https://api.groq.com/openai/v1/models",
-            ]);
-        }
-        5 => {
-            // Z.ai GLM
-            cmd.args([
-                "-H",
-                &format!("Authorization: Bearer {api_key}"),
-                "https://api.z.ai/api/coding/paas/v4/models",
-            ]);
-        }
-        6 => {
-            // Mistral
-            cmd.args([
-                "-H",
-                &format!("Authorization: Bearer {api_key}"),
-                "https://api.mistral.ai/v1/models",
-            ]);
-        }
-        _ => return "Ошибка: неизвестный провайдер".to_string(),
+    if api_key.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
+        return "Ошибка: некорректные символы в ключе".to_string();
     }
-    match cmd.output() {
+    let esc_key = api_key.replace('\\', "\\\\").replace('"', "\\\"");
+    let (url, header_line) = match prov_idx {
+        0 => (
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            format!("x-goog-api-key: {esc_key}"),
+        ),
+        1 => (
+            "https://api.openai.com/v1/models",
+            format!("Authorization: Bearer {esc_key}"),
+        ),
+        2 => (
+            "https://api.deepseek.com/v1/models",
+            format!("Authorization: Bearer {esc_key}"),
+        ),
+        3 => (
+            "https://openrouter.ai/api/v1/auth/key",
+            format!("Authorization: Bearer {esc_key}"),
+        ),
+        4 => (
+            "https://api.groq.com/openai/v1/models",
+            format!("Authorization: Bearer {esc_key}"),
+        ),
+        5 => (
+            "https://api.z.ai/api/coding/paas/v4/models",
+            format!("Authorization: Bearer {esc_key}"),
+        ),
+        6 => (
+            "https://api.mistral.ai/v1/models",
+            format!("Authorization: Bearer {esc_key}"),
+        ),
+        _ => return "Ошибка: неизвестный провайдер".to_string(),
+    };
+    // Pass API key strictly via `--config -` (stdin), never in CLI argv / `ps aux`.
+    let cfg = format!("url = \"{url}\"\nheader = \"{header_line}\"\n");
+    let mut child = match Command::new("curl")
+        .args([
+            "-sS",
+            "--proto",
+            "=https",
+            "-m",
+            "8",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "--config",
+            "-",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return "Ошибка: не удалось запустить curl".to_string(),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(cfg.as_bytes());
+    }
+    match child.wait_with_output() {
         Ok(o) => {
             let code = String::from_utf8_lossy(&o.stdout).trim().to_string();
             match code.as_str() {
