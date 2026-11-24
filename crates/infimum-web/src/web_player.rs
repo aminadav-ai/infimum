@@ -110,7 +110,8 @@ impl InfimumWebPlayer {
         })
     }
 
-    /// TrueType advance widths (`3 * 176` i32s) to upload into `.ifw` linear memory at word 47000.
+    /// TrueType advance widths (`3 * 176` i32s) to upload into `.ifw` linear memory
+    /// at the capsule's exported `get_font_metrics_byte_offset()` table.
     pub fn font_advances_i32(&self) -> js_sys::Int32Array {
         js_sys::Int32Array::from(self.font_advances.as_slice())
     }

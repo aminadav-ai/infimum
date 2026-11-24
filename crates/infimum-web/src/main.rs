@@ -491,7 +491,7 @@ impl ApplicationHandler for InfimumWebApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                // Update layout-independent physical held-key bitmask (`std/input.ifm` at word 48106),
+                // Update layout-independent physical held-key bitmask (`std/input.ifm` `InputMem.keys_held`),
                 // with Cyrillic/Latin logical fallback for Wayland/XKB/IME edge cases.
                 let mut key_bit = match event.physical_key {
                     PhysicalKey::Code(KeyCode::KeyW) => 1,
