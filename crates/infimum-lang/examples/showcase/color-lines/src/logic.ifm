@@ -289,7 +289,7 @@ fn spawn_one_ball(color_id: i64) -[Mem]-> bool {
     let r = next_rand();
     let pick = r - (r / empty_cnt) * empty_cnt;
     let target_cell = GameMem.empty_list[pick];
-    GameMem.cells[target_cell].color = color_id;
+    GameMem.cells[target_cell].color = clamp_i64(color_id, 0, 7);
     true
   }
 }
