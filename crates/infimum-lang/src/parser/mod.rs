@@ -21,7 +21,10 @@ pub use syntax::Parser;
 
 use loader::{DiskSource, MemorySource, UnitLoader, VirtualFsSource, normalize_virtual_rel};
 use raw_ast::{RawFnDef, RawType, UnitGraph, UnitId};
-use resolver::{ModuleResolver, expand_forma_node, resolve_fixed_ops_in_fns, rewrite_forma_slot_callbacks};
+use resolver::{
+    ModuleResolver, expand_and_lower_forma_node, resolve_fixed_ops_in_fns,
+    rewrite_forma_slot_callbacks,
+};
 use scope::{build_unit_tables, unit_fn_canonical_name};
 
 pub fn parse_module(src: &str) -> Result<Module, InfimumDiagnostic> {
@@ -145,14 +148,22 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
         }
     }
 
-    // 3. Expand and lower all forma definitions in their own UnitId scope
+    // 3. Expand and lower all forma definitions in a single lexically-hygienic pass
     let mut formas = Vec::with_capacity(all_raw_formas.len());
-    for (uid, cname, mut rf) in all_raw_formas {
+    for (uid, cname, rf) in all_raw_formas {
         resolver.cur_uid = uid;
+        resolver.forma_subst.clear();
         let mut visiting = vec![cname];
-        let expanded_roots =
-            expand_forma_node(rf.root, &forma_defs_by_canon, &mut resolver, &mut visiting)?;
-        rf.root = if expanded_roots.len() == 1 {
+        let param_set: BTreeSet<String> = rf.params.iter().map(|p| p.name.clone()).collect();
+        let mut param_locals = vec![param_set];
+        let expanded_roots = expand_and_lower_forma_node(
+            rf.root,
+            &forma_defs_by_canon,
+            &mut resolver,
+            &mut visiting,
+            &mut param_locals,
+        )?;
+        let lowered_root = if expanded_roots.len() == 1 {
             expanded_roots.into_iter().next().unwrap()
         } else {
             crate::forma::FormaNode {
@@ -165,11 +176,28 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
                 forma_if: None,
             }
         };
-        resolver.cur_uid = uid;
-        let param_set: BTreeSet<String> = rf.params.iter().map(|p| p.name.clone()).collect();
-        let mut param_locals = vec![param_set];
-        let resolved = rf.try_map(&mut |e| resolver.lower_expr(&e, &mut param_locals))?;
-        formas.push(resolved);
+        let requires = rf
+            .requires
+            .into_iter()
+            .map(|e| resolver.lower_expr(&e, &mut param_locals))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ensures = rf
+            .ensures
+            .into_iter()
+            .map(|e| resolver.lower_expr(&e, &mut param_locals))
+            .collect::<Result<Vec<_>, _>>()?;
+        formas.push(crate::forma::FormaDef {
+            name: rf.name,
+            exported: rf.exported,
+            is_pub: rf.is_pub,
+            params: rf.params,
+            effects: rf.effects,
+            ret_type: rf.ret_type,
+            requires,
+            ensures,
+            root: lowered_root,
+            span: rf.span,
+        });
     }
 
     // 4. Pre-register function return structs by canonical name
