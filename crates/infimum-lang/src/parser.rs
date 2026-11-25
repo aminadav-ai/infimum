@@ -6689,9 +6689,11 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
     for &uid in &topo {
         let u = &mut graph.units[uid];
         let formas_u = std::mem::take(&mut u.formas);
+        resolver.cur_uid = uid;
         for mut rf in formas_u {
             let cname = unit_canonical_name(u, &rf.name, rf.exported);
             rf.name = cname.clone();
+            rewrite_forma_slot_callbacks(&mut rf.root, &resolver)?;
             forma_defs_by_canon.insert(cname.clone(), (uid, rf.clone()));
             all_raw_formas.push((uid, cname, rf));
         }
@@ -6718,7 +6720,6 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
             }
         };
         resolver.cur_uid = uid;
-        rewrite_forma_slot_callbacks(&mut rf.root, &resolver)?;
         let param_set: BTreeSet<String> = rf.params.iter().map(|p| p.name.clone()).collect();
         let mut param_locals = vec![param_set];
         let resolved = rf.try_map(&mut |e| resolver.lower_expr(&e, &mut param_locals))?;
