@@ -4252,16 +4252,34 @@ impl ModuleResolver {
         ))
     }
 
-    fn resolve_clamp_i64_name(&self) -> String {
-        if let Some(sym) = self.tables[self.cur_uid].scope.fns.get("clamp_i64") {
-            return sym.canonical_name.clone();
+    fn inline_clamp_nonneg(&mut self, idx_expr: Expr, max_val: i64) -> Expr {
+        let tmp = format!("__ifm_idx_{}", self.addr_counter);
+        self.addr_counter += 1;
+        Expr::Block {
+            stmts: vec![Stmt::Let {
+                name: tmp.clone(),
+                mutable: false,
+                ty: Some(Type::I64),
+                value: idx_expr,
+            }],
+            tail: Box::new(Expr::If {
+                cond: Box::new(Expr::Binary {
+                    op: BinOp::Lt,
+                    lhs: Box::new(Expr::Var(tmp.clone())),
+                    rhs: Box::new(Expr::IntLit(0)),
+                }),
+                then_branch: Box::new(Expr::IntLit(0)),
+                else_branch: Box::new(Expr::If {
+                    cond: Box::new(Expr::Binary {
+                        op: BinOp::Gt,
+                        lhs: Box::new(Expr::Var(tmp.clone())),
+                        rhs: Box::new(Expr::IntLit(max_val)),
+                    }),
+                    then_branch: Box::new(Expr::IntLit(max_val)),
+                    else_branch: Box::new(Expr::Var(tmp)),
+                }),
+            }),
         }
-        for t in &self.tables {
-            if let Some(sym) = t.exports.fns.get("clamp_i64") {
-                return sym.canonical_name.clone();
-            }
-        }
-        "clamp_i64".to_string()
     }
 
     fn register_item(&mut self, item: RawItem, owner_u: &RawUnit) -> Result<(), InfimumDiagnostic> {
@@ -5310,14 +5328,8 @@ impl ModuleResolver {
                                 });
                                 let base_addr_var = if let Some(idx_raw) = index {
                                     let idx_e = self.lower_expr(idx_raw, locals)?;
-                                    let clamped = Expr::Call {
-                                        target: TargetRef::Named(self.resolve_clamp_i64_name()),
-                                        args: vec![
-                                            idx_e,
-                                            Expr::IntLit(0),
-                                            Expr::IntLit((meta.count - 1).max(0)),
-                                        ],
-                                    };
+                                    let clamped =
+                                        self.inline_clamp_nonneg(idx_e, (meta.count - 1).max(0));
                                     let base_expr = Expr::Binary {
                                         op: BinOp::Add,
                                         lhs: Box::new(Expr::IntLit(meta.offset)),
@@ -5825,14 +5837,8 @@ impl ModuleResolver {
                             })?;
                             if let Some(idx_raw) = index {
                                 let idx_e = self.lower_expr(idx_raw, locals)?;
-                                let clamped = Expr::Call {
-                                    target: TargetRef::Named(self.resolve_clamp_i64_name()),
-                                    args: vec![
-                                        idx_e,
-                                        Expr::IntLit(0),
-                                        Expr::IntLit((meta.count - 1).max(0)),
-                                    ],
-                                };
+                                let clamped =
+                                    self.inline_clamp_nonneg(idx_e, (meta.count - 1).max(0));
                                 let base_expr = Expr::Binary {
                                     op: BinOp::Add,
                                     lhs: Box::new(Expr::IntLit(meta.offset)),
