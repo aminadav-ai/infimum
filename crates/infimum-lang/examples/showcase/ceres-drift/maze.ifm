@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // CERES DRIFT — Fixed Handcrafted 11-Room & 13-Octagonal-Tube Asteroid Mine
 // Exact CSG Union Collision, 3D Line-of-Sight, Room/Deck Queries & Graph Reachability

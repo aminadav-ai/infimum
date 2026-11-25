@@ -20,7 +20,7 @@
 3. **Strict Single-Folder Sandbox & Semantic Infimum Tools (`daemon/src/agent.rs`):**
    - Terminal commands run inside `bubblewrap` (`bwrap`) locked strictly to the active project folder with sensitive files (`.env`, `*.key`) blocked.
    - Built-in semantic & Infimum tools for AI agents: `get_ifm_symbol`, `replace_ifm_symbol`, `find_ifm_callers`, `read_infimum_guide`, `read_infimum_std` (including `mesh3d.ifm`, `audio.ifm`, `input.ifm`), `read_infimum_template` (`ui`, `game2d`, `game3d`), `verify_infimum_file`, `compile_infimum_wasm`, and `run_infimum_capsule`.
-4. **Apache-2.0 Stdio MCP Server (now in `infimum-lang` via `infimum mcp`):**
+4. **Stdio MCP Server (now in `infimum-lang` via `infimum mcp`):**
    - Exposes `list_symbols`, `get_symbol`, `replace_symbol`, `find_callers`, `infimum_verify`, and `infimum_compile_wasm` for both `.ifm` and `.rs` files to external MCP clients such as Antigravity, Cursor, and Claude Code.
 5. **Bundled Native `.ifw` Showcase Games (`examples/`):**
    - [**`examples/color-lines/`**](examples/color-lines) (`17.4 KB` `.ifw`, **`0 B` external assets**) — 3D refractive glass & marble Color Lines 98 written with typed Infimum `struct`s (zero raw `mem_load`/`mem_store`), BFS pathfinding, procedural audio, and 128-turn Time-Travel.

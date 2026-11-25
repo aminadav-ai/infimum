@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 //
 // Z3-Verified Procedural Fixed-Point PCM Sound Synthesizer (44.1 kHz).
 // Synthesizes all 18 game presets (clack, hop, click, spawn, clear, error, win,

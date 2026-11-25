@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // Infimum Standard Library: std/buf.ifm
 // Z3-safe UTF-32 linear-memory buffer writer and search primitives.

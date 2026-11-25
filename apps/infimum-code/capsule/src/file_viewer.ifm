@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
+//
 // ============================================================================
 // Native Infimum Lang Syntax-Highlighted Source File Viewer (Read-Only Overlay)
 // Zero HTML/JS: renders directly inside infimum_code.ifw over Vulkan/wgpu & WebGL2

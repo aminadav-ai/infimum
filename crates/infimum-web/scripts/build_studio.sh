@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Copyright (c) 2026 Infimum Language Contributors
-# License: Apache-2.0
+# Copyright (c) 2026 Yehuda Aminadav
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 #
 # Full rebuild & verification pipeline for Infimum Code Native (.ifw) + Rust host.
 

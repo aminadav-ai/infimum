@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 
 //! Lowering pass from `Infimum.Forma` declarative UI trees into pure `Infimum.Flux` / `Infimum.Strata`
 //! functions (`FnDef`) compatible with the `infimum-web` 1-Draw-Call GPU primitive protocol.

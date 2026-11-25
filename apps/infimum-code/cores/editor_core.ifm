@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 //
 // Z3-Verified Atomic Batch File Editor (`capsules/core/editor_core.ifm`).
 // Finds unique non-overlapping target spans across UTF-32 source text and

@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // Infimum Standard Library: std/sys_mem.ifm
 // Single source of truth for the segmented linear memory map (System ABI 0..65535,

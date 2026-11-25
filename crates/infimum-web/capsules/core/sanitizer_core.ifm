@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 //
 // Z3-Verified Zero-JS HTML Sanitizer Core (`Legacy HTML -> Clean Structured Text`).
 // Strips <script>, <style>, <iframe>, <svg>, <noscript>, HTML comments, and all
