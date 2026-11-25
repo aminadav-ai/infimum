@@ -615,3 +615,116 @@ pub layout GameMem at 1000 {
     assert!(json.contains("\"cap\": 16"));
     assert!(json.contains("\"stride\": 3"));
 }
+
+#[test]
+fn slice_returning_fn_ens_contracts_and_caller_propagation() {
+    let ws = temp_ws("slice_ens");
+    let store = GraphStore::open(&ws).unwrap();
+
+    // 1. Valid `ens result.len == s.len - 1` + caller uses it to index `t[0]` without extra `if`,
+    //    plus `if`-returning slice helper with `ens result.len <= s.len`.
+    let mut f_ok = BTreeMap::new();
+    f_ok.insert(
+        "main.ifm".to_string(),
+        r#"
+layout M {
+  xs: words[8],
+}
+
+fn tail1(s: [i64]) -> [i64]
+  req s.len >= 1
+  ens result.len == s.len - 1
+{
+  s[1..s.len]
+}
+
+fn drop_first_or_empty(s: [i64]) -> [i64]
+  ens result.len <= s.len
+{
+  if s.len > 0 {
+    s[1..s.len]
+  } else {
+    s
+  }
+}
+
+fn second_elem(s: [i64]) -[Mem]-> i64
+  req s.len >= 2
+{
+  let t = tail1(s);
+  t[0]
+}
+
+export fn run_slice_ens() -[Mem]-> i64 {
+  M.xs[0] = 10;
+  M.xs[1] = 20;
+  M.xs[2] = 30;
+  let all: [i64] = M.xs[0..3];
+  let a = second_elem(all);
+  let d = drop_first_or_empty(all);
+  a + d.len
+}
+
+test "slice-returning fn ens contracts" {
+  assert(run_slice_ens() == 20 + 2);
+}
+"#
+        .to_string(),
+    );
+    let m_ok = parse_module_from_virtual_fs("main.ifm", &f_ok).expect("parse ok");
+    assert_all_ifm_tests_pass(&m_ok);
+    store
+        .verify_module(&m_ok)
+        .expect("Z3 must prove slice-returning ens and propagate it to caller");
+    let (wasm, _) = compile_project_in_memory("main.ifm", &f_ok).expect("Wasm compile ok");
+    assert!(wasm.starts_with(b"\0asm"));
+
+    // 2. False postcondition `ens result.len == s.len` on `tail1` must fail with E051
+    let mut f_bad_ens = BTreeMap::new();
+    f_bad_ens.insert(
+        "main.ifm".to_string(),
+        r#"
+fn bad_tail1(s: [i64]) -> [i64]
+  req s.len >= 1
+  ens result.len == s.len
+{
+  s[1..s.len]
+}
+"#
+        .to_string(),
+    );
+    let m_bad_ens = parse_module_from_virtual_fs("main.ifm", &f_bad_ens).expect("parse ok");
+    let e_ens = store
+        .verify_module(&m_bad_ens)
+        .expect_err("false slice ens must be rejected");
+    assert_eq!(e_ens.code, "E050_CONTRACT_VIOLATION");
+
+    // 3. Caller with `s.len >= 1` indexing `tail1(s)[0]` (t.len may be 0) must fail with E056
+    let mut f_bad_call = BTreeMap::new();
+    f_bad_call.insert(
+        "main.ifm".to_string(),
+        r#"
+fn tail1(s: [i64]) -> [i64]
+  req s.len >= 1
+  ens result.len == s.len - 1
+{
+  s[1..s.len]
+}
+
+fn bad_caller(s: [i64]) -[Mem]-> i64
+  req s.len >= 1
+{
+  let t = tail1(s);
+  t[0]
+}
+"#
+        .to_string(),
+    );
+    let m_bad_call = parse_module_from_virtual_fs("main.ifm", &f_bad_call).expect("parse ok");
+    let e_call = store
+        .verify_module(&m_bad_call)
+        .expect_err("indexing potentially-empty returned slice must fail Z3");
+    assert_eq!(e_call.code, "E056_SLICE_OUT_OF_BOUNDS");
+
+    let _ = fs::remove_dir_all(&ws);
+}
