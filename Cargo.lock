@@ -770,6 +770,7 @@ dependencies = [
 name = "infimum-agentd"
 version = "0.3.0"
 dependencies = [
+ "flate2",
  "serde",
  "serde_json",
  "wasmi",

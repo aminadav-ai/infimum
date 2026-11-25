@@ -9,6 +9,7 @@ license-file = "../../../LICENSE"
 description = "Local developer agent daemon for Infimum Code (filesystem, bwrap sandbox, infimum, LLM orchestration)"
 
 [dependencies]
+flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wasmi = "0.40"

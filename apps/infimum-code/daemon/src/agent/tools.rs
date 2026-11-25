@@ -1006,14 +1006,17 @@ pub(super) fn describe_tool_ru(name: &str, args: &Value) -> String {
             let k = args.get("kind").and_then(|v| v.as_str()).unwrap_or("list");
             format!("Читаю шаблон {k}…")
         }
-        "read_infimum_example" => {
-            let ex = args.get("example").and_then(|v| v.as_str()).unwrap_or("list");
-            let f = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
-            if f.is_empty() {
-                format!("Читаю пример {ex}…")
-            } else {
-                format!("Читаю пример {ex}/{f}…")
-            }
+        "list_infimum_repo" => {
+            let p = args.get("prefix").and_then(|v| v.as_str()).unwrap_or("/");
+            format!("Смотрю репозиторий {p}…")
+        }
+        "read_infimum_repo" => {
+            let p = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Читаю из репо {p}…")
+        }
+        "search_infimum_repo" => {
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            format!("Ищу в репо «{q}»…")
         }
         "search_pbr_textures" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
@@ -1157,15 +1160,17 @@ pub(super) fn describe_tool_step(name: &str, args: &Value) -> (i64, String, Stri
                 k.to_string(),
             )
         }
-        "read_infimum_example" => {
-            let ex = args.get("example").and_then(|v| v.as_str()).unwrap_or("list");
-            let f = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
-            let sub = if f.is_empty() { ex.to_string() } else { format!("{ex}/{f}") };
-            (
-                STEP_KIND_TOOL,
-                "Исходник примера".to_string(),
-                sub,
-            )
+        "list_infimum_repo" => {
+            let p = args.get("prefix").and_then(|v| v.as_str()).unwrap_or("/");
+            (STEP_KIND_TOOL, "Репозиторий Infimum".to_string(), p.to_string())
+        }
+        "read_infimum_repo" => {
+            let p = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            (STEP_KIND_TOOL, "Файл из репо".to_string(), p.to_string())
+        }
+        "search_infimum_repo" => {
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            (STEP_KIND_TOOL, "Поиск в репо".to_string(), q.to_string())
         }
         "search_pbr_textures" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
@@ -1938,315 +1943,9 @@ pub(super) fn execute_native_tool(
                 }),
             }
         }
-        "read_infimum_example" => {
-            const EXAMPLES: &[(&str, &str, &[&str])] = &[
-                (
-                    "color-lines",
-                    "2D PBR board game (9x9 Color Lines 98: typed structs, BFS pathfinding, animations, undo/redo snapshots, procedural SFX)",
-                    &["abi.ifm", "logic.ifm", "render.ifm", "main.ifm"],
-                ),
-                (
-                    "lion-herd",
-                    "3D PBR savanna game (Lion Herd: std/mesh3d articulated 3D animals, flocking AI, day sky, typed structs, textures.json Cloud PBR, SFX)",
-                    &["abi.ifm", "logic.ifm", "render.ifm", "main.ifm", "textures.json"],
-                ),
-                (
-                    "ceres-drift",
-                    "3D 6-DOF Zero-G Sci-Fi Mine Shooter (Ceres Drift: 11-chamber 3-deck mine, 13 octagonal tubes, 3D radar, homing missiles, reactor escape, 9x 1K Cloud PBR)",
-                    &["abi.ifm", "maze.ifm", "logic.ifm", "render.ifm", "main.ifm", "textures.json"],
-                ),
-                (
-                    "slipgate",
-                    "3D PBR FPS (SlipGate E1M1: 6-zone citadel, 24 point lights, 16 articulated 3D monsters, minimap, typed structs, textures.json Cloud PBR)",
-                    &["abi.ifm", "world.ifm", "logic.ifm", "render.ifm", "main.ifm", "textures.json"],
-                ),
-                (
-                    "gomoku",
-                    "2D PBR board game (Gomoku 18x18 Five-in-a-Row: wooden board, 3D PBR stones, mod ai, 3 AI difficulties, 2P mode, undo, procedural SFX)",
-                    &["main.ifm"],
-                ),
-                (
-                    "lang-demos",
-                    "Compiler & language feature demos from infimum-lang (Telos Z3 anti-stub, Forma UI & built-in widgets_rt, Flux payment & secret-leak, Strata framebuffer, std_tests)",
-                    &["anti_stub_demo.ifm", "forma_ui_demo.ifm", "payment_demo.ifm", "secret_leak_demo.ifm", "slices_vec_demo.ifm", "std_tests.ifm", "strata_framebuffer_demo.ifm", "widgets_rt.ifm"],
-                ),
-                (
-                    "web-cores",
-                    "Verified embedded runtime cores & text demo of infimum-web (audio_core, passport_core, sanitizer_core, text_demo)",
-                    &["audio_core.ifm", "passport_core.ifm", "sanitizer_core.ifm", "text_demo.ifm"],
-                ),
-                (
-                    "infimum-code",
-                    "Flagship Infimum Code native IDE & AI studio written 100% in Infimum Lang (Forma UI, Toggle/Slider modals, FrameScratch Markdown tables, file viewer, timeline, daemon HTTP client, and verified agent/editor/outline cores)",
-                    &[
-                        "abi.ifm", "infimum_code.ifm", "sidebar.ifm", "feed.ifm", "composer.ifm",
-                        "modals.ifm", "file_viewer.ifm", "markdown.ifm", "timeline.ifm",
-                        "text_buf.ifm", "daemon_client.ifm", "theme.ifm", "icons.ifm",
-                        "primitives.ifm", "agent_core.ifm", "editor_core.ifm", "outline_core.ifm",
-                    ],
-                ),
-                (
-                    "rust-lang",
-                    "Complete Rust source code & integration tests of the infimum-lang compiler (lexer, parser, typechecker, Z3 Telos verifier, Forma UI lower/verifier, Strata Wasm/ELF codegen, eval, wasm_api)",
-                    &[
-                        "src/abi.rs", "src/ast.rs", "src/canon.rs", "src/codegen.rs", "src/diag.rs",
-                        "src/eval.rs", "src/forma/ast.rs", "src/forma/lower.rs", "src/forma/mod.rs",
-                        "src/forma/parser.rs", "src/forma/verify_ui.rs", "src/lexer.rs", "src/lib.rs",
-                        "src/main.rs", "src/mcp.rs",
-                        "src/parser/loader.rs", "src/parser/mod.rs", "src/parser/raw_ast.rs",
-                        "src/parser/resolver.rs", "src/parser/scope.rs", "src/parser/syntax.rs",
-                        "src/parser/tests.rs",
-                        "src/showcase.rs", "src/store.rs", "src/strata_elf.rs", "src/strata_wasm.rs",
-                        "src/typecheck.rs", "src/verify.rs", "src/wasm.rs", "src/wasm_api.rs",
-                        "tests/module_namespace_tests.rs", "tests/proof_cache_tests.rs",
-                        "tests/slice_vec_tests.rs",
-                        "tests/sprint1_tests.rs", "tests/sprint2_z3_tests.rs",
-                        "tests/sprint3_security_tests.rs", "tests/sprint4_codegen_tests.rs",
-                        "tests/sprint5_wasm_timetravel_tests.rs", "tests/sprint6_showcase_tests.rs",
-                        "tests/sprint7_strata_tests.rs", "tests/sprint8_modern_syntax_tests.rs",
-                        "tests/sprint9_forma_tests.rs",
-                    ],
-                ),
-                (
-                    "rust-web",
-                    "Complete Rust & WGSL shader source code of the infimum-web native Vulkan/wgpu & WebGPU runtime (GPU renderer, shader.wgsl, mesh3d.wgsl, 3D PBR textures, TrueType glyph atlas, procedural audio, wasmi runtime, clipboard, web_player)",
-                    &[
-                        "atlas.rs", "audio.rs", "browser_abi.rs", "capabilities.rs", "clipboard.rs",
-                        "gpu.rs", "lib.rs", "main.rs", "mesh3d.wgsl", "passport.rs", "runtime.rs",
-                        "sanitizer.rs", "shader.wgsl", "textures3d.rs", "web_player.rs",
-                    ],
-                ),
-                (
-                    "rust-code",
-                    "Complete Rust source code of the infimum-code daemon (infimum-agentd: AI agent loop, sandbox policy, HTTP server, hot-reloading core_loader, studio_abi)",
-                    &[
-                        "agent/mod.rs", "agent/timeline.rs", "agent/conversations.rs",
-                        "agent/tools.rs", "agent/providers.rs", "agent/tests.rs", "core_loader.rs",
-                        "http_server.rs", "main.rs", "policy.rs", "studio_abi.rs",
-                    ],
-                ),
-                (
-                    "infra",
-                    "Build/CI scripts (.sh, .py, GitHub Actions .yml), Cargo.toml manifests, Forma UI spec, and Infimum Code system prompt",
-                    &[
-                        "run_checks.sh", "ci_verify_corpus.sh", "build_studio.sh",
-                        "generate_cleanroom_icon.py", "ci.yml", "site-ci.yml",
-                        "workspace-Cargo.toml", "lang-Cargo.toml", "web-Cargo.toml", "daemon-Cargo.toml",
-                        "INFIMUM_FORMA_SPEC.md", "system_prompt.md",
-                    ],
-                ),
-                (
-                    "web-site",
-                    "Cloudflare Worker, Online Infimum Code Studio, WebGPU Player, and infimum-lang.org frontend sources",
-                    &[
-                        "src/worker.js", "wrangler.toml", "public/_headers",
-                        "scripts/verify_and_deploy.sh",
-                        "public/code/code.js", "public/code/agent_worker.js", "public/code/z3_worker.js",
-                        "public/code/studio_abi.js", "public/code/index.html",
-                        "public/player/player.js", "public/player/index.html",
-                        "public/index.html", "public/app.js", "public/styles.css",
-                    ],
-                ),
-            ];
-            let ex = args.get("example").and_then(|s| s.as_str()).unwrap_or("").trim();
-            let raw_file = args.get("file").and_then(|s| s.as_str()).unwrap_or("").trim();
-            if ex.is_empty() || ex == "list" {
-                let list: Vec<Value> = EXAMPLES
-                    .iter()
-                    .map(|(name, desc, files)| json!({ "example": name, "description": desc, "files": files }))
-                    .collect();
-                return json!({
-                    "available_examples": list,
-                    "hint": "Call read_infimum_example(example='rust-web', file='shader.wgsl', start_line=1, end_line=200) or example='infra', file='ci_verify_corpus.sh'."
-                });
-            }
-            let Some((ex_name, ex_desc, allowed_files)) = EXAMPLES.iter().find(|(n, _, _)| *n == ex) else {
-                return json!({
-                    "error": format!("Unknown example '{ex}'. Available: infimum-code, ceres-drift, gomoku, color-lines, lion-herd, slipgate, lang-demos, web-cores, rust-lang, rust-web, rust-code, infra, web-site")
-                });
-            };
-            if raw_file.is_empty() || raw_file == "list" {
-                return json!({
-                    "example": ex_name,
-                    "description": ex_desc,
-                    "files": allowed_files,
-                    "hint": format!("Call read_infimum_example(example='{ex_name}', file='{}') to read a source file.", allowed_files.first().copied().unwrap_or("main.ifm"))
-                });
-            }
-            let norm_raw = raw_file.trim_start_matches('/');
-            let file_name = if *ex_name == "rust-lang" {
-                if allowed_files.contains(&norm_raw) {
-                    norm_raw.to_string()
-                } else {
-                    let with_src = format!("src/{norm_raw}");
-                    if allowed_files.contains(&with_src.as_str()) {
-                        with_src
-                    } else {
-                        norm_raw.to_string()
-                    }
-                }
-            } else if *ex_name == "infra" || *ex_name == "web-site" {
-                norm_raw.to_string()
-            } else {
-                let norm = norm_raw
-                    .trim_start_matches("daemon/src/")
-                    .trim_start_matches("src/");
-                if norm.ends_with(".ifm")
-                    || norm.ends_with(".json")
-                    || norm.ends_with(".rs")
-                    || norm.ends_with(".wgsl")
-                {
-                    norm.to_string()
-                } else if ex_name.starts_with("rust-") {
-                    format!("{norm}.rs")
-                } else {
-                    format!("{norm}.ifm")
-                }
-            };
-            if !allowed_files.contains(&file_name.as_str()) {
-                return json!({
-                    "error": format!("Unknown file '{raw_file}' in example '{ex_name}'. Allowed: {:?}", allowed_files)
-                });
-            }
-            let mut found = None;
-            for root in studio_root_candidates() {
-                // Monorepo layout: <monorepo>/apps/infimum-code -> <monorepo>/crates/{infimum-lang,infimum-web}
-                // and companion website repo at <monorepo>/../infimum-site.
-                let monorepo = root.parent().and_then(|p| p.parent());
-                let lang_root = monorepo.map(|m| m.join("crates").join("infimum-lang"));
-                let web_root = monorepo.map(|m| m.join("crates").join("infimum-web"));
-                let site_root = monorepo
-                    .and_then(|m| m.parent())
-                    .map(|mp| mp.join("infimum-site"));
-
-                let cands: Vec<PathBuf> = match *ex_name {
-                    "lang-demos" => lang_root
-                        .as_ref()
-                        .map(|lr| {
-                            vec![
-                                lr.join("examples").join(&file_name),
-                                lr.join("tests").join(&file_name),
-                                lr.join("src").join("forma").join(&file_name),
-                            ]
-                        })
-                        .unwrap_or_default(),
-                    "web-cores" => web_root
-                        .as_ref()
-                        .map(|wr| {
-                            vec![
-                                wr.join("capsules").join("core").join(&file_name),
-                                wr.join("capsules").join("m2_text_demo").join("src").join(&file_name),
-                            ]
-                        })
-                        .unwrap_or_default(),
-                    "infimum-code" => vec![
-                        root.join("capsule").join("src").join(&file_name),
-                        root.join("cores").join(&file_name),
-                    ],
-                    "rust-lang" => lang_root
-                        .as_ref()
-                        .map(|lr| vec![lr.join(&file_name)])
-                        .unwrap_or_default(),
-                    "rust-web" => web_root
-                        .as_ref()
-                        .map(|wr| vec![wr.join("src").join(&file_name)])
-                        .unwrap_or_default(),
-                    "rust-code" => vec![root.join("daemon").join("src").join(&file_name)],
-                    "infra" => match file_name.as_str() {
-                        "run_checks.sh" | "ci_verify_corpus.sh" => lang_root
-                            .as_ref()
-                            .map(|lr| vec![lr.join("scripts").join(&file_name)])
-                            .unwrap_or_default(),
-                        "build_studio.sh" | "generate_cleanroom_icon.py" => web_root
-                            .as_ref()
-                            .map(|wr| vec![wr.join("scripts").join(&file_name)])
-                            .unwrap_or_default(),
-                        "ci.yml" => monorepo
-                            .map(|m| vec![m.join(".github").join("workflows").join("ci.yml")])
-                            .unwrap_or_default(),
-                        "site-ci.yml" => site_root
-                            .as_ref()
-                            .map(|sr| vec![sr.join(".github").join("workflows").join("ci.yml")])
-                            .unwrap_or_default(),
-                        "workspace-Cargo.toml" => monorepo
-                            .map(|m| vec![m.join("Cargo.toml")])
-                            .unwrap_or_default(),
-                        "lang-Cargo.toml" => lang_root
-                            .as_ref()
-                            .map(|lr| vec![lr.join("Cargo.toml")])
-                            .unwrap_or_default(),
-                        "web-Cargo.toml" => web_root
-                            .as_ref()
-                            .map(|wr| vec![wr.join("Cargo.toml")])
-                            .unwrap_or_default(),
-                        "daemon-Cargo.toml" => vec![root.join("daemon").join("Cargo.toml")],
-                        "INFIMUM_FORMA_SPEC.md" => lang_root
-                            .as_ref()
-                            .map(|lr| vec![lr.join("docs").join("INFIMUM_FORMA_SPEC.md")])
-                            .unwrap_or_default(),
-                        "system_prompt.md" => vec![root.join("capsule").join("system_prompt.md")],
-                        _ => Vec::new(),
-                    },
-                    "web-site" => site_root
-                        .as_ref()
-                        .map(|sr| vec![sr.join(&file_name)])
-                        .unwrap_or_default(),
-                    _ => {
-                        let mut v = vec![
-                            root.join("examples").join(ex_name).join("src").join(&file_name),
-                            root.join("examples").join(ex_name).join(&file_name),
-                        ];
-                        if let Some(lr) = &lang_root {
-                            v.push(lr.join("examples").join("showcase").join(ex_name).join("src").join(&file_name));
-                            v.push(lr.join("examples").join("showcase").join(ex_name).join(&file_name));
-                        }
-                        v
-                    }
-                };
-                if let Some(hit) = cands.into_iter().find(|c| c.is_file()) {
-                    found = Some(hit);
-                    break;
-                }
-            }
-            let Some(path) = found else {
-                return json!({ "error": format!("Source '{ex_name}/{file_name}' not found") });
-            };
-            match fs::read_to_string(&path) {
-                Ok(content) => {
-                    let all_lines: Vec<&str> = content.lines().collect();
-                    let total_lines = all_lines.len();
-                    let start_arg = args.get("start_line").and_then(|v| v.as_u64()).map(|v| v as usize);
-                    let end_arg = args.get("end_line").and_then(|v| v.as_u64()).map(|v| v as usize);
-                    if start_arg.is_some() || end_arg.is_some() {
-                        let s = start_arg.unwrap_or(1).max(1);
-                        let e = end_arg.unwrap_or(total_lines).max(s).min(total_lines);
-                        let slice = if s <= total_lines && total_lines > 0 {
-                            all_lines[(s - 1)..e].join("\n")
-                        } else {
-                            String::new()
-                        };
-                        json!({
-                            "example": ex_name,
-                            "file": file_name,
-                            "path": format!("{ex_name}/{file_name}"),
-                            "start_line": s,
-                            "end_line": e,
-                            "total_lines": total_lines,
-                            "content": slice,
-                        })
-                    } else {
-                        json!({
-                            "example": ex_name,
-                            "file": file_name,
-                            "path": format!("{ex_name}/{file_name}"),
-                            "total_lines": total_lines,
-                            "content": content,
-                        })
-                    }
-                }
-                Err(e) => json!({ "error": e.to_string() }),
-            }
-        }
+        "list_infimum_repo" => super::repo_index::tool_list_infimum_repo(args),
+        "read_infimum_repo" => super::repo_index::tool_read_infimum_repo(args),
+        "search_infimum_repo" => super::repo_index::tool_search_infimum_repo(args),
         "search_pbr_textures" => {
             let q = args.get("query").and_then(|s| s.as_str()).unwrap_or("").trim();
             let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10).clamp(1, 20);

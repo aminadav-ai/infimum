@@ -6,6 +6,7 @@
 
 mod conversations;
 mod providers;
+mod repo_index;
 mod timeline;
 mod tools;
 

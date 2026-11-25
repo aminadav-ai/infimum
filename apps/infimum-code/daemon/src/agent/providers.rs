@@ -421,16 +421,46 @@ where
         {
             "type": "function",
             "function": {
-                "name": "read_infimum_example",
-                "description": "Read reference source code of open-source Infimum ecosystem apps, cores, and Rust internals: Infimum Code IDE ('infimum-code'), games ('ceres-drift', 'gomoku', 'color-lines', 'lion-herd', 'slipgate'), compiler demos ('lang-demos'), infimum-web cores ('web-cores'), and full Rust sources of infimum-lang ('rust-lang'), infimum-web ('rust-web'), and infimum-agentd ('rust-code'). Pass example='list' to list all collections and files.",
+                "name": "list_infimum_repo",
+                "description": "List directories and files in the live Infimum monorepo + website snapshot (crates/infimum-lang/, crates/infimum-web/, apps/infimum-code/, site/, LICENSE, docs, examples, tests, CI workflows).",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "example": { "type": "string", "description": "'infimum-code', 'ceres-drift', 'gomoku', 'color-lines', 'lion-herd', 'slipgate', 'lang-demos', 'web-cores', 'rust-lang', 'rust-web', 'rust-code', 'infra', 'web-site', or 'list'." },
-                        "file": { "type": "string", "description": "Source file name (e.g. 'main.ifm', 'src/parser.rs', 'shader.wgsl', 'ci_verify_corpus.sh', 'src/worker.js') or 'list'." },
-                        "start_line": { "type": "integer", "description": "Optional 1-based start line for reading large files." },
-                        "end_line": { "type": "integer", "description": "Optional 1-based end line (inclusive) for reading large files." }
+                        "prefix": { "type": "string", "description": "Optional directory prefix, e.g. 'crates/infimum-lang/src', 'apps/infimum-code', or 'site'." }
                     }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_infimum_repo",
+                "description": "Read a file from the live Infimum monorepo + website snapshot with 1-based line numbers (up to 400 lines per call; use start_line/end_line for larger files).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Repository-relative path, e.g. 'crates/infimum-lang/src/verify.rs', 'LICENSE', or 'site/src/worker.js'." },
+                        "start_line": { "type": "integer", "description": "Optional 1-based start line." },
+                        "end_line": { "type": "integer", "description": "Optional 1-based end line (inclusive)." }
+                    },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_infimum_repo",
+                "description": "Search text across all files in the live Infimum monorepo + website snapshot.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Substring to search for." },
+                        "prefix": { "type": "string", "description": "Optional directory prefix to restrict search, e.g. 'crates/infimum-lang'." },
+                        "case_sensitive": { "type": "boolean", "description": "Case-sensitive search (default false)." },
+                        "max_results": { "type": "integer", "description": "Maximum matches to return (default 40, max 100)." }
+                    },
+                    "required": ["query"]
                 }
             }
         },
@@ -1154,16 +1184,40 @@ where
                 }
             },
             {
-                "name": "read_infimum_example",
-                "description": "Read reference source code of open-source Infimum ecosystem apps, cores, and Rust internals: Infimum Code IDE ('infimum-code'), games ('ceres-drift', 'gomoku', 'color-lines', 'lion-herd', 'slipgate'), compiler demos ('lang-demos'), infimum-web cores ('web-cores'), and full Rust sources of infimum-lang ('rust-lang'), infimum-web ('rust-web'), and infimum-agentd ('rust-code'). Pass example='list' to list all collections and files.",
+                "name": "list_infimum_repo",
+                "description": "List directories and files in the live Infimum monorepo + website snapshot (crates/infimum-lang/, crates/infimum-web/, apps/infimum-code/, site/, LICENSE, docs, examples, tests, CI workflows).",
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
-                        "example": { "type": "STRING", "description": "'infimum-code', 'ceres-drift', 'gomoku', 'color-lines', 'lion-herd', 'slipgate', 'lang-demos', 'web-cores', 'rust-lang', 'rust-web', 'rust-code', 'infra', 'web-site', or 'list'." },
-                        "file": { "type": "STRING", "description": "Source file name (e.g. 'main.ifm', 'src/parser.rs', 'shader.wgsl', 'ci_verify_corpus.sh', 'src/worker.js') or 'list'." },
-                        "start_line": { "type": "INTEGER", "description": "Optional 1-based start line for reading large files." },
-                        "end_line": { "type": "INTEGER", "description": "Optional 1-based end line (inclusive) for reading large files." }
+                        "prefix": { "type": "STRING", "description": "Optional directory prefix, e.g. 'crates/infimum-lang/src', 'apps/infimum-code', or 'site'." }
                     }
+                }
+            },
+            {
+                "name": "read_infimum_repo",
+                "description": "Read a file from the live Infimum monorepo + website snapshot with 1-based line numbers (up to 400 lines per call; use start_line/end_line for larger files).",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "path": { "type": "STRING", "description": "Repository-relative path, e.g. 'crates/infimum-lang/src/verify.rs', 'LICENSE', or 'site/src/worker.js'." },
+                        "start_line": { "type": "INTEGER", "description": "Optional 1-based start line." },
+                        "end_line": { "type": "INTEGER", "description": "Optional 1-based end line (inclusive)." }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "search_infimum_repo",
+                "description": "Search text across all files in the live Infimum monorepo + website snapshot.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "query": { "type": "STRING", "description": "Substring to search for." },
+                        "prefix": { "type": "STRING", "description": "Optional directory prefix to restrict search, e.g. 'crates/infimum-lang'." },
+                        "case_sensitive": { "type": "BOOLEAN", "description": "Case-sensitive search (default false)." },
+                        "max_results": { "type": "INTEGER", "description": "Maximum matches to return (default 40, max 100)." }
+                    },
+                    "required": ["query"]
                 }
             },
             {

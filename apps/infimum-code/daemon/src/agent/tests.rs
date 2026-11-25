@@ -809,27 +809,46 @@ fn main_fn(v: i64) -> i64 {
         }
     }
 
-    // Verify read_infimum_example lists, reads struct-based sources, and blocks path traversal
-    let ex_list = execute_native_tool(&pol, &proj, "read_infimum_example", &json!({}), None);
-    assert!(ex_list.get("available_examples").is_some(), "ex_list={ex_list}");
-    let ex_read = execute_native_tool(
+    // Verify list/read/search_infimum_repo list, read live sources, search, and block path traversal
+    let repo_list = execute_native_tool(
         &pol,
         &proj,
-        "read_infimum_example",
-        &json!({ "example": "slipgate", "file": "abi.ifm" }),
+        "list_infimum_repo",
+        &json!({ "prefix": "crates/infimum-lang/examples/showcase/slipgate" }),
         None,
     );
-    if let Some(content) = ex_read.get("content").and_then(|v| v.as_str()) {
-        assert!(content.contains("struct Enemy"), "slipgate abi.ifm should use typed structs");
-    }
-    let ex_bad = execute_native_tool(
+    assert!(
+        repo_list.get("output").and_then(|v| v.as_str()).is_some_and(|s| s.contains("abi.ifm")),
+        "repo_list={repo_list}"
+    );
+    let repo_read = execute_native_tool(
         &pol,
         &proj,
-        "read_infimum_example",
-        &json!({ "example": "slipgate", "file": "../Cargo.toml" }),
+        "read_infimum_repo",
+        &json!({ "path": "crates/infimum-lang/examples/showcase/slipgate/src/abi.ifm", "start_line": 1, "end_line": 80 }),
         None,
     );
-    assert!(ex_bad.get("error").is_some(), "Path traversal in read_infimum_example must fail: {ex_bad}");
+    let content = repo_read.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(content.contains("struct Enemy"), "slipgate abi.ifm should use typed structs: {repo_read}");
+    let repo_search = execute_native_tool(
+        &pol,
+        &proj,
+        "search_infimum_repo",
+        &json!({ "query": "struct Enemy", "prefix": "crates/infimum-lang/examples/showcase/slipgate" }),
+        None,
+    );
+    assert!(
+        repo_search.get("total_hits").and_then(|v| v.as_u64()).unwrap_or(0) >= 1,
+        "repo_search={repo_search}"
+    );
+    let repo_bad = execute_native_tool(
+        &pol,
+        &proj,
+        "read_infimum_repo",
+        &json!({ "path": "../Cargo.toml" }),
+        None,
+    );
+    assert!(repo_bad.get("error").is_some(), "Path traversal in read_infimum_repo must fail: {repo_bad}");
 
     let _ = fs::remove_dir_all(&base);
 }
