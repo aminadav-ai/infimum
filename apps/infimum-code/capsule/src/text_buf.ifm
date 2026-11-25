@@ -8,6 +8,7 @@ use "abi.ifm";
 use "primitives.ifm";
 use "theme.ifm";
 use "daemon_client.ifm";
+use "std/buf.ifm";
 pub use "std/text_edit.ifm";
 
 // --- Plain-Text Wrapping, Hit-Test & Selection (delegated to `std/text_edit.ifm`) ---

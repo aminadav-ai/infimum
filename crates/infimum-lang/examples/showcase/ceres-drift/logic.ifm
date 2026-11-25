@@ -390,7 +390,7 @@ fn spawn_bolt(x: i64, y: i64, z: i64, vx: i64, vy: i64, vz: i64, kind: i64, life
   }
 }
 
-fn fire_player_laser() -[Mem, Gpu]-> unit {
+pub fn fire_player_laser() -[Mem, Gpu]-> unit {
   if GameMem.laser_cd == 0 && GameMem.energy >= 2 {
     GameMem.energy = clamp_stat(GameMem.energy - 2, 100);
     GameMem.laser_cd = 7;
@@ -429,7 +429,7 @@ fn fire_player_laser() -[Mem, Gpu]-> unit {
   }
 }
 
-fn fire_player_missile() -[Mem, Gpu]-> unit {
+pub fn fire_player_missile() -[Mem, Gpu]-> unit {
   if GameMem.missile_cd == 0 {
     if GameMem.missiles > 0 {
       GameMem.missiles = clamp_stat(GameMem.missiles - 1, 20);

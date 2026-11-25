@@ -2875,7 +2875,10 @@ fn insert_sym(
     is_explicit_alias: bool,
 ) -> Result<(), InfimumDiagnostic> {
     if let Some(existing) = map.get(&key) {
-        if existing.owner == sym.owner && existing.orig_name == sym.orig_name {
+        if existing.owner == sym.owner
+            && existing.orig_name == sym.orig_name
+            && existing.decl_span == sym.decl_span
+        {
             return Ok(());
         }
         let code = if is_explicit_alias {
@@ -3005,7 +3008,7 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
             tables[uid].scope = tables[parent_uid].scope.clone();
         }
 
-        // 1. Register own declarations
+        // 1. Register own declarations (zero shadowing — even inside inline `mod`)
         {
             let ut = &mut tables[uid];
             for item in &u.items {
@@ -3018,19 +3021,15 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
                             decl_file: u.display_label.clone(),
                             decl_span: rc.span,
                         };
-                        if u.parent.is_some() {
-                            ut.scope.consts.insert(rc.name.clone(), sym.clone());
-                        } else {
-                            insert_sym(
-                                &mut ut.scope.consts,
-                                Some(&mut ut.scope.consts_order),
-                                rc.name.clone(),
-                                sym.clone(),
-                                "const",
-                                rc.span,
-                                false,
-                            )?;
-                        }
+                        insert_sym(
+                            &mut ut.scope.consts,
+                            Some(&mut ut.scope.consts_order),
+                            rc.name.clone(),
+                            sym.clone(),
+                            "const",
+                            rc.span,
+                            false,
+                        )?;
                         if rc.is_pub {
                             insert_sym(
                                 &mut ut.exports.consts,
@@ -3051,19 +3050,15 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
                             decl_file: u.display_label.clone(),
                             decl_span: re.span,
                         };
-                        if u.parent.is_some() {
-                            ut.scope.enums.insert(re.name.clone(), sym.clone());
-                        } else {
-                            insert_sym(
-                                &mut ut.scope.enums,
-                                Some(&mut ut.scope.enums_order),
-                                re.name.clone(),
-                                sym.clone(),
-                                "enum",
-                                re.span,
-                                false,
-                            )?;
-                        }
+                        insert_sym(
+                            &mut ut.scope.enums,
+                            Some(&mut ut.scope.enums_order),
+                            re.name.clone(),
+                            sym.clone(),
+                            "enum",
+                            re.span,
+                            false,
+                        )?;
                         if re.is_pub {
                             insert_sym(
                                 &mut ut.exports.enums,
@@ -3084,19 +3079,15 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
                             decl_file: u.display_label.clone(),
                             decl_span: rs.span,
                         };
-                        if u.parent.is_some() {
-                            ut.scope.structs.insert(rs.name.clone(), sym.clone());
-                        } else {
-                            insert_sym(
-                                &mut ut.scope.structs,
-                                None,
-                                rs.name.clone(),
-                                sym.clone(),
-                                "struct",
-                                rs.span,
-                                false,
-                            )?;
-                        }
+                        insert_sym(
+                            &mut ut.scope.structs,
+                            None,
+                            rs.name.clone(),
+                            sym.clone(),
+                            "struct",
+                            rs.span,
+                            false,
+                        )?;
                         if rs.is_pub {
                             insert_sym(
                                 &mut ut.exports.structs,
@@ -3117,19 +3108,15 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
                             decl_file: u.display_label.clone(),
                             decl_span: rl.span,
                         };
-                        if u.parent.is_some() {
-                            ut.scope.layouts.insert(rl.name.clone(), sym.clone());
-                        } else {
-                            insert_sym(
-                                &mut ut.scope.layouts,
-                                Some(&mut ut.scope.layouts_order),
-                                rl.name.clone(),
-                                sym.clone(),
-                                "layout",
-                                rl.span,
-                                false,
-                            )?;
-                        }
+                        insert_sym(
+                            &mut ut.scope.layouts,
+                            Some(&mut ut.scope.layouts_order),
+                            rl.name.clone(),
+                            sym.clone(),
+                            "layout",
+                            rl.span,
+                            false,
+                        )?;
                         if rl.is_pub {
                             insert_sym(
                                 &mut ut.exports.layouts,
@@ -3155,13 +3142,8 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
                     decl_file: u.display_label.clone(),
                     decl_span: rf.span,
                 };
-                if u.parent.is_some() {
-                    ut.scope.formas.insert(rf.name.clone(), sym.clone());
-                    ut.scope.fns.insert(rf.name.clone(), sym.clone());
-                } else {
-                    insert_sym(&mut ut.scope.formas, None, rf.name.clone(), sym.clone(), "forma", rf.span, false)?;
-                    insert_sym(&mut ut.scope.fns, None, rf.name.clone(), sym.clone(), "function", rf.span, false)?;
-                }
+                insert_sym(&mut ut.scope.formas, None, rf.name.clone(), sym.clone(), "forma", rf.span, false)?;
+                insert_sym(&mut ut.scope.fns, None, rf.name.clone(), sym.clone(), "function", rf.span, false)?;
                 if rf.is_pub {
                     insert_sym(&mut ut.exports.formas, None, rf.name.clone(), sym.clone(), "forma", rf.span, false)?;
                     insert_sym(&mut ut.exports.fns, None, rf.name.clone(), sym, "function", rf.span, false)?;
@@ -3191,11 +3173,7 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
                     decl_file: u.display_label.clone(),
                     decl_span: rf.span,
                 };
-                if u.parent.is_some() {
-                    ut.scope.fns.insert(rf.name.clone(), sym.clone());
-                } else {
-                    insert_sym(&mut ut.scope.fns, None, rf.name.clone(), sym.clone(), "function", rf.span, false)?;
-                }
+                insert_sym(&mut ut.scope.fns, None, rf.name.clone(), sym.clone(), "function", rf.span, false)?;
                 if rf.is_pub {
                     insert_sym(&mut ut.exports.fns, None, rf.name.clone(), sym, "function", rf.span, false)?;
                 }

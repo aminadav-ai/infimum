@@ -10,6 +10,7 @@
 use "abi.ifm";
 use "primitives.ifm";
 use "std/sys_mem.ifm";
+use "std/mem.ifm";
 use "std/buf.ifm";
 
 pub mod daemon {

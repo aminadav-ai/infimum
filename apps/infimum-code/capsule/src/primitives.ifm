@@ -6,6 +6,8 @@
 
 use "abi.ifm";
 pub use "std/sys_mem.ifm";
+pub use "std/mem.ifm";
+pub use "std/buf.ifm";
 pub use "std/math.ifm";
 pub use "std/color.ifm";
 pub use "std/gfx.ifm";
