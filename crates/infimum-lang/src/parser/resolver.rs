@@ -36,6 +36,7 @@ pub(super) struct ModuleResolver {
     pub(super) loop_stack: Vec<LoopCtrlCtx>,
     pub(super) struct_vars: Vec<BTreeMap<String, String>>,
     pub(super) fn_ret_struct: BTreeMap<String, String>,
+    pub(super) forma_subst: BTreeMap<String, Expr>,
 }
 
 #[derive(Clone)]
@@ -127,6 +128,7 @@ impl ModuleResolver {
             loop_stack: Vec::new(),
             struct_vars: Vec::new(),
             fn_ret_struct: BTreeMap::new(),
+            forma_subst: BTreeMap::new(),
         }
     }
 
@@ -406,6 +408,14 @@ impl ModuleResolver {
             RawExpr::FixedLit(v) => Ok(ConstValue::Fixed(*v)),
             RawExpr::BoolLit(b) => Ok(ConstValue::Bool(*b)),
             RawExpr::Var(name) => {
+                if let Some(sub) = self.forma_subst.get(name) {
+                    match sub {
+                        Expr::IntLit(v) => return Ok(ConstValue::Int(*v)),
+                        Expr::FixedLit(v) => return Ok(ConstValue::Fixed(*v)),
+                        Expr::BoolLit(b) => return Ok(ConstValue::Bool(*b)),
+                        _ => {}
+                    }
+                }
                 if let Some(sym) = self.lookup_const_sym(None, name, span)? {
                     if let Some(c) = self.consts.get(&sym.canonical_name) {
                         return Ok(c.value);
@@ -2467,6 +2477,9 @@ impl ModuleResolver {
             RawExpr::UnitLit => Ok(Expr::UnitLit),
             RawExpr::Var(name) => {
                 if !Self::is_shadowed(locals, name) {
+                    if let Some(sub) = self.forma_subst.get(name) {
+                        return Ok(sub.clone());
+                    }
                     if let Some(sym) = self.lookup_const_sym(None, name, Span::zero())? {
                         if let Some(cdef) = self.consts.get(&sym.canonical_name) {
                             return Ok(match cdef.value {
@@ -3457,97 +3470,12 @@ pub(super) fn resolve_fixed_ops_in_fns(functions: &mut [FnDef]) {
     }
 }
 
-pub(super) fn subst_raw_expr(expr: RawExpr, env: &BTreeMap<String, RawExpr>) -> RawExpr {
-    if env.is_empty() {
-        return expr;
-    }
-    match expr {
-        RawExpr::Var(ref name) => {
-            if let Some(rep) = env.get(name) {
-                rep.clone()
-            } else {
-                expr
-            }
-        }
-        RawExpr::Unary { op, expr: inner } => RawExpr::Unary {
-            op,
-            expr: Box::new(subst_raw_expr(*inner, env)),
-        },
-        RawExpr::Binary { op, lhs, rhs } => RawExpr::Binary {
-            op,
-            lhs: Box::new(subst_raw_expr(*lhs, env)),
-            rhs: Box::new(subst_raw_expr(*rhs, env)),
-        },
-        RawExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => RawExpr::If {
-            cond: Box::new(subst_raw_expr(*cond, env)),
-            then_branch: Box::new(subst_raw_expr(*then_branch, env)),
-            else_branch: Box::new(subst_raw_expr(*else_branch, env)),
-        },
-        RawExpr::Call { target, args } => RawExpr::Call {
-            target,
-            args: args.into_iter().map(|a| subst_raw_expr(a, env)).collect(),
-        },
-        RawExpr::ModCall(mc) => RawExpr::ModCall(Box::new(RawModCall {
-            module: mc.module,
-            func: mc.func,
-            args: mc.args.into_iter().map(|a| subst_raw_expr(a, env)).collect(),
-            span: mc.span,
-        })),
-        RawExpr::LayoutLoad(ll) => RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
-            module: ll.module,
-            layout: ll.layout,
-            field: ll.field,
-            index: ll.index.map(|i| Box::new(subst_raw_expr(*i, env))),
-            subfield: ll.subfield,
-            span: ll.span,
-        })),
-        RawExpr::MemLoad { index } => RawExpr::MemLoad {
-            index: Box::new(subst_raw_expr(*index, env)),
-        },
-        RawExpr::TupleLit(elems) => {
-            RawExpr::TupleLit(elems.into_iter().map(|e| subst_raw_expr(e, env)).collect())
-        }
-        RawExpr::TupleField { expr: inner, index } => RawExpr::TupleField {
-            expr: Box::new(subst_raw_expr(*inner, env)),
-            index,
-        },
-        RawExpr::StructLit(sl) => RawExpr::StructLit(Box::new(RawStructLit {
-            module: sl.module,
-            name: sl.name,
-            fields: sl
-                .fields
-                .into_iter()
-                .map(|(k, v, sp)| (k, subst_raw_expr(v, env), sp))
-                .collect(),
-            span: sl.span,
-        })),
-        RawExpr::FieldAccess { expr: inner, field, span } => RawExpr::FieldAccess {
-            expr: Box::new(subst_raw_expr(*inner, env)),
-            field,
-            span,
-        },
-        other => other,
-    }
-}
-
-pub(super) fn subst_forma_node(
-    node: crate::forma::FormaNode<RawExpr>,
-    env: &BTreeMap<String, RawExpr>,
-) -> crate::forma::FormaNode<RawExpr> {
-    node.try_map(&mut |e| Ok::<RawExpr, ()>(subst_raw_expr(e, env)))
-        .unwrap()
-}
-
-pub(super) fn attach_forma_visible(
-    mut node: crate::forma::FormaNode<RawExpr>,
-    cond: RawExpr,
-) -> crate::forma::FormaNode<RawExpr> {
+fn attach_forma_visible_expr(
+    mut node: crate::forma::FormaNode<Expr>,
+    cond: Expr,
+) -> crate::forma::FormaNode<Expr> {
     node.props.visible = match node.props.visible {
-        Some(prev) => Some(RawExpr::Binary {
+        Some(prev) => Some(Expr::Binary {
             op: BinOp::And,
             lhs: Box::new(cond),
             rhs: Box::new(prev),
@@ -3557,28 +3485,32 @@ pub(super) fn attach_forma_visible(
     node
 }
 
-pub(super) fn expand_forma_node(
+pub(super) fn expand_and_lower_forma_node(
     mut node: crate::forma::FormaNode<RawExpr>,
     defs: &BTreeMap<String, (UnitId, crate::forma::FormaDef<RawExpr>)>,
     resolver: &mut ModuleResolver,
     visiting: &mut Vec<String>,
-) -> Result<Vec<crate::forma::FormaNode<RawExpr>>, InfimumDiagnostic> {
+    param_locals: &mut Vec<BTreeSet<String>>,
+) -> Result<Vec<crate::forma::FormaNode<Expr>>, InfimumDiagnostic> {
     // 1. Conditional UI: `if cond { then... } [else { else... }]`
-    if let Some((cond, else_nodes)) = node.forma_if.take() {
+    if let Some((cond_raw, else_nodes)) = node.forma_if.take() {
+        let cond_expr = resolver.lower_expr(&cond_raw, param_locals)?;
         let mut out = Vec::new();
         for ch in node.children {
-            for exp in expand_forma_node(ch, defs, resolver, visiting)? {
-                out.push(attach_forma_visible(exp, cond.clone()));
+            for exp in expand_and_lower_forma_node(ch, defs, resolver, visiting, param_locals)? {
+                out.push(attach_forma_visible_expr(exp, cond_expr.clone()));
             }
         }
         if !else_nodes.is_empty() {
-            let neg_cond = RawExpr::Unary {
+            let neg_cond = Expr::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(cond),
+                expr: Box::new(cond_expr),
             };
             for ch in else_nodes {
-                for exp in expand_forma_node(ch, defs, resolver, visiting)? {
-                    out.push(attach_forma_visible(exp, neg_cond.clone()));
+                for exp in
+                    expand_and_lower_forma_node(ch, defs, resolver, visiting, param_locals)?
+                {
+                    out.push(attach_forma_visible_expr(exp, neg_cond.clone()));
                 }
             }
         }
@@ -3602,17 +3534,28 @@ pub(super) fn expand_forma_node(
         }
         let mut out = Vec::new();
         for k in sv..=hi {
-            let mut env = BTreeMap::new();
-            env.insert(var.clone(), RawExpr::IntLit(k));
+            let prev_sub = resolver.forma_subst.insert(var.clone(), Expr::IntLit(k));
             for ch in &node.children {
-                let inst = subst_forma_node(ch.clone(), &env);
-                out.extend(expand_forma_node(inst, defs, resolver, visiting)?);
+                out.extend(expand_and_lower_forma_node(
+                    ch.clone(),
+                    defs,
+                    resolver,
+                    visiting,
+                    param_locals,
+                )?);
+            }
+            if let Some(old) = prev_sub {
+                resolver.forma_subst.insert(var.clone(), old);
+            } else {
+                resolver.forma_subst.remove(&var);
             }
         }
         return Ok(out);
     }
 
     // 3. Nested custom `forma` component call: `ScoreCard("Вы", score)` or `m::ScoreCard(...)`
+    //    Lexical hygiene: lower arguments in CALLER's unit scope, then switch to TARGET's unit
+    //    scope to expand & lower the component body with pre-lowered argument substitutions.
     if let Some((comp_name, args)) = node.component_call.take() {
         let resolved_sym = if let Some((m, fname)) = comp_name.split_once("::") {
             resolver.lookup_forma_sym(Some(m), fname, node.span)?
@@ -3652,26 +3595,50 @@ pub(super) fn expand_forma_node(
                 "Match the arguments passed to the nested Forma component",
             ));
         }
-        let mut env = BTreeMap::new();
-        for (param, arg) in target_def.params.iter().zip(args) {
-            env.insert(param.name.clone(), arg);
+        let mut new_subst = BTreeMap::new();
+        for (param, arg_raw) in target_def.params.iter().zip(&args) {
+            let lowered_arg = resolver.lower_expr(arg_raw, param_locals)?;
+            new_subst.insert(param.name.clone(), lowered_arg);
         }
-        let instantiated = subst_forma_node(target_def.root.clone(), &env);
         let prev_uid = resolver.cur_uid;
+        let prev_subst = std::mem::replace(&mut resolver.forma_subst, new_subst);
+        let mut target_locals: Vec<BTreeSet<String>> = vec![BTreeSet::new()];
         resolver.cur_uid = *target_uid;
         visiting.push(target_canon);
-        let expanded = expand_forma_node(instantiated, defs, resolver, visiting)?;
+        let expanded = expand_and_lower_forma_node(
+            target_def.root.clone(),
+            defs,
+            resolver,
+            visiting,
+            &mut target_locals,
+        );
         visiting.pop();
         resolver.cur_uid = prev_uid;
-        return Ok(expanded);
+        resolver.forma_subst = prev_subst;
+        return expanded;
     }
 
-    // 4. Regular built-in Forma node: recursively expand children
+    // 4. Regular built-in Forma node: lower props in current unit scope & recursively lower children
+    let lowered_props = node
+        .props
+        .try_map(&mut |e| resolver.lower_expr(&e, param_locals))?;
     let mut new_children = Vec::with_capacity(node.children.len());
     for ch in node.children {
-        new_children.extend(expand_forma_node(ch, defs, resolver, visiting)?);
+        new_children.extend(expand_and_lower_forma_node(
+            ch,
+            defs,
+            resolver,
+            visiting,
+            param_locals,
+        )?);
     }
-    node.children = new_children;
-    Ok(vec![node])
+    Ok(vec![crate::forma::FormaNode {
+        kind: node.kind,
+        props: lowered_props,
+        children: new_children,
+        span: node.span,
+        component_call: None,
+        forma_for: None,
+        forma_if: None,
+    }])
 }
-

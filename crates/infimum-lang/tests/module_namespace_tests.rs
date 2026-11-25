@@ -588,3 +588,96 @@ export fn ping() -> i64 { Mode::On }
     assert!(!rust_abi.contains("HELPER_ONLY"));
     assert!(!rust_abi.contains("LOCAL_PRIV"));
 }
+
+#[test]
+fn cross_module_forma_inlining_preserves_lexical_hygiene() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "game.ifm".to_string(),
+        r#"
+use "std/prelude.ifm";
+
+const CARD_BG: i64 = 0xFF112233;
+
+fn calc_w(v: i64) -> i64 {
+  100 + v
+}
+
+pub forma Badge(v: i64) {
+  Row(w: calc_w(v), h: 32, bg: CARD_BG) {
+    Text(text: "OK", size: 14, color: 0xFFFFFFFF)
+  }
+}
+"#
+        .to_string(),
+    );
+    // main.ifm defines colliding private `CARD_BG` and `calc_w` with different values!
+    files.insert(
+        "main.ifm".to_string(),
+        r#"
+use "std/prelude.ifm";
+use "game.ifm" as g;
+
+const CARD_BG: i64 = 0xFF999999;
+
+fn calc_w(v: i64) -> i64 {
+  9999 + v
+}
+
+forma Root(x: i64) {
+  Col(w: 240, h: 100, bg: CARD_BG) {
+    g::Badge(x)
+  }
+}
+
+export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, _md: i64, mc: i64, wy: i64, _kc: i64, _ks: i64) -[Mem, Gpu]-> i64 {
+  forma_begin_frame(vw, vh, mx, my, mc, wy);
+  Root(calc_w(0) - 9989);
+  gfx_end_frame()
+}
+"#
+        .to_string(),
+    );
+
+    let module = parse_module_from_virtual_fs("main.ifm", &files)
+        .expect("cross-module forma with private const/fn must expand hygienically");
+    let root_forma = module
+        .formas
+        .iter()
+        .find(|f| f.name == "Root" || f.name.ends_with("__Root"))
+        .expect("Root forma");
+
+    // Outer Col in main.ifm must use main.ifm's CARD_BG (0xFF999999)
+    assert_eq!(
+        root_forma.root.props.bg,
+        Some(infimum_lang::ast::Expr::IntLit(0xFF999999))
+    );
+    // Inlined g::Badge Row must use game.ifm's CARD_BG (0xFF112233), NOT main.ifm's!
+    let badge_row = &root_forma.root.children[0];
+    assert_eq!(
+        badge_row.props.bg,
+        Some(infimum_lang::ast::Expr::IntLit(0xFF112233))
+    );
+    // Inlined g::Badge width must call game.ifm's calc_w (NOT main.ifm's calc_w) with Var("x")
+    let game_calc_w = module
+        .functions
+        .iter()
+        .find(|f| {
+            f.source_file.as_deref() == Some("game.ifm") && f.name.ends_with("__calc_w")
+        })
+        .expect("game.ifm calc_w")
+        .name
+        .clone();
+    assert_eq!(
+        badge_row.props.w,
+        Some(infimum_lang::ast::Expr::Call {
+            target: infimum_lang::ast::TargetRef::Named(game_calc_w),
+            args: vec![infimum_lang::ast::Expr::Var("x".to_string())],
+        })
+    );
+
+    // Must also verify and compile cleanly to valid Wasm
+    let (wasm, _) = compile_project_in_memory("main.ifm", &files)
+        .expect("hygienic cross-module forma must compile to valid Wasm");
+    assert!(wasm.starts_with(b"\0asm"));
+}
