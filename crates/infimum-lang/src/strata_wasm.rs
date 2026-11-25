@@ -170,7 +170,7 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
     let f = &node.ast;
     for p in &f.params {
         let param_ok = match &p.ty {
-            Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str => true,
+            Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str | Type::Slice(_) => true,
             Type::Tuple(ts) => ts
                 .iter()
                 .all(|t| matches!(t, Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str)),
@@ -190,7 +190,7 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
         }
     }
     let ret_ok = match &f.ret_type {
-        Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str => true,
+        Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str | Type::Slice(_) => true,
         Type::Tuple(ts) => ts
             .iter()
             .all(|t| matches!(t, Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str)),
@@ -278,6 +278,18 @@ fn collect_str_lits_expr<'a>(expr: &'a Expr, out: &mut BTreeSet<&'a str>) {
             for a in args {
                 collect_str_lits_expr(a, out);
             }
+        }
+        Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
+            collect_str_lits_expr(ptr, out);
+            collect_str_lits_expr(len, out);
+        }
+        Expr::SlicePtr(e) | Expr::SliceLen(e) | Expr::TupleField { expr: e, .. } => {
+            collect_str_lits_expr(e, out);
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            collect_str_lits_expr(lo, out);
+            collect_str_lits_expr(hi, out);
+            collect_str_lits_expr(len, out);
         }
         _ => {}
     }
@@ -449,6 +461,7 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
         for p in &node.ast.params {
             let pa = match &p.ty {
                 Type::Tuple(ts) => ts.len().max(1),
+                Type::Slice(_) => 2,
                 _ => 1,
             };
             if pa > 1 {
@@ -458,6 +471,7 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
         }
         let ret_arity = match &node.ast.ret_type {
             Type::Tuple(ts) => ts.len(),
+            Type::Slice(_) => 2,
             _ => 1,
         };
         if ret_arity > 1 {
@@ -507,8 +521,8 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
             .ast
             .params
             .iter()
-            .any(|p| matches!(&p.ty, Type::Tuple(_)));
-        let has_non_scalar_ret = matches!(&target_node.ast.ret_type, Type::Tuple(_));
+            .any(|p| matches!(&p.ty, Type::Tuple(_) | Type::Slice(_)));
+        let has_non_scalar_ret = matches!(&target_node.ast.ret_type, Type::Tuple(_) | Type::Slice(_));
         if has_non_scalar_param || has_non_scalar_ret {
             return Err(InfimumDiagnostic::new(
                 "E082_NON_SCALAR_EXPORT",
@@ -701,6 +715,8 @@ fn collect_stmt_tuple_arities(stmts: &[Stmt], out: &mut BTreeSet<usize>) {
                     if ts.len() > 1 {
                         out.insert(ts.len());
                     }
+                } else if matches!(ty, Some(Type::Slice(_))) {
+                    out.insert(2);
                 }
                 collect_expr_tuple_arities(value, out);
             }
@@ -742,7 +758,23 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
         | Expr::MemLoad { index: inner, .. }
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
-        | Expr::TupleField { expr: inner, .. } => collect_expr_tuple_arities(inner, out),
+        | Expr::TupleField { expr: inner, .. }
+        | Expr::SlicePtr(inner)
+        | Expr::SliceLen(inner) => collect_expr_tuple_arities(inner, out),
+        Expr::SliceLit { ptr, len, .. } => {
+            out.insert(2);
+            collect_expr_tuple_arities(ptr, out);
+            collect_expr_tuple_arities(len, out);
+        }
+        Expr::BoundsCheck { index, len, .. } => {
+            collect_expr_tuple_arities(index, out);
+            collect_expr_tuple_arities(len, out);
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            collect_expr_tuple_arities(lo, out);
+            collect_expr_tuple_arities(hi, out);
+            collect_expr_tuple_arities(len, out);
+        }
         Expr::MemStore { index, value, .. } => {
             collect_expr_tuple_arities(index, out);
             collect_expr_tuple_arities(value, out);
@@ -759,6 +791,7 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
 fn expr_result_arity(expr: &Expr, ctx: &FnCodegenCtx<'_>) -> usize {
     match expr {
         Expr::TupleLit(elems) => elems.len().max(1),
+        Expr::SliceLit { .. } => 2,
         Expr::Var(name) => ctx.tuple_locals.get(name).map(|v| v.len()).unwrap_or(1),
         Expr::Block { tail, .. } => expr_result_arity(tail, ctx),
         Expr::If { then_branch, .. } => expr_result_arity(then_branch, ctx),
@@ -780,6 +813,7 @@ fn compile_node_body(
     let f: &FnDef = &node.ast;
     let self_ret_arity = match &f.ret_type {
         Type::Tuple(ts) => ts.len(),
+        Type::Slice(_) => 2,
         _ => 1,
     };
     let mut local_map = BTreeMap::new();
@@ -793,6 +827,11 @@ fn compile_node_body(
                     slots.push(param_idx);
                     param_idx += 1;
                 }
+                tuple_locals.insert(p.name.clone(), slots);
+            }
+            Type::Slice(_) => {
+                let slots = vec![param_idx, param_idx + 1];
+                param_idx += 2;
                 tuple_locals.insert(p.name.clone(), slots);
             }
             _ => {
@@ -842,6 +881,7 @@ fn prealloc_stmt_locals(stmts: &[Stmt], ctx: &mut FnCodegenCtx<'_>) {
                 prealloc_expr_locals(value, ctx);
                 let arity = match ty {
                     Some(Type::Tuple(ts)) => ts.len(),
+                    Some(Type::Slice(_)) => 2,
                     _ => expr_result_arity(value, ctx),
                 };
                 if arity > 1 {
@@ -906,11 +946,20 @@ fn prealloc_expr_locals(expr: &Expr, ctx: &mut FnCodegenCtx<'_>) {
                 prealloc_expr_locals(a, ctx);
             }
         }
-        Expr::TupleField { expr, .. } => {
+        Expr::TupleField { expr, .. } | Expr::SlicePtr(expr) | Expr::SliceLen(expr) => {
             prealloc_expr_locals(expr, ctx);
             if !ctx.local_map.contains_key("__ifm_tup_tmp") {
                 ctx.alloc_local(Some("__ifm_tup_tmp"));
             }
+        }
+        Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
+            prealloc_expr_locals(ptr, ctx);
+            prealloc_expr_locals(len, ctx);
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            prealloc_expr_locals(lo, ctx);
+            prealloc_expr_locals(hi, ctx);
+            prealloc_expr_locals(len, ctx);
         }
         Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::StrLit(_) | Expr::UnitLit | Expr::Var(_) => {}
     }
@@ -1313,6 +1362,38 @@ fn emit_expr(
             for e in elems {
                 emit_expr(e, ctx, out)?;
             }
+        }
+        Expr::SliceLit { ptr, len, .. } => {
+            emit_expr(ptr, ctx, out)?;
+            emit_expr(len, ctx, out)?;
+        }
+        Expr::SlicePtr(inner) => {
+            emit_expr(
+                &Expr::TupleField {
+                    expr: inner.clone(),
+                    index: 0,
+                },
+                ctx,
+                out,
+            )?;
+        }
+        Expr::SliceLen(inner) => {
+            emit_expr(
+                &Expr::TupleField {
+                    expr: inner.clone(),
+                    index: 1,
+                },
+                ctx,
+                out,
+            )?;
+        }
+        Expr::BoundsCheck { index, .. } => {
+            // Zero runtime overhead in Wasm: proven statically by Z3!
+            emit_expr(index, ctx, out)?;
+        }
+        Expr::RangeCheck { lo, .. } => {
+            // Zero runtime overhead in Wasm: proven statically by Z3!
+            emit_expr(lo, ctx, out)?;
         }
         Expr::TupleField { expr, index } => {
             if let Expr::Var(name) = expr.as_ref() {

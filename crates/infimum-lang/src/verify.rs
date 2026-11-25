@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v3";
+pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v4";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationReport {
@@ -30,6 +30,7 @@ enum ObligationKind {
     CallPrecondition { callee_desc: String, req_index: usize },
     NonZeroDivisor,
     FieldInvariant { lo: i64, hi: i64 },
+    SliceBounds { msg: String },
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,7 @@ where
     assumptions: Vec<String>,
     obligations: Vec<ProofObligation>,
     fresh_counter: usize,
+    known_mem: BTreeMap<i64, String>,
 }
 
 impl<'a, F> SmtBuilder<'a, F>
@@ -63,6 +65,7 @@ where
             assumptions: Vec::new(),
             obligations: Vec::new(),
             fresh_counter: 0,
+            known_mem: BTreeMap::new(),
         }
     }
 
@@ -109,6 +112,161 @@ where
                 TargetRef::Named(_) => Type::I64,
             },
             Expr::TupleLit(_) | Expr::TupleField { .. } => Type::I64,
+            Expr::SliceLit { elem_ty, .. } => Type::Slice(Box::new(elem_ty.clone())),
+            Expr::SlicePtr(_)
+            | Expr::SliceLen(_)
+            | Expr::BoundsCheck { .. }
+            | Expr::RangeCheck { .. } => Type::I64,
+        }
+    }
+
+    fn merge_known_mem(
+        &mut self,
+        cond_smt: &str,
+        then_mem: BTreeMap<i64, String>,
+        else_mem: BTreeMap<i64, String>,
+    ) {
+        self.known_mem.clear();
+        for (addr, tv) in then_mem {
+            if let Some(ev) = else_mem.get(&addr) {
+                if tv == *ev {
+                    self.known_mem.insert(addr, tv);
+                } else {
+                    let phi = self.fresh_sym("mem_phi", &Type::I64);
+                    self.assumptions
+                        .push(format!("(assert (= {phi} (ite {cond_smt} {tv} {ev})))"));
+                    self.known_mem.insert(addr, phi);
+                }
+            }
+        }
+    }
+
+    fn is_tuple_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::TupleLit(_) => true,
+            Expr::Block { tail, .. } => Self::is_tuple_expr(tail),
+            _ => false,
+        }
+    }
+
+    fn encode_tuple_fields(
+        &mut self,
+        expr: &Expr,
+        env: &mut BTreeMap<String, String>,
+        types: &mut BTreeMap<String, Type>,
+        guard: &str,
+        emit_checks: bool,
+    ) -> Result<Option<Vec<(String, Type)>>, InfimumDiagnostic> {
+        match expr {
+            Expr::TupleLit(elems) => {
+                let mut out = Vec::with_capacity(elems.len());
+                for e in elems {
+                    let fty = self.infer_expr_type(e, types);
+                    let fsym = self.encode_expr(e, env, types, guard, emit_checks)?;
+                    out.push((fsym, fty));
+                }
+                Ok(Some(out))
+            }
+            Expr::Block { stmts, tail } if Self::is_tuple_expr(tail) => {
+                let outer_keys: Vec<String> = env.keys().cloned().collect();
+                let mut local_env = env.clone();
+                let mut local_types = types.clone();
+                let mut declared = BTreeSet::new();
+                self.encode_stmt_slice(
+                    stmts,
+                    &mut local_env,
+                    &mut local_types,
+                    Some(&mut declared),
+                    guard,
+                    emit_checks,
+                )?;
+                let res = self.encode_tuple_fields(
+                    tail,
+                    &mut local_env,
+                    &mut local_types,
+                    guard,
+                    emit_checks,
+                )?;
+                for k in outer_keys {
+                    if !declared.contains(&k) {
+                        if let Some(v) = local_env.get(&k) {
+                            env.insert(k, v.clone());
+                        }
+                    }
+                }
+                Ok(res)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn encode_slice_fields(
+        &mut self,
+        expr: &Expr,
+        env: &mut BTreeMap<String, String>,
+        types: &mut BTreeMap<String, Type>,
+        guard: &str,
+        emit_checks: bool,
+    ) -> Result<Option<(String, String)>, InfimumDiagnostic> {
+        match expr {
+            Expr::SliceLit { ptr, len, .. } => {
+                let p = self.encode_expr(ptr, env, types, guard, emit_checks)?;
+                let l = self.encode_expr(len, env, types, guard, emit_checks)?;
+                if emit_checks {
+                    self.obligations.push(ProofObligation {
+                        guard_smt: guard.to_string(),
+                        goal_smt: format!("(and (>= {p} 0) (>= {l} 0))"),
+                        kind: ObligationKind::SliceBounds {
+                            msg: "Slice ptr and len must be non-negative".to_string(),
+                        },
+                    });
+                }
+                Ok(Some((p, l)))
+            }
+            Expr::Var(src) => {
+                if let (Some(p), Some(l)) = (
+                    env.get(&format!("{src}#0")).cloned(),
+                    env.get(&format!("{src}#1")).cloned(),
+                ) {
+                    Ok(Some((p, l)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Expr::Block { stmts, tail } => {
+                let outer_keys: Vec<String> = env.keys().cloned().collect();
+                let mut local_env = env.clone();
+                let mut local_types = types.clone();
+                let mut declared = BTreeSet::new();
+                self.encode_stmt_slice(
+                    stmts,
+                    &mut local_env,
+                    &mut local_types,
+                    Some(&mut declared),
+                    guard,
+                    emit_checks,
+                )?;
+                let res = self.encode_slice_fields(
+                    tail,
+                    &mut local_env,
+                    &mut local_types,
+                    guard,
+                    emit_checks,
+                )?;
+                for k in outer_keys {
+                    let base = k.split('#').next().unwrap_or(&k);
+                    if declared.contains(base) {
+                        continue;
+                    }
+                    if let Some(v) = local_env.get(&k) {
+                        env.insert(k, v.clone());
+                    } else {
+                        env.remove(&k);
+                    }
+                }
+                Ok(res)
+            }
+            _ => Ok(None),
         }
     }
 
@@ -313,6 +471,7 @@ where
                 let then_guard = conjoin_guard(guard, &c);
                 let not_c = format!("(not {c})");
                 let else_guard = conjoin_guard(guard, &not_c);
+                let saved_mem = self.known_mem.clone();
                 let mut then_env = env.clone();
                 let mut then_types = types.clone();
                 let t = self.encode_expr(
@@ -322,6 +481,7 @@ where
                     &then_guard,
                     emit_checks,
                 )?;
+                let then_mem = std::mem::replace(&mut self.known_mem, saved_mem);
                 let mut else_env = env.clone();
                 let mut else_types = types.clone();
                 let e = self.encode_expr(
@@ -331,6 +491,8 @@ where
                     &else_guard,
                     emit_checks,
                 )?;
+                let else_mem = std::mem::take(&mut self.known_mem);
+                self.merge_known_mem(&c, then_mem, else_mem);
                 self.merge_branch_envs(&c, env, types, &then_env, &else_env);
                 Ok(format!("(ite {c} {t} {e})"))
             }
@@ -338,10 +500,24 @@ where
                 for a in args {
                     let _ = self.encode_expr(a, env, types, guard, emit_checks)?;
                 }
+                self.known_mem.clear();
                 Ok("true".to_string())
             }
             Expr::MemLoad { index, inv, .. } => {
                 let _ = self.encode_expr(index, env, types, guard, emit_checks)?;
+                if let Expr::IntLit(addr) = index.as_ref() {
+                    if let Some(cached) = self.known_mem.get(addr) {
+                        return Ok(cached.clone());
+                    }
+                    let sym = self.fresh_sym("mem_rd", &Type::I64);
+                    if let Some((lo, hi)) = inv {
+                        let lo_s = if *lo < 0 { format!("(- {})", -(*lo as i128)) } else { lo.to_string() };
+                        let hi_s = if *hi < 0 { format!("(- {})", -(*hi as i128)) } else { hi.to_string() };
+                        self.assumptions.push(format!("(assert (and (>= {sym} {lo_s}) (<= {sym} {hi_s})))"));
+                    }
+                    self.known_mem.insert(*addr, sym.clone());
+                    return Ok(sym);
+                }
                 let sym = self.fresh_sym("mem_rd", &Type::I64);
                 if let Some((lo, hi)) = inv {
                     let lo_s = if *lo < 0 { format!("(- {})", -(*lo as i128)) } else { lo.to_string() };
@@ -364,6 +540,11 @@ where
                             kind: ObligationKind::FieldInvariant { lo: *lo, hi: *hi },
                         });
                     }
+                }
+                if let Expr::IntLit(addr) = index.as_ref() {
+                    self.known_mem.insert(*addr, v);
+                } else {
+                    self.known_mem.clear();
                 }
                 Ok("true".to_string())
             }
@@ -420,6 +601,17 @@ where
                             callee_env.insert(format!("p{i}#{fi}"), esmt);
                             callee_types.insert(format!("p{i}#{fi}"), fty);
                         }
+                    } else if matches!(callee_ast.params[i].ty, Type::Slice(_)) {
+                        let mut tmp_env = env.clone();
+                        let mut tmp_types = types.clone();
+                        if let Some((psmt, lsmt)) =
+                            self.encode_slice_fields(&args[i], &mut tmp_env, &mut tmp_types, guard, false)?
+                        {
+                            callee_env.insert(format!("p{i}#0"), psmt);
+                            callee_types.insert(format!("p{i}#0"), Type::I64);
+                            callee_env.insert(format!("p{i}#1"), lsmt);
+                            callee_types.insert(format!("p{i}#1"), Type::I64);
+                        }
                     } else if let Expr::Var(src) = &args[i] {
                         let prefix = format!("{src}#");
                         for (k, v) in env.iter() {
@@ -469,6 +661,11 @@ where
                     let body_smt = self.encode_expr(&callee_ast.body, &mut body_env, &mut body_types, guard, false)?;
                     self.assumptions
                         .push(format!("(assert (=> {guard} (= {call_sym} {body_smt})))"));
+                }
+
+                // Soundness: any effectful call (e.g. Mem) may mutate linear memory
+                if !callee_ast.effects.is_empty() {
+                    self.known_mem.clear();
                 }
 
                 Ok(call_sym)
@@ -525,6 +722,86 @@ where
                 let _ = self.encode_expr(expr, env, types, guard, emit_checks)?;
                 Ok(self.fresh_sym("tup_fld", &Type::I64))
             }
+            Expr::SliceLit { ptr, len, .. } => {
+                let p = self.encode_expr(ptr, env, types, guard, emit_checks)?;
+                let l = self.encode_expr(len, env, types, guard, emit_checks)?;
+                if emit_checks {
+                    self.obligations.push(ProofObligation {
+                        guard_smt: guard.to_string(),
+                        goal_smt: format!("(and (>= {p} 0) (>= {l} 0))"),
+                        kind: ObligationKind::SliceBounds {
+                            msg: "Slice ptr and len must be non-negative".to_string(),
+                        },
+                    });
+                }
+                Ok(self.fresh_sym("slice", &Type::I64))
+            }
+            Expr::SlicePtr(inner) => {
+                if let Some((p, _)) =
+                    self.encode_slice_fields(inner, env, types, guard, emit_checks)?
+                {
+                    return Ok(p);
+                }
+                let _ = self.encode_expr(inner, env, types, guard, emit_checks)?;
+                let sym = self.fresh_sym("slice_ptr", &Type::I64);
+                self.assumptions.push(format!("(assert (>= {sym} 0))"));
+                Ok(sym)
+            }
+            Expr::SliceLen(inner) => {
+                if let Some((_, l)) =
+                    self.encode_slice_fields(inner, env, types, guard, emit_checks)?
+                {
+                    return Ok(l);
+                }
+                let _ = self.encode_expr(inner, env, types, guard, emit_checks)?;
+                let sym = self.fresh_sym("slice_len", &Type::I64);
+                self.assumptions.push(format!("(assert (>= {sym} 0))"));
+                Ok(sym)
+            }
+            Expr::BoundsCheck {
+                index,
+                len,
+                inclusive_hi,
+            } => {
+                let idx = self.encode_expr(index, env, types, guard, emit_checks)?;
+                let l = self.encode_expr(len, env, types, guard, emit_checks)?;
+                if emit_checks {
+                    let upper = if *inclusive_hi {
+                        format!("(<= {idx} {l})")
+                    } else {
+                        format!("(< {idx} {l})")
+                    };
+                    self.obligations.push(ProofObligation {
+                        guard_smt: guard.to_string(),
+                        goal_smt: format!("(and (>= {idx} 0) {upper})"),
+                        kind: ObligationKind::SliceBounds {
+                            msg: if *inclusive_hi {
+                                "Index must satisfy 0 <= index <= len".to_string()
+                            } else {
+                                "Index must satisfy 0 <= index < len".to_string()
+                            },
+                        },
+                    });
+                }
+                Ok(idx)
+            }
+            Expr::RangeCheck { lo, hi, len } => {
+                let lo_s = self.encode_expr(lo, env, types, guard, emit_checks)?;
+                let hi_s = self.encode_expr(hi, env, types, guard, emit_checks)?;
+                let len_s = self.encode_expr(len, env, types, guard, emit_checks)?;
+                if emit_checks {
+                    self.obligations.push(ProofObligation {
+                        guard_smt: guard.to_string(),
+                        goal_smt: format!(
+                            "(and (>= {lo_s} 0) (<= {lo_s} {hi_s}) (<= {hi_s} {len_s}))"
+                        ),
+                        kind: ObligationKind::SliceBounds {
+                            msg: "Slice range must satisfy 0 <= lo <= hi <= len".to_string(),
+                        },
+                    });
+                }
+                Ok(lo_s)
+            }
         }
     }
 
@@ -548,19 +825,40 @@ where
                     let inferred_ty = ty
                         .clone()
                         .unwrap_or_else(|| self.infer_expr_type(value, local_types));
-                    if let Expr::TupleLit(elems) = value {
-                        let mut fsyms = Vec::with_capacity(elems.len());
-                        let mut ftys = Vec::with_capacity(elems.len());
-                        for e in elems {
-                            ftys.push(self.infer_expr_type(e, local_types));
-                            fsyms.push(self.encode_expr(e, local_env, local_types, guard, emit_checks)?);
-                        }
-                        for (i, (fsym, fty)) in fsyms.into_iter().zip(ftys).enumerate() {
-                            local_env.insert(format!("{name}#{i}"), fsym);
-                            local_types.insert(format!("{name}#{i}"), fty);
+                    if Self::is_tuple_expr(value) {
+                        if let Some(fields) =
+                            self.encode_tuple_fields(value, local_env, local_types, guard, emit_checks)?
+                        {
+                            for (i, (fsym, fty)) in fields.into_iter().enumerate() {
+                                local_env.insert(format!("{name}#{i}"), fsym);
+                                local_types.insert(format!("{name}#{i}"), fty);
+                            }
                         }
                         let v_smt = self.fresh_sym("tup", &Type::I64);
                         local_env.insert(name.clone(), v_smt);
+                    } else if matches!(inferred_ty, Type::Slice(_)) {
+                        if let Some((psmt, lsmt)) =
+                            self.encode_slice_fields(value, local_env, local_types, guard, emit_checks)?
+                        {
+                            local_env.insert(format!("{name}#0"), psmt);
+                            local_types.insert(format!("{name}#0"), Type::I64);
+                            local_env.insert(format!("{name}#1"), lsmt);
+                            local_types.insert(format!("{name}#1"), Type::I64);
+                            let v_smt = self.fresh_sym("slice", &Type::I64);
+                            local_env.insert(name.clone(), v_smt);
+                        } else {
+                            let v_smt =
+                                self.encode_expr(value, local_env, local_types, guard, emit_checks)?;
+                            local_env.insert(name.clone(), v_smt);
+                            let psmt = self.fresh_sym("slice_ptr", &Type::I64);
+                            let lsmt = self.fresh_sym("slice_len", &Type::I64);
+                            self.assumptions.push(format!("(assert (>= {psmt} 0))"));
+                            self.assumptions.push(format!("(assert (>= {lsmt} 0))"));
+                            local_env.insert(format!("{name}#0"), psmt);
+                            local_types.insert(format!("{name}#0"), Type::I64);
+                            local_env.insert(format!("{name}#1"), lsmt);
+                            local_types.insert(format!("{name}#1"), Type::I64);
+                        }
                     } else {
                         let v_smt = self.encode_expr(value, local_env, local_types, guard, emit_checks)?;
                         local_env.insert(name.clone(), v_smt);
@@ -590,12 +888,14 @@ where
                             d.insert(n.clone());
                         }
                     }
-                    if let Expr::TupleLit(elems) = value {
-                        for ((n, _), e) in names.iter().zip(elems.iter()) {
-                            let inferred = self.infer_expr_type(e, local_types);
-                            let v_smt = self.encode_expr(e, local_env, local_types, guard, emit_checks)?;
-                            local_env.insert(n.clone(), v_smt);
-                            local_types.insert(n.clone(), inferred);
+                    if Self::is_tuple_expr(value) {
+                        if let Some(fields) =
+                            self.encode_tuple_fields(value, local_env, local_types, guard, emit_checks)?
+                        {
+                            for ((n, _), (v_smt, inferred)) in names.iter().zip(fields) {
+                                local_env.insert(n.clone(), v_smt);
+                                local_types.insert(n.clone(), inferred);
+                            }
                         }
                     } else {
                         let _ = self.encode_expr(value, local_env, local_types, guard, emit_checks)?;
@@ -607,19 +907,41 @@ where
                     }
                 }
                 Stmt::Assign { name, value } => {
-                    if let Expr::TupleLit(elems) = value {
-                        let mut fsyms = Vec::with_capacity(elems.len());
-                        let mut ftys = Vec::with_capacity(elems.len());
-                        for e in elems {
-                            ftys.push(self.infer_expr_type(e, local_types));
-                            fsyms.push(self.encode_expr(e, local_env, local_types, guard, emit_checks)?);
-                        }
-                        for (i, (fsym, fty)) in fsyms.into_iter().zip(ftys).enumerate() {
-                            local_env.insert(format!("{name}#{i}"), fsym);
-                            local_types.insert(format!("{name}#{i}"), fty);
+                    let is_slice_var = matches!(local_types.get(name), Some(Type::Slice(_)));
+                    if Self::is_tuple_expr(value) {
+                        if let Some(fields) =
+                            self.encode_tuple_fields(value, local_env, local_types, guard, emit_checks)?
+                        {
+                            for (i, (fsym, fty)) in fields.into_iter().enumerate() {
+                                local_env.insert(format!("{name}#{i}"), fsym);
+                                local_types.insert(format!("{name}#{i}"), fty);
+                            }
                         }
                         let v_smt = self.fresh_sym("tup", &Type::I64);
                         local_env.insert(name.clone(), v_smt);
+                    } else if is_slice_var {
+                        if let Some((psmt, lsmt)) =
+                            self.encode_slice_fields(value, local_env, local_types, guard, emit_checks)?
+                        {
+                            local_env.insert(format!("{name}#0"), psmt);
+                            local_types.insert(format!("{name}#0"), Type::I64);
+                            local_env.insert(format!("{name}#1"), lsmt);
+                            local_types.insert(format!("{name}#1"), Type::I64);
+                            let v_smt = self.fresh_sym("slice", &Type::I64);
+                            local_env.insert(name.clone(), v_smt);
+                        } else {
+                            let v_smt =
+                                self.encode_expr(value, local_env, local_types, guard, emit_checks)?;
+                            local_env.insert(name.clone(), v_smt);
+                            let psmt = self.fresh_sym("slice_ptr", &Type::I64);
+                            let lsmt = self.fresh_sym("slice_len", &Type::I64);
+                            self.assumptions.push(format!("(assert (>= {psmt} 0))"));
+                            self.assumptions.push(format!("(assert (>= {lsmt} 0))"));
+                            local_env.insert(format!("{name}#0"), psmt);
+                            local_types.insert(format!("{name}#0"), Type::I64);
+                            local_env.insert(format!("{name}#1"), lsmt);
+                            local_types.insert(format!("{name}#1"), Type::I64);
+                        }
                     } else {
                         let v_smt = self.encode_expr(value, local_env, local_types, guard, emit_checks)?;
                         local_env.insert(name.clone(), v_smt);
@@ -655,7 +977,8 @@ where
                     }
                 }
                 Stmt::While { cond, body, .. } => {
-                    // Sound loop abstraction: havoc all variables mutated anywhere inside the loop (including inside if/block)
+                    // Sound loop abstraction: havoc all mutated variables & constant-addr memory cache
+                    self.known_mem.clear();
                     let mut mutated = BTreeSet::new();
                     collect_mutated_vars_expr(cond, &mut mutated);
                     collect_mutated_vars(body, &mut mutated);
@@ -671,6 +994,9 @@ where
                             .collect();
                         for fk in fkeys {
                             let ffresh = self.fresh_sym("loop_havoc_f", &Type::I64);
+                            if matches!(mty, Type::Slice(_)) {
+                                self.assumptions.push(format!("(assert (>= {ffresh} 0))"));
+                            }
                             local_env.insert(fk, ffresh);
                         }
                     }
@@ -686,6 +1012,7 @@ where
                         &body_guard,
                         emit_checks,
                     )?;
+                    self.known_mem.clear();
                 }
                 Stmt::Expr(e) => {
                     let _ = self.encode_expr(e, local_env, local_types, guard, emit_checks)?;
@@ -708,7 +1035,18 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
-        | Expr::TupleField { expr: inner, .. } => collect_mutated_vars_expr(inner, out),
+        | Expr::TupleField { expr: inner, .. }
+        | Expr::SlicePtr(inner)
+        | Expr::SliceLen(inner) => collect_mutated_vars_expr(inner, out),
+        Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
+            collect_mutated_vars_expr(ptr, out);
+            collect_mutated_vars_expr(len, out);
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            collect_mutated_vars_expr(lo, out);
+            collect_mutated_vars_expr(hi, out);
+            collect_mutated_vars_expr(len, out);
+        }
         Expr::Binary { lhs, rhs, .. } => {
             collect_mutated_vars_expr(lhs, out);
             collect_mutated_vars_expr(rhs, out);
@@ -803,6 +1141,17 @@ where
                 base_env.insert(format!("{cname}#{fi}"), fsym);
                 base_types.insert(format!("{cname}#{fi}"), fty.clone());
             }
+        } else if matches!(p.ty, Type::Slice(_)) {
+            let psym = format!("p{i}_f0");
+            let lsym = format!("p{i}_f1");
+            param_decls.push(format!("(declare-const {psym} Int)"));
+            param_decls.push(format!("(declare-const {lsym} Int)"));
+            param_decls.push(format!("(assert (>= {psym} 0))"));
+            param_decls.push(format!("(assert (>= {lsym} 0))"));
+            base_env.insert(format!("{cname}#0"), psym);
+            base_types.insert(format!("{cname}#0"), Type::I64);
+            base_env.insert(format!("{cname}#1"), lsym);
+            base_types.insert(format!("{cname}#1"), Type::I64);
         }
     }
 
@@ -1004,6 +1353,14 @@ fn build_violation_diagnostic(
             format!("Ensure the stored value is provably in [{lo}..={hi}] (e.g. via 'clamp_i64(v, {lo}, {hi})' or an 'if' guard)"),
         )
         .with_counterexample(cex),
+        ObligationKind::SliceBounds { msg } => InfimumDiagnostic::new(
+            "E056_SLICE_OUT_OF_BOUNDS",
+            "verify",
+            format!("Slice/vec bounds check failed in function '{fn_name}': {msg}"),
+            Span::zero(),
+            "Guard the index/range/length with an 'if' check or iterate with 'for i in 0..s.len max N'",
+        )
+        .with_counterexample(cex),
     }
 }
 
@@ -1037,7 +1394,7 @@ fn smt_sort(ty: &Type) -> &'static str {
         Type::Bool | Type::Unit => "Bool",
         Type::Str => "String",
         Type::Secret(inner) => smt_sort(inner),
-        Type::Tuple(_) => "Int",
+        Type::Tuple(_) | Type::Slice(_) => "Int",
     }
 }
 

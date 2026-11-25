@@ -908,6 +908,7 @@ fn type_has_secret(ty: &Type) -> bool {
     match ty {
         Type::Secret(_) => true,
         Type::Tuple(ts) => ts.iter().any(type_has_secret),
+        Type::Slice(inner) => type_has_secret(inner),
         Type::I64 | Type::Fixed | Type::Bool | Type::Str | Type::Unit => false,
     }
 }
@@ -945,7 +946,16 @@ fn expr_uses_secret(e: &Expr) -> bool {
         Expr::Call { args, .. } | Expr::Perform { args, .. } => args.iter().any(expr_uses_secret),
         Expr::Block { stmts, tail } => stmts.iter().any(stmt_uses_secret) || expr_uses_secret(tail),
         Expr::TupleLit(elems) => elems.iter().any(expr_uses_secret),
-        Expr::TupleField { expr, .. } => expr_uses_secret(expr),
+        Expr::TupleField { expr, .. } | Expr::SlicePtr(expr) | Expr::SliceLen(expr) => {
+            expr_uses_secret(expr)
+        }
+        Expr::SliceLit { ptr, len, elem_ty } => {
+            type_has_secret(elem_ty) || expr_uses_secret(ptr) || expr_uses_secret(len)
+        }
+        Expr::BoundsCheck { index, len, .. } => expr_uses_secret(index) || expr_uses_secret(len),
+        Expr::RangeCheck { lo, hi, len } => {
+            expr_uses_secret(lo) || expr_uses_secret(hi) || expr_uses_secret(len)
+        }
         Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::StrLit(_) | Expr::UnitLit | Expr::Var(_) => {
             false
         }
@@ -988,7 +998,18 @@ fn collect_named_calls(expr: &Expr, self_name: &str, out: &mut BTreeSet<String>)
         | Expr::MemLoad { index: inner, .. }
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
-        | Expr::TupleField { expr: inner, .. } => collect_named_calls(inner, self_name, out),
+        | Expr::TupleField { expr: inner, .. }
+        | Expr::SlicePtr(inner)
+        | Expr::SliceLen(inner) => collect_named_calls(inner, self_name, out),
+        Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
+            collect_named_calls(ptr, self_name, out);
+            collect_named_calls(len, self_name, out);
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            collect_named_calls(lo, self_name, out);
+            collect_named_calls(hi, self_name, out);
+            collect_named_calls(len, self_name, out);
+        }
         Expr::TupleLit(elems) => {
             for e in elems {
                 collect_named_calls(e, self_name, out);

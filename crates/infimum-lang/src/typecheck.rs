@@ -57,6 +57,34 @@ where
     F: Fn(&str) -> Result<CanonicalNode, InfimumDiagnostic>,
 {
     let f = &canon_node.ast;
+    if f.exported {
+        for p in &f.params {
+            if matches!(p.ty, Type::Slice(_)) {
+                return Err(InfimumDiagnostic::new(
+                    "E082_NON_SCALAR_EXPORT",
+                    "typecheck",
+                    format!(
+                        "Exported function '{}' cannot take slice parameter '{}: {}'",
+                        raw_name, p.name, p.ty
+                    ),
+                    Span::zero(),
+                    "Pass scalar '(ptr: i64, len: i64)' across the Wasm export boundary and wrap with 'slice_i64(ptr, len)' inside",
+                ));
+            }
+        }
+        if matches!(f.ret_type, Type::Slice(_)) {
+            return Err(InfimumDiagnostic::new(
+                "E082_NON_SCALAR_EXPORT",
+                "typecheck",
+                format!(
+                    "Exported function '{}' cannot return slice type '{}'",
+                    raw_name, f.ret_type
+                ),
+                Span::zero(),
+                "Return a scalar i64/bool/unit from 'export fn' and use slices internally",
+            ));
+        }
+    }
     let mut env = TypeEnv::from_fn(f);
     let mut sinks = Vec::new();
 
@@ -788,6 +816,95 @@ where
                 )),
             }
         }
+        Expr::SliceLit { ptr, len, elem_ty } => {
+            if type_contains_secret(elem_ty) {
+                return Err(InfimumDiagnostic::new(
+                    "E062_SECRET_IN_SLICE",
+                    "typecheck",
+                    format!("Slice element type '{elem_ty}' cannot contain Secret<T> in '{fn_name}'"),
+                    Span::zero(),
+                    "Store only non-secret scalars or structs in linear-memory slices",
+                ));
+            }
+            let ptr_ty = check_expr(ptr, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if ptr_ty != Type::I64 {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Slice ptr must be 'i64', found '{ptr_ty}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Pass an i64 word address as slice ptr",
+                ));
+            }
+            let len_ty = check_expr(len, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if len_ty != Type::I64 {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Slice len must be 'i64', found '{len_ty}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Pass an i64 element count as slice len",
+                ));
+            }
+            Ok(Type::Slice(Box::new(elem_ty.clone())))
+        }
+        Expr::SlicePtr(inner) => {
+            let ty = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if matches!(ty, Type::Slice(_)) {
+                Ok(Type::I64)
+            } else {
+                Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'.ptr' requires a slice type '[T]', found '{ty}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Access '.ptr' only on slice values",
+                ))
+            }
+        }
+        Expr::SliceLen(inner) => {
+            let ty = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if matches!(ty, Type::Slice(_)) {
+                Ok(Type::I64)
+            } else {
+                Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'.len' requires a slice type '[T]', found '{ty}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Access '.len' only on slice values",
+                ))
+            }
+        }
+        Expr::BoundsCheck { index, len, .. } => {
+            let it = check_expr(index, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            let lt = check_expr(len, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if it != Type::I64 || lt != Type::I64 {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Slice index and length must be 'i64', found '{it}' and '{lt}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Use i64 expressions for slice indexing",
+                ));
+            }
+            Ok(Type::I64)
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            let lot = check_expr(lo, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            let hit = check_expr(hi, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            let lent = check_expr(len, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if lot != Type::I64 || hit != Type::I64 || lent != Type::I64 {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Slice range bounds must be 'i64', found '{lot}', '{hit}', '{lent}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Use i64 expressions for slice ranges [lo..hi]",
+                ));
+            }
+            Ok(Type::I64)
+        }
     }
 }
 
@@ -1006,6 +1123,7 @@ pub fn type_contains_secret(ty: &Type) -> bool {
     match ty {
         Type::Secret(_) => true,
         Type::Tuple(ts) => ts.iter().any(type_contains_secret),
+        Type::Slice(inner) => type_contains_secret(inner),
         Type::I64 | Type::Fixed | Type::Bool | Type::Str | Type::Unit => false,
     }
 }

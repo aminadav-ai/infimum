@@ -334,6 +334,7 @@ fn rust_type(ty: &Type) -> String {
             let parts: Vec<String> = ts.iter().map(rust_type).collect();
             format!("({})", parts.join(", "))
         }
+        Type::Slice(_) => "(i64, i64)".to_string(),
     }
 }
 
@@ -521,6 +522,29 @@ fn emit_wasm_expr(expr: &Expr, self_hash: &str, short_hash: &str, out: &mut Stri
             emit_wasm_expr(expr, self_hash, short_hash, out);
             out.push_str(&format!(").{index}"));
         }
+        Expr::SliceLit { ptr, len, .. } => {
+            out.push('(');
+            emit_wasm_expr(ptr, self_hash, short_hash, out);
+            out.push_str(", ");
+            emit_wasm_expr(len, self_hash, short_hash, out);
+            out.push(')');
+        }
+        Expr::SlicePtr(inner) => {
+            out.push('(');
+            emit_wasm_expr(inner, self_hash, short_hash, out);
+            out.push_str(").0");
+        }
+        Expr::SliceLen(inner) => {
+            out.push('(');
+            emit_wasm_expr(inner, self_hash, short_hash, out);
+            out.push_str(").1");
+        }
+        Expr::BoundsCheck { index, .. } => {
+            emit_wasm_expr(index, self_hash, short_hash, out);
+        }
+        Expr::RangeCheck { lo, .. } => {
+            emit_wasm_expr(lo, self_hash, short_hash, out);
+        }
     }
 }
 
@@ -613,7 +637,7 @@ fn emit_wasm_parse_val(src_expr: &str, ty: &Type, arg_num: usize, out: &mut Stri
             emit_wasm_parse_val(src_expr, inner, arg_num, out);
             out.push(')');
         }
-        Type::Tuple(_) => out.push_str("()"),
+        Type::Tuple(_) | Type::Slice(_) => out.push_str("()"),
     }
 }
 

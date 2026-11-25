@@ -86,6 +86,7 @@ pub(super) struct StructDef {
 pub(super) struct LayoutFieldMeta {
     pub(super) offset: i64,
     pub(super) is_array: bool,
+    pub(super) is_vec: bool,
     pub(super) is_fixed: bool,
     pub(super) struct_type: Option<String>,
     pub(super) stride: i64,
@@ -99,6 +100,7 @@ pub(super) struct RawLayoutField {
     pub(super) struct_type: Option<String>,
     pub(super) len_expr: Option<RawExpr>,
     pub(super) is_array: bool,
+    pub(super) is_vec: bool,
     pub(super) is_fixed: bool,
     pub(super) at_expr: Option<RawExpr>,
     pub(super) inv: Option<RawInv>,
@@ -146,6 +148,17 @@ pub(crate) enum RawType {
     },
     Secret(Box<RawType>),
     Tuple(Vec<RawType>),
+    Slice(Box<RawType>),
+}
+
+#[derive(Clone)]
+pub(crate) struct RawSliceStore {
+    pub(super) base: RawExpr,
+    pub(super) index: RawExpr,
+    pub(super) subfield: Option<String>,
+    pub(super) op: Option<BinOp>,
+    pub(super) value: RawExpr,
+    pub(super) span: Span,
 }
 
 #[derive(Clone)]
@@ -175,6 +188,7 @@ pub(crate) enum RawStmt {
         value: RawExpr,
         span: Span,
     },
+    SliceStore(Box<RawSliceStore>),
     While {
         cond: RawExpr,
         max_iters: RawExpr,
@@ -218,6 +232,22 @@ pub(crate) struct RawStructLit {
     pub(super) module: Option<String>,
     pub(super) name: String,
     pub(super) fields: Vec<(String, RawExpr, Span)>,
+    pub(super) span: Span,
+}
+
+#[derive(Clone)]
+pub(crate) struct RawSliceIndex {
+    pub(super) base: RawExpr,
+    pub(super) index: RawExpr,
+    pub(super) subfield: Option<String>,
+    pub(super) span: Span,
+}
+
+#[derive(Clone)]
+pub(crate) struct RawSliceRange {
+    pub(super) base: RawExpr,
+    pub(super) lo: Option<RawExpr>,
+    pub(super) hi: Option<RawExpr>,
     pub(super) span: Span,
 }
 
@@ -291,6 +321,8 @@ pub(crate) enum RawExpr {
         field: String,
         span: Span,
     },
+    SliceIndex(Box<RawSliceIndex>),
+    SliceRange(Box<RawSliceRange>),
 }
 
 pub(super) struct RawFnDef {

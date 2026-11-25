@@ -10,12 +10,21 @@ use crate::ast::{
 use crate::diag::{InfimumDiagnostic, Span};
 
 use super::raw_ast::{
-    RawExpr, RawFnDef, RawItem, RawLayoutLoad, RawMatchArm, RawMatchPattern, RawModCall, RawStmt,
-    LayoutFieldMeta, RawStructLit, RawType, RawUnit, StructDef, UnitId,
+    LayoutFieldMeta, RawExpr, RawFnDef, RawItem, RawLayoutLoad, RawMatchArm, RawMatchPattern,
+    RawModCall, RawSliceIndex, RawSliceRange, RawSliceStore, RawStmt, RawStructLit, RawType,
+    RawUnit, StructDef, UnitId,
 };
 use crate::lexer::tokenize;
 use super::scope::{SymRef, UnitTables, unit_canonical_name};
 use super::syntax::Parser;
+
+#[derive(Clone)]
+pub(super) struct SliceElemMeta {
+    pub(super) elem_ty: Type,
+    pub(super) struct_canon: Option<String>,
+    pub(super) stride: i64,
+    pub(super) is_fixed: bool,
+}
 
 pub(super) struct ModuleResolver {
     pub(super) tables: Vec<UnitTables>,
@@ -36,6 +45,8 @@ pub(super) struct ModuleResolver {
     pub(super) loop_stack: Vec<LoopCtrlCtx>,
     pub(super) struct_vars: Vec<BTreeMap<String, String>>,
     pub(super) fn_ret_struct: BTreeMap<String, String>,
+    pub(super) slice_vars: Vec<BTreeMap<String, SliceElemMeta>>,
+    pub(super) fn_ret_slice: BTreeMap<String, SliceElemMeta>,
     pub(super) forma_subst: BTreeMap<String, Expr>,
 }
 
@@ -86,7 +97,8 @@ pub(super) fn stmt_has_loop_ctrl(s: &RawStmt) -> (bool, bool) {
         | RawStmt::Let { .. }
         | RawStmt::LetTuple { .. }
         | RawStmt::Assign { .. }
-        | RawStmt::LayoutStore { .. } => (false, false),
+        | RawStmt::LayoutStore { .. }
+        | RawStmt::SliceStore(_) => (false, false),
     }
 }
 
@@ -128,6 +140,8 @@ impl ModuleResolver {
             loop_stack: Vec::new(),
             struct_vars: Vec::new(),
             fn_ret_struct: BTreeMap::new(),
+            slice_vars: Vec::new(),
+            fn_ret_slice: BTreeMap::new(),
             forma_subst: BTreeMap::new(),
         }
     }
@@ -312,10 +326,63 @@ impl ModuleResolver {
         Type::Tuple(elems)
     }
 
+    pub(super) fn resolve_slice_elem(&self, elem: &RawType) -> Result<SliceElemMeta, InfimumDiagnostic> {
+        match elem {
+            RawType::Builtin(Type::I64) => Ok(SliceElemMeta {
+                elem_ty: Type::I64,
+                struct_canon: None,
+                stride: 1,
+                is_fixed: false,
+            }),
+            RawType::Builtin(Type::Fixed) => Ok(SliceElemMeta {
+                elem_ty: Type::Fixed,
+                struct_canon: None,
+                stride: 1,
+                is_fixed: true,
+            }),
+            RawType::Named { module, name, span } => {
+                let scanon = self.resolve_struct_canon(module.as_deref(), name, *span)?;
+                let sdef = self.structs.get(&scanon).ok_or_else(|| {
+                    InfimumDiagnostic::new(
+                        "E061_UNKNOWN_STRUCT",
+                        "parse",
+                        format!("Unknown struct '{name}' in slice type"),
+                        *span,
+                        "Declare the struct before using it in '[StructName]'",
+                    )
+                })?;
+                Ok(SliceElemMeta {
+                    elem_ty: self.struct_tuple_type(sdef),
+                    struct_canon: Some(scanon),
+                    stride: sdef.size,
+                    is_fixed: false,
+                })
+            }
+            RawType::Secret(_) => Err(InfimumDiagnostic::new(
+                "E062_SECRET_IN_SLICE",
+                "parse",
+                "Secret<T> cannot be stored inside a linear-memory slice '[T]'",
+                Span::zero(),
+                "Slices support 'i64', 'word', 'fixed', and value 'struct' types",
+            )),
+            _ => Err(InfimumDiagnostic::new(
+                "E014_UNKNOWN_TYPE",
+                "parse",
+                "Unsupported slice element type",
+                Span::zero(),
+                "Slice elements must be 'i64', 'word', 'fixed', or a value 'struct' (e.g. '[i64]', '[fixed]', '[Drone]')",
+            )),
+        }
+    }
+
     fn resolve_raw_type(&self, rt: &RawType) -> Result<Type, InfimumDiagnostic> {
         match rt {
             RawType::Builtin(t) => Ok(t.clone()),
             RawType::Secret(inner) => Ok(Type::Secret(Box::new(self.resolve_raw_type(inner)?))),
+            RawType::Slice(inner) => {
+                let meta = self.resolve_slice_elem(inner)?;
+                Ok(Type::Slice(Box::new(meta.elem_ty)))
+            }
             RawType::Tuple(elems) => {
                 let mut out = Vec::with_capacity(elems.len());
                 for e in elems {
@@ -338,7 +405,7 @@ impl ModuleResolver {
                     "parse",
                     format!("Unknown type '{disp}'"),
                     *span,
-                    "Use a built-in type (i64, fixed, bool, str, unit, Secret<T>, (T1, T2)) or a visible 'struct' name",
+                    "Use a built-in type (i64, fixed, bool, str, unit, Secret<T>, (T1, T2), [T]) or a visible 'struct' name",
                 ))
             }
         }
@@ -353,6 +420,193 @@ impl ModuleResolver {
         None
     }
 
+    fn lookup_slice_var(&self, name: &str) -> Option<SliceElemMeta> {
+        for scope in self.slice_vars.iter().rev() {
+            if let Some(meta) = scope.get(name) {
+                return Some(meta.clone());
+            }
+        }
+        None
+    }
+
+    fn slice_meta_from_layout_field(&self, meta: &LayoutFieldMeta) -> Option<SliceElemMeta> {
+        if let Some(ref sc) = meta.struct_type {
+            let sdef = self.structs.get(sc)?;
+            Some(SliceElemMeta {
+                elem_ty: self.struct_tuple_type(sdef),
+                struct_canon: Some(sc.clone()),
+                stride: sdef.size,
+                is_fixed: false,
+            })
+        } else if meta.is_fixed {
+            Some(SliceElemMeta {
+                elem_ty: Type::Fixed,
+                struct_canon: None,
+                stride: 1,
+                is_fixed: true,
+            })
+        } else {
+            Some(SliceElemMeta {
+                elem_ty: Type::I64,
+                struct_canon: None,
+                stride: 1,
+                is_fixed: false,
+            })
+        }
+    }
+
+    fn infer_raw_expr_slice(&self, expr: &RawExpr) -> Option<SliceElemMeta> {
+        match expr {
+            RawExpr::Var(v) => self.lookup_slice_var(v),
+            RawExpr::SliceRange(sr) => {
+                if let RawExpr::LayoutLoad(ll) = &sr.base {
+                    if ll.index.is_none() && ll.subfield.is_none() {
+                        if let Some(sym) = self
+                            .lookup_layout_sym(ll.module.as_deref(), &ll.layout, ll.span)
+                            .ok()
+                            .flatten()
+                        {
+                            if let Some(meta) = self
+                                .layout_field_meta
+                                .get(&(sym.canonical_name.clone(), ll.field.clone()))
+                            {
+                                if meta.is_array || meta.is_vec {
+                                    return self.slice_meta_from_layout_field(meta);
+                                }
+                            }
+                        }
+                    }
+                }
+                self.infer_raw_expr_slice(&sr.base)
+            }
+            RawExpr::Call {
+                target: TargetRef::Named(fname),
+                ..
+            } => match fname.as_str() {
+                "slice_i64" | "str_as_slice" => Some(SliceElemMeta {
+                    elem_ty: Type::I64,
+                    struct_canon: None,
+                    stride: 1,
+                    is_fixed: false,
+                }),
+                "slice_fixed" => Some(SliceElemMeta {
+                    elem_ty: Type::Fixed,
+                    struct_canon: None,
+                    stride: 1,
+                    is_fixed: true,
+                }),
+                _ => {
+                    let canon = self
+                        .lookup_fn_sym(None, fname, Span::zero())
+                        .ok()
+                        .flatten()
+                        .map(|s| s.canonical_name.as_str())
+                        .unwrap_or(fname.as_str());
+                    self.fn_ret_slice.get(canon).cloned()
+                }
+            },
+            RawExpr::ModCall(mc) => {
+                let sym = self
+                    .lookup_fn_sym(Some(&mc.module), &mc.func, mc.span)
+                    .ok()
+                    .flatten()?;
+                self.fn_ret_slice.get(&sym.canonical_name).cloned()
+            }
+            RawExpr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => self
+                .infer_raw_expr_slice(then_branch)
+                .or_else(|| self.infer_raw_expr_slice(else_branch)),
+            RawExpr::Block { tail, .. } => self.infer_raw_expr_slice(tail),
+            _ => None,
+        }
+    }
+
+    fn emit_load_struct_at(&mut self, addr_expr: Expr, sdef: &StructDef) -> Expr {
+        let base_var = format!("__ifm_sa_{}", self.addr_counter);
+        self.addr_counter += 1;
+        let mut elems = Vec::with_capacity(sdef.field_names.len());
+        for fname in &sdef.field_names {
+            let foff = sdef.fields[fname];
+            let finv = sdef.field_invs.get(fname).copied();
+            let ffixed = sdef.field_fixed.contains(fname);
+            let faddr = if foff == 0 {
+                Expr::Var(base_var.clone())
+            } else {
+                Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var(base_var.clone())),
+                    rhs: Box::new(Expr::IntLit(foff)),
+                }
+            };
+            elems.push(Expr::MemLoad {
+                index: Box::new(faddr),
+                inv: finv,
+                fixed_ty: ffixed,
+            });
+        }
+        Expr::Block {
+            stmts: vec![Stmt::Let {
+                name: base_var,
+                mutable: false,
+                ty: Some(Type::I64),
+                value: addr_expr,
+            }],
+            tail: Box::new(Expr::TupleLit(elems)),
+        }
+    }
+
+    fn emit_store_struct_at(
+        &mut self,
+        addr_expr: Expr,
+        val_expr: Expr,
+        sdef: &StructDef,
+    ) -> Vec<Stmt> {
+        let sv_tmp = format!("__ifm_sv_{}", self.addr_counter);
+        self.addr_counter += 1;
+        let base_var = format!("__ifm_sa_{}", self.addr_counter);
+        self.addr_counter += 1;
+        let mut stmts = Vec::with_capacity(2 + sdef.field_names.len());
+        stmts.push(Stmt::Let {
+            name: sv_tmp.clone(),
+            mutable: false,
+            ty: Some(self.struct_tuple_type(sdef)),
+            value: val_expr,
+        });
+        stmts.push(Stmt::Let {
+            name: base_var.clone(),
+            mutable: false,
+            ty: Some(Type::I64),
+            value: addr_expr,
+        });
+        for (fidx, fname) in sdef.field_names.iter().enumerate() {
+            let foff = sdef.fields[fname];
+            let finv = sdef.field_invs.get(fname).copied();
+            let ffixed = sdef.field_fixed.contains(fname);
+            let faddr = if foff == 0 {
+                Expr::Var(base_var.clone())
+            } else {
+                Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::Var(base_var.clone())),
+                    rhs: Box::new(Expr::IntLit(foff)),
+                }
+            };
+            stmts.push(Stmt::Expr(Expr::MemStore {
+                index: Box::new(faddr),
+                value: Box::new(Expr::TupleField {
+                    expr: Box::new(Expr::Var(sv_tmp.clone())),
+                    index: fidx,
+                }),
+                inv: finv,
+                fixed_ty: ffixed,
+            }));
+        }
+        stmts
+    }
+
     fn infer_raw_expr_struct(&self, expr: &RawExpr) -> Option<String> {
         match expr {
             RawExpr::StructLit(sl) => self
@@ -361,6 +615,9 @@ impl ModuleResolver {
                 .flatten()
                 .map(|s| s.canonical_name.clone()),
             RawExpr::Var(v) => self.lookup_struct_var(v),
+            RawExpr::SliceIndex(si) if si.subfield.is_none() => self
+                .infer_raw_expr_slice(&si.base)
+                .and_then(|m| m.struct_canon),
             RawExpr::Call {
                 target: TargetRef::Named(fname),
                 ..
@@ -1259,6 +1516,7 @@ impl ModuleResolver {
                         LayoutFieldMeta {
                             offset,
                             is_array: rf.is_array,
+                            is_vec: rf.is_vec,
                             is_fixed: rf.is_fixed,
                             struct_type: resolved_struct_type,
                             stride,
@@ -1271,6 +1529,9 @@ impl ModuleResolver {
                         offset,
                         len,
                         is_array: rf.is_array,
+                        is_vec: rf.is_vec,
+                        cap: count,
+                        stride,
                     });
                 }
                 if auto_placed && cursor > self.auto_layout_cursor {
@@ -1369,11 +1630,15 @@ impl ModuleResolver {
     pub(super) fn lower_fn(&mut self, raw: RawFnDef) -> Result<FnDef, InfimumDiagnostic> {
         let mut params = Vec::with_capacity(raw.params.len());
         let mut init_struct_vars = BTreeMap::new();
+        let mut init_slice_vars = BTreeMap::new();
         for (pname, raw_ty) in &raw.params {
             let resolved_ty = self.resolve_raw_type(raw_ty)?;
             if let RawType::Named { module, name, span } = raw_ty {
                 let scanon = self.resolve_struct_canon(module.as_deref(), name, *span)?;
                 init_struct_vars.insert(pname.clone(), scanon);
+            } else if let RawType::Slice(elem) = raw_ty {
+                let smeta = self.resolve_slice_elem(elem)?;
+                init_slice_vars.insert(pname.clone(), smeta);
             }
             params.push(Param {
                 name: pname.clone(),
@@ -1384,8 +1649,12 @@ impl ModuleResolver {
         if let RawType::Named { module, name, span } = &raw.ret_type {
             let scanon = self.resolve_struct_canon(module.as_deref(), name, *span)?;
             init_struct_vars.insert("result".to_string(), scanon);
+        } else if let RawType::Slice(elem) = &raw.ret_type {
+            let smeta = self.resolve_slice_elem(elem)?;
+            init_slice_vars.insert("result".to_string(), smeta);
         }
         self.struct_vars.push(init_struct_vars);
+        self.slice_vars.push(init_slice_vars);
 
         let mut locals: Vec<BTreeSet<String>> = vec![params.iter().map(|p| p.name.clone()).collect()];
 
@@ -1399,6 +1668,7 @@ impl ModuleResolver {
         }
         let body = self.lower_expr(&raw.body, &mut locals)?;
         self.struct_vars.pop();
+        self.slice_vars.pop();
 
         Ok(FnDef {
             name: raw.name,
@@ -1913,6 +2183,10 @@ impl ModuleResolver {
                         }
                         _ => self.infer_raw_expr_struct(value),
                     };
+                    let inferred_slice = match ty {
+                        Some(RawType::Slice(elem)) => Some(self.resolve_slice_elem(elem)?),
+                        _ => self.infer_raw_expr_slice(value),
+                    };
                     let v = self.lower_expr(value, locals)?;
                     if let Some(top) = locals.last_mut() {
                         top.insert(name.clone());
@@ -1920,6 +2194,11 @@ impl ModuleResolver {
                     if let Some(sname) = inferred_struct {
                         if let Some(sv_top) = self.struct_vars.last_mut() {
                             sv_top.insert(name.clone(), sname);
+                        }
+                    }
+                    if let Some(smeta) = inferred_slice {
+                        if let Some(sl_top) = self.slice_vars.last_mut() {
+                            sl_top.insert(name.clone(), smeta);
                         }
                     }
                     out.push(Stmt::Let {
@@ -2164,6 +2443,178 @@ impl ModuleResolver {
                         }
                     }
                 }
+                RawStmt::SliceStore(ss) => {
+                    let RawSliceStore {
+                        base,
+                        index,
+                        subfield,
+                        op,
+                        value,
+                        span,
+                    } = ss.as_ref();
+                    let smeta = self.infer_raw_expr_slice(base).ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E060_TYPE_MISMATCH",
+                            "parse",
+                            "Cannot index-assign into non-slice expression",
+                            *span,
+                            "Index assignment 's[i] = val' requires a slice value of type '[T]'",
+                        )
+                    })?;
+                    let base_e = self.lower_expr(base, locals)?;
+                    let idx_e = self.lower_expr(index, locals)?;
+                    let sb_var = format!("__ifm_sb_{}", self.addr_counter);
+                    self.addr_counter += 1;
+                    let si_var = format!("__ifm_si_{}", self.addr_counter);
+                    self.addr_counter += 1;
+                    out.push(Stmt::Let {
+                        name: sb_var.clone(),
+                        mutable: false,
+                        ty: Some(Type::Slice(Box::new(smeta.elem_ty.clone()))),
+                        value: base_e,
+                    });
+                    out.push(Stmt::Let {
+                        name: si_var.clone(),
+                        mutable: false,
+                        ty: Some(Type::I64),
+                        value: Expr::BoundsCheck {
+                            index: Box::new(idx_e),
+                            len: Box::new(Expr::SliceLen(Box::new(Expr::Var(sb_var.clone())))),
+                            inclusive_hi: false,
+                        },
+                    });
+                    let elem_offset = if smeta.stride == 1 {
+                        Expr::Var(si_var)
+                    } else {
+                        Expr::Binary {
+                            op: BinOp::Mul,
+                            lhs: Box::new(Expr::Var(si_var)),
+                            rhs: Box::new(Expr::IntLit(smeta.stride)),
+                        }
+                    };
+                    let elem_addr = Expr::Binary {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::SlicePtr(Box::new(Expr::Var(sb_var)))),
+                        rhs: Box::new(elem_offset),
+                    };
+
+                    if let Some(sf) = subfield {
+                        let scanon = smeta.struct_canon.as_ref().ok_or_else(|| {
+                            InfimumDiagnostic::new(
+                                "E063_UNKNOWN_FIELD",
+                                "parse",
+                                format!("Cannot access subfield '.{sf}' on scalar slice element"),
+                                *span,
+                                "Use 's[i] = val' for scalar slices '[i64]' / '[fixed]'",
+                            )
+                        })?;
+                        let sdef = self.structs.get(scanon).cloned().ok_or_else(|| {
+                            InfimumDiagnostic::new(
+                                "E061_UNKNOWN_STRUCT",
+                                "parse",
+                                format!("Unknown struct '{scanon}'"),
+                                *span,
+                                "Declare the struct before using it",
+                            )
+                        })?;
+                        let foff = *sdef.fields.get(sf).ok_or_else(|| {
+                            InfimumDiagnostic::new(
+                                "E063_UNKNOWN_FIELD",
+                                "parse",
+                                format!("Struct '{scanon}' has no field '{sf}'"),
+                                *span,
+                                format!("Available fields: {}", sdef.field_names.join(", ")),
+                            )
+                        })?;
+                        let finv = sdef.field_invs.get(sf).copied();
+                        let ffixed = sdef.field_fixed.contains(sf);
+                        let addr_var = format!("__ifm_sa_{}", self.addr_counter);
+                        self.addr_counter += 1;
+                        let faddr = if foff == 0 {
+                            elem_addr
+                        } else {
+                            Expr::Binary {
+                                op: BinOp::Add,
+                                lhs: Box::new(elem_addr),
+                                rhs: Box::new(Expr::IntLit(foff)),
+                            }
+                        };
+                        out.push(Stmt::Let {
+                            name: addr_var.clone(),
+                            mutable: false,
+                            ty: Some(Type::I64),
+                            value: faddr,
+                        });
+                        let rhs = self.lower_expr(value, locals)?;
+                        let final_val = match op {
+                            None => rhs,
+                            Some(binop) => Expr::Binary {
+                                op: *binop,
+                                lhs: Box::new(Expr::MemLoad {
+                                    index: Box::new(Expr::Var(addr_var.clone())),
+                                    inv: finv,
+                                    fixed_ty: ffixed,
+                                }),
+                                rhs: Box::new(rhs),
+                            },
+                        };
+                        out.push(Stmt::Expr(Expr::MemStore {
+                            index: Box::new(Expr::Var(addr_var)),
+                            value: Box::new(final_val),
+                            inv: finv,
+                            fixed_ty: ffixed,
+                        }));
+                    } else if let Some(ref scanon) = smeta.struct_canon {
+                        if op.is_some() {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "parse",
+                                "Compound assignment (+=, -=, ...) is not supported on whole struct elements",
+                                *span,
+                                "Assign a whole struct with '=' or mutate an individual field like 's[i].hp += 1'",
+                            ));
+                        }
+                        let sdef = self.structs.get(scanon).cloned().ok_or_else(|| {
+                            InfimumDiagnostic::new(
+                                "E061_UNKNOWN_STRUCT",
+                                "parse",
+                                format!("Unknown struct '{scanon}'"),
+                                *span,
+                                "Declare the struct before using it",
+                            )
+                        })?;
+                        let rhs = self.lower_expr(value, locals)?;
+                        out.extend(self.emit_store_struct_at(elem_addr, rhs, &sdef));
+                    } else {
+                        let addr_var = format!("__ifm_sa_{}", self.addr_counter);
+                        self.addr_counter += 1;
+                        out.push(Stmt::Let {
+                            name: addr_var.clone(),
+                            mutable: false,
+                            ty: Some(Type::I64),
+                            value: elem_addr,
+                        });
+                        let rhs = self.lower_expr(value, locals)?;
+                        let final_val = match op {
+                            None => rhs,
+                            Some(binop) => Expr::Binary {
+                                op: *binop,
+                                lhs: Box::new(Expr::MemLoad {
+                                    index: Box::new(Expr::Var(addr_var.clone())),
+                                    inv: None,
+                                    fixed_ty: smeta.is_fixed,
+                                }),
+                                rhs: Box::new(rhs),
+                            },
+                        };
+                        out.push(Stmt::Expr(Expr::MemStore {
+                            index: Box::new(Expr::Var(addr_var)),
+                            value: Box::new(final_val),
+                            inv: None,
+                            fixed_ty: smeta.is_fixed,
+                        }));
+                    }
+                }
                 RawStmt::While {
                     cond,
                     max_iters,
@@ -2293,6 +2744,7 @@ impl ModuleResolver {
 
                     let lid = self.loop_counter;
                     self.loop_counter += 1;
+                    let start_var = format!("__ifm_fstart_{lid}");
                     let end_var = format!("__ifm_fend_{lid}");
                     let start_expr = self.lower_expr(start, locals)?;
                     let end_expr = self.lower_expr(end, locals)?;
@@ -2318,10 +2770,16 @@ impl ModuleResolver {
                     };
 
                     scope_stmts.push(Stmt::Let {
+                        name: start_var.clone(),
+                        mutable: false,
+                        ty: Some(Type::I64),
+                        value: start_expr,
+                    });
+                    scope_stmts.push(Stmt::Let {
                         name: var.clone(),
                         mutable: true,
                         ty: Some(Type::I64),
-                        value: start_expr,
+                        value: Expr::Var(start_var.clone()),
                     });
                     scope_stmts.push(Stmt::Let {
                         name: end_var.clone(),
@@ -2332,9 +2790,17 @@ impl ModuleResolver {
 
                     let cmp_op = if *inclusive { BinOp::Le } else { BinOp::Lt };
                     let range_cond = Expr::Binary {
-                        op: cmp_op,
-                        lhs: Box::new(Expr::Var(var.clone())),
-                        rhs: Box::new(Expr::Var(end_var)),
+                        op: BinOp::And,
+                        lhs: Box::new(Expr::Binary {
+                            op: BinOp::Ge,
+                            lhs: Box::new(Expr::Var(var.clone())),
+                            rhs: Box::new(Expr::Var(start_var)),
+                        }),
+                        rhs: Box::new(Expr::Binary {
+                            op: cmp_op,
+                            lhs: Box::new(Expr::Var(var.clone())),
+                            rhs: Box::new(Expr::Var(end_var)),
+                        }),
                     };
                     let while_cond = match &brk_var {
                         Some(bv) => Expr::Binary {
@@ -2509,8 +2975,21 @@ impl ModuleResolver {
                     subfield,
                     span,
                 } = ll.as_ref();
-                // Case A: Local value-struct field read (`v.x`)
+                // Case A: Local value-struct or slice property read (`v.x`, `s.len`, `s.ptr`)
                 if module.is_none() && index.is_none() && subfield.is_none() {
+                    if self.lookup_slice_var(layout).is_some() {
+                        return match field.as_str() {
+                            "len" => Ok(Expr::SliceLen(Box::new(Expr::Var(layout.clone())))),
+                            "ptr" => Ok(Expr::SlicePtr(Box::new(Expr::Var(layout.clone())))),
+                            _ => Err(InfimumDiagnostic::new(
+                                "E063_UNKNOWN_FIELD",
+                                "parse",
+                                format!("Slice '{layout}' has no property '.{field}'"),
+                                *span,
+                                "Supported slice properties are '.len' and '.ptr'",
+                            )),
+                        };
+                    }
                     if let Some(sname) = self.lookup_struct_var(layout) {
                         let sdef = self.structs.get(&sname).ok_or_else(|| {
                             InfimumDiagnostic::new(
@@ -2680,6 +3159,59 @@ impl ModuleResolver {
                 span,
             } => self.desugar_match(scrutinee, arms, *span, locals),
             RawExpr::Call { target, args, span } => {
+                if let TargetRef::Named(n) = target {
+                    if args.len() == 2 && (n == "slice_i64" || n == "slice_fixed") {
+                        let ptr_e = self.lower_expr(&args[0], locals)?;
+                        let len_e = self.lower_expr(&args[1], locals)?;
+                        let elem_ty = if n == "slice_fixed" {
+                            Type::Fixed
+                        } else {
+                            Type::I64
+                        };
+                        return Ok(Expr::SliceLit {
+                            ptr: Box::new(ptr_e),
+                            len: Box::new(len_e),
+                            elem_ty,
+                        });
+                    }
+                    if args.len() == 1 && n == "str_as_slice" {
+                        let s_e = self.lower_expr(&args[0], locals)?;
+                        let sp_var = format!("__ifm_strp_{}", self.addr_counter);
+                        self.addr_counter += 1;
+                        return Ok(Expr::Block {
+                            stmts: vec![
+                                Stmt::Expr(Expr::Perform {
+                                    effect: "Mem".to_string(),
+                                    op: "store_str".to_string(),
+                                    args: vec![Expr::IntLit(17), s_e],
+                                }),
+                                Stmt::Let {
+                                    name: sp_var.clone(),
+                                    mutable: false,
+                                    ty: Some(Type::I64),
+                                    value: Expr::MemLoad {
+                                        index: Box::new(Expr::IntLit(17)),
+                                        inv: Some((0, 16_777_216)),
+                                        fixed_ty: false,
+                                    },
+                                },
+                            ],
+                            tail: Box::new(Expr::SliceLit {
+                                ptr: Box::new(Expr::Binary {
+                                    op: BinOp::Add,
+                                    lhs: Box::new(Expr::Var(sp_var.clone())),
+                                    rhs: Box::new(Expr::IntLit(1)),
+                                }),
+                                len: Box::new(Expr::MemLoad {
+                                    index: Box::new(Expr::Var(sp_var)),
+                                    inv: Some((0, 16_777_216)),
+                                    fixed_ty: false,
+                                }),
+                                elem_ty: Type::I64,
+                            }),
+                        });
+                    }
+                }
                 if args.len() == 1 {
                     if let TargetRef::Named(n) = target {
                         let fixed_uop = match n.as_str() {
@@ -2838,8 +3370,10 @@ impl ModuleResolver {
             RawExpr::Block { stmts, tail } => {
                 locals.push(BTreeSet::new());
                 self.struct_vars.push(BTreeMap::new());
+                self.slice_vars.push(BTreeMap::new());
                 let lstmts = self.lower_stmts(stmts, locals)?;
                 let ltail = self.lower_expr(tail, locals)?;
+                self.slice_vars.pop();
                 self.struct_vars.pop();
                 locals.pop();
                 if lstmts.is_empty() {
@@ -2932,6 +3466,20 @@ impl ModuleResolver {
                 Ok(Expr::TupleLit(ordered))
             }
             RawExpr::FieldAccess { expr, field, span } => {
+                if self.infer_raw_expr_slice(expr).is_some() {
+                    let lowered = self.lower_expr(expr, locals)?;
+                    return match field.as_str() {
+                        "len" => Ok(Expr::SliceLen(Box::new(lowered))),
+                        "ptr" => Ok(Expr::SlicePtr(Box::new(lowered))),
+                        _ => Err(InfimumDiagnostic::new(
+                            "E063_UNKNOWN_FIELD",
+                            "parse",
+                            format!("Slice has no property '.{field}'"),
+                            *span,
+                            "Supported slice properties are '.len' and '.ptr'",
+                        )),
+                    };
+                }
                 let sname = self.infer_raw_expr_struct(expr).ok_or_else(|| {
                     InfimumDiagnostic::new(
                         "E063_UNKNOWN_FIELD",
@@ -2966,6 +3514,315 @@ impl ModuleResolver {
                 Ok(Expr::TupleField {
                     expr: Box::new(lowered),
                     index: fidx,
+                })
+            }
+            RawExpr::SliceIndex(si) => {
+                let RawSliceIndex {
+                    base,
+                    index,
+                    subfield,
+                    span,
+                } = si.as_ref();
+                let smeta = self.infer_raw_expr_slice(base).ok_or_else(|| {
+                    InfimumDiagnostic::new(
+                        "E060_TYPE_MISMATCH",
+                        "parse",
+                        "Cannot index into non-slice expression",
+                        *span,
+                        "Indexing 's[i]' requires a slice '[T]' or a layout array 'Layout.arr[i]'",
+                    )
+                })?;
+                let base_e = self.lower_expr(base, locals)?;
+                let idx_e = self.lower_expr(index, locals)?;
+                let sb_var = format!("__ifm_sb_{}", self.addr_counter);
+                self.addr_counter += 1;
+                let si_var = format!("__ifm_si_{}", self.addr_counter);
+                self.addr_counter += 1;
+                let pre_stmts = vec![
+                    Stmt::Let {
+                        name: sb_var.clone(),
+                        mutable: false,
+                        ty: Some(Type::Slice(Box::new(smeta.elem_ty.clone()))),
+                        value: base_e,
+                    },
+                    Stmt::Let {
+                        name: si_var.clone(),
+                        mutable: false,
+                        ty: Some(Type::I64),
+                        value: Expr::BoundsCheck {
+                            index: Box::new(idx_e),
+                            len: Box::new(Expr::SliceLen(Box::new(Expr::Var(sb_var.clone())))),
+                            inclusive_hi: false,
+                        },
+                    },
+                ];
+                let elem_offset = if smeta.stride == 1 {
+                    Expr::Var(si_var)
+                } else {
+                    Expr::Binary {
+                        op: BinOp::Mul,
+                        lhs: Box::new(Expr::Var(si_var)),
+                        rhs: Box::new(Expr::IntLit(smeta.stride)),
+                    }
+                };
+                let elem_addr = Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(Expr::SlicePtr(Box::new(Expr::Var(sb_var)))),
+                    rhs: Box::new(elem_offset),
+                };
+                let tail = if let Some(sf) = subfield {
+                    let scanon = smeta.struct_canon.as_ref().ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E063_UNKNOWN_FIELD",
+                            "parse",
+                            format!("Cannot access subfield '.{sf}' on scalar slice element"),
+                            *span,
+                            "Use 's[i]' directly for scalar slices '[i64]' / '[fixed]'",
+                        )
+                    })?;
+                    let sdef = self.structs.get(scanon).cloned().ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E061_UNKNOWN_STRUCT",
+                            "parse",
+                            format!("Unknown struct '{scanon}'"),
+                            *span,
+                            "Declare the struct before using it",
+                        )
+                    })?;
+                    let foff = *sdef.fields.get(sf).ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E063_UNKNOWN_FIELD",
+                            "parse",
+                            format!("Struct '{scanon}' has no field '{sf}'"),
+                            *span,
+                            format!("Available fields: {}", sdef.field_names.join(", ")),
+                        )
+                    })?;
+                    let finv = sdef.field_invs.get(sf).copied();
+                    let ffixed = sdef.field_fixed.contains(sf);
+                    let faddr = if foff == 0 {
+                        elem_addr
+                    } else {
+                        Expr::Binary {
+                            op: BinOp::Add,
+                            lhs: Box::new(elem_addr),
+                            rhs: Box::new(Expr::IntLit(foff)),
+                        }
+                    };
+                    Expr::MemLoad {
+                        index: Box::new(faddr),
+                        inv: finv,
+                        fixed_ty: ffixed,
+                    }
+                } else if let Some(ref scanon) = smeta.struct_canon {
+                    let sdef = self.structs.get(scanon).cloned().ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E061_UNKNOWN_STRUCT",
+                            "parse",
+                            format!("Unknown struct '{scanon}'"),
+                            *span,
+                            "Declare the struct before using it",
+                        )
+                    })?;
+                    self.emit_load_struct_at(elem_addr, &sdef)
+                } else {
+                    Expr::MemLoad {
+                        index: Box::new(elem_addr),
+                        inv: None,
+                        fixed_ty: smeta.is_fixed,
+                    }
+                };
+                Ok(Expr::Block {
+                    stmts: pre_stmts,
+                    tail: Box::new(tail),
+                })
+            }
+            RawExpr::SliceRange(sr) => {
+                let RawSliceRange { base, lo, hi, span } = sr.as_ref();
+                // Case 1: Slicing a layout array (`[m::]Layout.arr[lo..hi]` or `Layout.arr[..]`)
+                let mut pre_stmts: Vec<Stmt> = Vec::new();
+                let (base_ptr, base_len, smeta) = if let RawExpr::LayoutLoad(ll) = base {
+                    if ll.index.is_none() && ll.subfield.is_none() {
+                        if let Some(sym) = self.lookup_layout_sym(
+                            ll.module.as_deref(),
+                            &ll.layout,
+                            ll.span,
+                        )? {
+                            if let Some(meta) = self
+                                .layout_field_meta
+                                .get(&(sym.canonical_name.clone(), ll.field.clone()))
+                                .cloned()
+                            {
+                                if meta.is_array {
+                                    let smeta =
+                                        self.slice_meta_from_layout_field(&meta).ok_or_else(
+                                            || {
+                                                InfimumDiagnostic::new(
+                                                    "E061_UNKNOWN_STRUCT",
+                                                    "parse",
+                                                    format!("Unknown element struct on '{}.{}'", ll.layout, ll.field),
+                                                    *span,
+                                                    "Declare the struct before slicing its layout array",
+                                                )
+                                            },
+                                        )?;
+                                    (Expr::IntLit(meta.offset), Expr::IntLit(meta.count), smeta)
+                                } else {
+                                    return Err(InfimumDiagnostic::new(
+                                        "E061_LAYOUT_ARRAY_ACCESS",
+                                        "parse",
+                                        format!("Layout field '{}.{}' is not an array and cannot be sliced", ll.layout, ll.field),
+                                        *span,
+                                        "Slicing '[lo..hi]' / '[..]' is supported on layout arrays (words[N], fixed[N], Struct[N]) and slices",
+                                    ));
+                                }
+                            } else {
+                                return Err(InfimumDiagnostic::new(
+                                    "E061_UNKNOWN_LAYOUT_FIELD",
+                                    "parse",
+                                    format!("Unknown field '{}' on layout '{}'", ll.field, ll.layout),
+                                    *span,
+                                    "Check the field name in the layout declaration",
+                                ));
+                            }
+                        } else {
+                            // Not a layout: fall through to slice expression
+                            let smeta = self.infer_raw_expr_slice(base).ok_or_else(|| {
+                                InfimumDiagnostic::new(
+                                    "E060_TYPE_MISMATCH",
+                                    "parse",
+                                    "Cannot slice non-slice expression",
+                                    *span,
+                                    "Slicing '[lo..hi]' requires a layout array or slice '[T]'",
+                                )
+                            })?;
+                            let base_e = self.lower_expr(base, locals)?;
+                            let sb_var = format!("__ifm_sb_{}", self.addr_counter);
+                            self.addr_counter += 1;
+                            pre_stmts.push(Stmt::Let {
+                                name: sb_var.clone(),
+                                mutable: false,
+                                ty: Some(Type::Slice(Box::new(smeta.elem_ty.clone()))),
+                                value: base_e,
+                            });
+                            (
+                                Expr::SlicePtr(Box::new(Expr::Var(sb_var.clone()))),
+                                Expr::SliceLen(Box::new(Expr::Var(sb_var))),
+                                smeta,
+                            )
+                        }
+                    } else {
+                        return Err(InfimumDiagnostic::new(
+                            "E060_TYPE_MISMATCH",
+                            "parse",
+                            "Cannot slice an already-indexed layout element",
+                            *span,
+                            "Slice the array directly: e.g. 'Layout.arr[lo..hi]'",
+                        ));
+                    }
+                } else {
+                    let smeta = self.infer_raw_expr_slice(base).ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E060_TYPE_MISMATCH",
+                            "parse",
+                            "Cannot slice non-slice expression",
+                            *span,
+                            "Slicing '[lo..hi]' requires a layout array or slice '[T]'",
+                        )
+                    })?;
+                    let base_e = self.lower_expr(base, locals)?;
+                    let sb_var = format!("__ifm_sb_{}", self.addr_counter);
+                    self.addr_counter += 1;
+                    pre_stmts.push(Stmt::Let {
+                        name: sb_var.clone(),
+                        mutable: false,
+                        ty: Some(Type::Slice(Box::new(smeta.elem_ty.clone()))),
+                        value: base_e,
+                    });
+                    (
+                        Expr::SlicePtr(Box::new(Expr::Var(sb_var.clone()))),
+                        Expr::SliceLen(Box::new(Expr::Var(sb_var))),
+                        smeta,
+                    )
+                };
+
+                if lo.is_none() && hi.is_none() {
+                    let slit = Expr::SliceLit {
+                        ptr: Box::new(base_ptr),
+                        len: Box::new(base_len),
+                        elem_ty: smeta.elem_ty,
+                    };
+                    if pre_stmts.is_empty() {
+                        return Ok(slit);
+                    }
+                    return Ok(Expr::Block {
+                        stmts: pre_stmts,
+                        tail: Box::new(slit),
+                    });
+                }
+
+                let lo_e = match lo {
+                    Some(e) => self.lower_expr(e, locals)?,
+                    None => Expr::IntLit(0),
+                };
+                let hi_e = match hi {
+                    Some(e) => self.lower_expr(e, locals)?,
+                    None => base_len.clone(),
+                };
+                let lo_var = format!("__ifm_slo_{}", self.addr_counter);
+                self.addr_counter += 1;
+                let hi_var = format!("__ifm_shi_{}", self.addr_counter);
+                self.addr_counter += 1;
+                let chk_var = format!("__ifm_schk_{}", self.addr_counter);
+                self.addr_counter += 1;
+                pre_stmts.push(Stmt::Let {
+                    name: lo_var.clone(),
+                    mutable: false,
+                    ty: Some(Type::I64),
+                    value: lo_e,
+                });
+                pre_stmts.push(Stmt::Let {
+                    name: hi_var.clone(),
+                    mutable: false,
+                    ty: Some(Type::I64),
+                    value: hi_e,
+                });
+                pre_stmts.push(Stmt::Let {
+                    name: chk_var.clone(),
+                    mutable: false,
+                    ty: Some(Type::I64),
+                    value: Expr::RangeCheck {
+                        lo: Box::new(Expr::Var(lo_var.clone())),
+                        hi: Box::new(Expr::Var(hi_var.clone())),
+                        len: Box::new(base_len),
+                    },
+                });
+                let ptr_off = if smeta.stride == 1 {
+                    Expr::Var(chk_var)
+                } else {
+                    Expr::Binary {
+                        op: BinOp::Mul,
+                        lhs: Box::new(Expr::Var(chk_var)),
+                        rhs: Box::new(Expr::IntLit(smeta.stride)),
+                    }
+                };
+                let new_ptr = Expr::Binary {
+                    op: BinOp::Add,
+                    lhs: Box::new(base_ptr),
+                    rhs: Box::new(ptr_off),
+                };
+                let new_len = Expr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(Expr::Var(hi_var)),
+                    rhs: Box::new(Expr::Var(lo_var)),
+                };
+                Ok(Expr::Block {
+                    stmts: pre_stmts,
+                    tail: Box::new(Expr::SliceLit {
+                        ptr: Box::new(new_ptr),
+                        len: Box::new(new_len),
+                        elem_ty: smeta.elem_ty,
+                    }),
                 })
             }
         }
@@ -3405,6 +4262,26 @@ pub(super) fn infer_and_rewrite_fixed_expr(
             Type::Tuple(ts) => ts.get(*index).cloned().unwrap_or(Type::I64),
             _ => Type::I64,
         },
+        Expr::SliceLit { ptr, len, elem_ty } => {
+            infer_and_rewrite_fixed_expr(ptr, env, fn_rets);
+            infer_and_rewrite_fixed_expr(len, env, fn_rets);
+            Type::Slice(Box::new(elem_ty.clone()))
+        }
+        Expr::SlicePtr(inner) | Expr::SliceLen(inner) => {
+            infer_and_rewrite_fixed_expr(inner, env, fn_rets);
+            Type::I64
+        }
+        Expr::BoundsCheck { index, len, .. } => {
+            infer_and_rewrite_fixed_expr(index, env, fn_rets);
+            infer_and_rewrite_fixed_expr(len, env, fn_rets);
+            Type::I64
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            infer_and_rewrite_fixed_expr(lo, env, fn_rets);
+            infer_and_rewrite_fixed_expr(hi, env, fn_rets);
+            infer_and_rewrite_fixed_expr(len, env, fn_rets);
+            Type::I64
+        }
         Expr::Block { stmts, tail } => {
             let mut inner_env = env.clone();
             infer_and_rewrite_fixed_stmts(stmts, &mut inner_env, fn_rets);
