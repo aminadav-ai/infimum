@@ -177,9 +177,7 @@ pub fn reset_ceres() -[Mem]-> unit {
   GameMem.lock_active = 0;
   GameMem.lock_dist = 0;
 
-  for b in 0..40 {
-    GameMem.bolts[b].life = 0;
-  }
+  GameMem.bolts.clear();
   for p in 0..48 {
     GameMem.particles[p].life = 0;
   }
@@ -375,19 +373,16 @@ fn find_aim_target() -[Mem]-> (i64, i64, i64, i64, i64) {
 }
 
 fn spawn_bolt(x: i64, y: i64, z: i64, vx: i64, vy: i64, vz: i64, kind: i64, life: i64) -[Mem]-> unit {
-  for i in 0..40 {
-    if GameMem.bolts[i].life <= 0 {
-      GameMem.bolts[i].x = x;
-      GameMem.bolts[i].y = y;
-      GameMem.bolts[i].z = z;
-      GameMem.bolts[i].vx = vx;
-      GameMem.bolts[i].vy = vy;
-      GameMem.bolts[i].vz = vz;
-      GameMem.bolts[i].kind = kind;
-      GameMem.bolts[i].life = life;
-      break;
-    }
-  }
+  let _ = GameMem.bolts.try_push(Bolt {
+    x: x,
+    y: y,
+    z: z,
+    vx: vx,
+    vy: vy,
+    vz: vz,
+    kind: kind,
+    life: life,
+  });
 }
 
 pub fn fire_player_laser() -[Mem, Gpu]-> unit {
@@ -488,15 +483,19 @@ fn step_bolts() -[Mem, Gpu]-> unit {
   let sz = GameMem.ship_z;
   let (rx, ry, rz) = reactor_center_xyz();
 
-  for i in 0..40 {
-    let lf = GameMem.bolts[i].life;
-    if lf <= 0 { continue; }
-    let kind = GameMem.bolts[i].kind;
+  let mut i = 0;
+  while i >= 0 && i < GameMem.bolts.len max 40 {
+    let mut b = GameMem.bolts[i];
+    if b.life <= 0 {
+      GameMem.bolts.swap_remove(i);
+      continue;
+    }
+    let kind = b.kind;
 
     if kind == BoltKind::PlayerMissile {
-      let bx = GameMem.bolts[i].x;
-      let by = GameMem.bolts[i].y;
-      let bz = GameMem.bolts[i].z;
+      let bx = b.x;
+      let by = b.y;
+      let bz = b.z;
       let mut h_dist = 8200;
       let mut h_tx = bx;
       let mut h_ty = by;
@@ -529,22 +528,24 @@ fn step_bolts() -[Mem, Gpu]-> unit {
         let gx = ((h_tx - bx) * 450) / h_dist;
         let gy = ((h_ty - by) * 450) / h_dist;
         let gz = ((h_tz - bz) * 450) / h_dist;
-        GameMem.bolts[i].vx = (GameMem.bolts[i].vx * 5 + gx) / 6;
-        GameMem.bolts[i].vy = (GameMem.bolts[i].vy * 5 + gy) / 6;
-        GameMem.bolts[i].vz = (GameMem.bolts[i].vz * 5 + gz) / 6;
+        b.vx = (b.vx * 5 + gx) / 6;
+        b.vy = (b.vy * 5 + gy) / 6;
+        b.vz = (b.vz * 5 + gz) / 6;
       }
     }
 
-    let nx = GameMem.bolts[i].x + GameMem.bolts[i].vx;
-    let ny = GameMem.bolts[i].y + GameMem.bolts[i].vy;
-    let nz = GameMem.bolts[i].z + GameMem.bolts[i].vz;
-    GameMem.bolts[i].x = nx;
-    GameMem.bolts[i].y = ny;
-    GameMem.bolts[i].z = nz;
-    GameMem.bolts[i].life = lf - 1;
+    let nx = b.x + b.vx;
+    let ny = b.y + b.vy;
+    let nz = b.z + b.vz;
+    b.x = nx;
+    b.y = ny;
+    b.z = nz;
+    b.life = b.life - 1;
 
     if maze::hits_maze_3d(nx, ny, nz, 85) {
-      GameMem.bolts[i].life = 0;
+      if i < GameMem.bolts.len {
+        GameMem.bolts.swap_remove(i);
+      }
       if kind == BoltKind::PlayerMissile {
         detonate_missile(nx, ny, nz);
       } else {
@@ -553,6 +554,7 @@ fn step_bolts() -[Mem, Gpu]-> unit {
       continue;
     }
 
+    let mut destroyed = b.life <= 0;
     if kind == BoltKind::PlayerLaser || kind == BoltKind::PlayerMissile {
       let mut hit_any = false;
       for d in 0..18 {
@@ -562,7 +564,7 @@ fn step_bolts() -[Mem, Gpu]-> unit {
             && abs_i64(ny - GameMem.drones[d].y) < hr
             && abs_i64(nz - GameMem.drones[d].z) < hr
           {
-            GameMem.bolts[i].life = 0;
+            destroyed = true;
             hit_any = true;
             if kind == BoltKind::PlayerMissile {
               detonate_missile(nx, ny, nz);
@@ -575,7 +577,7 @@ fn step_bolts() -[Mem, Gpu]-> unit {
       }
       if !hit_any && GameMem.reactor_hp > 0 {
         if abs_i64(nx - rx) < 820 && abs_i64(ny - ry) < 820 && abs_i64(nz - rz) < 820 {
-          GameMem.bolts[i].life = 0;
+          destroyed = true;
           if kind == BoltKind::PlayerMissile {
             detonate_missile(nx, ny, nz);
           } else {
@@ -585,10 +587,21 @@ fn step_bolts() -[Mem, Gpu]-> unit {
       }
     } else {
       if abs_i64(nx - sx) < 420 && abs_i64(ny - sy) < 420 && abs_i64(nz - sz) < 420 {
-        GameMem.bolts[i].life = 0;
+        destroyed = true;
         spawn_explosion(nx, ny, nz, 6, 1);
         damage_ship(9);
       }
+    }
+
+    if destroyed {
+      if i < GameMem.bolts.len {
+        GameMem.bolts.swap_remove(i);
+      }
+    } else {
+      if i < GameMem.bolts.len {
+        GameMem.bolts[i] = b;
+      }
+      i += 1;
     }
   }
 }

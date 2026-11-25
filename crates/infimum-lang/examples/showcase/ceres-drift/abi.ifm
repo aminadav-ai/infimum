@@ -226,7 +226,7 @@ pub layout GameMem {
 
   // World entities
   drones: Drone[18],
-  bolts: Bolt[40],
+  bolts: vec<Bolt>[40],
   pickups: Pickup[16],
   particles: Particle[48],
 }

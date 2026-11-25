@@ -657,12 +657,14 @@ fn emit_pickups_bolts_particles() -[Mem]-> unit {
 
   // Flying Plasma Lasers, Homing Missiles & Enemy Bolts (+ dynamic point lights)
   let mut bolt_lights = 0;
-  for b in 0..40 {
-    if GameMem.bolts[b].life > 0 {
-      let bx = GameMem.bolts[b].x;
-      let by = GameMem.bolts[b].y;
-      let bz = GameMem.bolts[b].z;
-      let k = GameMem.bolts[b].kind;
+  let active_bolts: [Bolt] = GameMem.bolts.as_slice();
+  for b in 0..active_bolts.len max 40 {
+    let bolt = active_bolts[b];
+    if bolt.life > 0 {
+      let bx = bolt.x;
+      let by = bolt.y;
+      let bz = bolt.z;
+      let k = bolt.kind;
       if k == BoltKind::PlayerLaser {
         mesh3d_box(0, bx - 60, by - 60, bz - 60, bx + 60, by + 60, bz + 60, MAT_GLOW, pack_rgba(84, 248, 255, 255), 255, 1, 200);
         if bolt_lights < 5 {
