@@ -390,3 +390,73 @@ test "diamond layout" {
     assert_eq!(module.layouts.len(), 1);
     assert_all_ifm_tests_pass(&module);
 }
+
+#[test]
+fn unimported_export_fn_and_entry_private_fn_cannot_leak_across_units() {
+    // 1. Child module `a.ifm` must NOT be able to call a private fn in `main.ifm`
+    let mut files = BTreeMap::new();
+    files.insert(
+        "a.ifm".to_string(),
+        "pub fn leak_call() -> i64 { secret_in_main() }\n".to_string(),
+    );
+    files.insert(
+        "main.ifm".to_string(),
+        r#"
+use "a.ifm";
+fn secret_in_main() -> i64 { 99 }
+export fn run() -> i64 { leak_call() }
+"#
+        .to_string(),
+    );
+    let err = parse_module_from_virtual_fs("main.ifm", &files)
+        .expect_err("child unit must not call private fn of entry unit without use/pub");
+    assert_eq!(err.code, "E022_UNKNOWN_FUNCTION");
+
+    // 2. Module `a.ifm` must NOT be able to call `export fn` in `b.ifm` without `use` + `pub`
+    let mut files2 = BTreeMap::new();
+    files2.insert(
+        "b.ifm".to_string(),
+        "export fn exported_in_b() -> i64 { 77 }\n".to_string(),
+    );
+    files2.insert(
+        "a.ifm".to_string(),
+        "pub fn leak_export() -> i64 { exported_in_b() }\n".to_string(),
+    );
+    files2.insert(
+        "main.ifm".to_string(),
+        "use \"a.ifm\";\nuse \"b.ifm\";\nexport fn run() -> i64 { leak_export() }\n".to_string(),
+    );
+    let err2 = parse_module_from_virtual_fs("main.ifm", &files2)
+        .expect_err("unit a.ifm must not call unimported export fn from b.ifm");
+    assert_eq!(err2.code, "E022_UNKNOWN_FUNCTION");
+
+    // 3. Even with `use "b.ifm";`, non-`pub` `export fn` in `b.ifm` must NOT be visible in `a.ifm`
+    files2.insert(
+        "a.ifm".to_string(),
+        "use \"b.ifm\";\npub fn leak_export() -> i64 { exported_in_b() }\n".to_string(),
+    );
+    let err3 = parse_module_from_virtual_fs("main.ifm", &files2)
+        .expect_err("non-pub export fn in b.ifm must not be visible via use");
+    assert_eq!(err3.code, "E022_UNKNOWN_FUNCTION");
+
+    // 4. Marking it `pub export fn` in `b.ifm` makes it callable from `a.ifm` via `use "b.ifm";`
+    files2.insert(
+        "b.ifm".to_string(),
+        "pub export fn exported_in_b() -> i64 { 77 }\n".to_string(),
+    );
+    files2.insert(
+        "main.ifm".to_string(),
+        r#"
+use "a.ifm";
+use "b.ifm";
+export fn run() -> i64 { leak_export() }
+test "pub export fn callable" {
+  assert(run() == 77);
+}
+"#
+        .to_string(),
+    );
+    let ok_mod = parse_module_from_virtual_fs("main.ifm", &files2)
+        .expect("pub export fn must be callable via use");
+    assert_all_ifm_tests_pass(&ok_mod);
+}

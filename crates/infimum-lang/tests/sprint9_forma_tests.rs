@@ -65,7 +65,12 @@ forma ComposerBar(x: i64, y: i64, w: i64, h: i64, theme_bg: i64, border_col: i64
     let forma_reports =
         verify_module_formas(&module).expect("Z3 should prove all geometry invariants");
     assert_eq!(forma_reports.len(), 1);
-    assert_eq!(forma_reports[0].name, "ComposerBar");
+    assert!(
+        forma_reports[0].name == "ComposerBar"
+            || forma_reports[0].name.ends_with("__ComposerBar"),
+        "unexpected forma name: {}",
+        forma_reports[0].name
+    );
     assert!(forma_reports[0].obligations_proved > 0);
     assert!(forma_reports[0].static_prim_bound < 80_000);
 
@@ -74,7 +79,9 @@ forma ComposerBar(x: i64, y: i64, w: i64, h: i64, theme_bg: i64, border_col: i64
     let fn_reports = store
         .verify_module_with_cache(&module, false)
         .expect("lowered ComposerBar should pass full Telos+Flux verification");
-    assert!(fn_reports.iter().any(|r| r.alias == "ComposerBar"));
+    assert!(fn_reports
+        .iter()
+        .any(|r| r.alias == "ComposerBar" || r.alias.ends_with("__ComposerBar")));
     let _ = fs::remove_dir_all(&ws);
 }
 
@@ -253,7 +260,9 @@ forma SidebarFooter(sb_w: i64, bg_col: i64, text_col: i64, green_col: i64)
     let fn_reports = store
         .verify_module_with_cache(&module, false)
         .expect("lowered Forma 2.0 SidebarFooter should pass Telos+Flux verification");
-    assert!(fn_reports.iter().any(|r| r.alias == "SidebarFooter"));
+    assert!(fn_reports
+        .iter()
+        .any(|r| r.alias == "SidebarFooter" || r.alias.ends_with("__SidebarFooter")));
     let _ = fs::remove_dir_all(&ws);
 }
 

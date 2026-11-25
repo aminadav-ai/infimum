@@ -2848,6 +2848,23 @@ fn unit_canonical_name(u: &RawUnit, name: &str, is_exported_fn: bool) -> String 
     }
 }
 
+fn unit_fn_canonical_name(
+    u: &RawUnit,
+    name: &str,
+    is_exported_fn: bool,
+    multi_unit: bool,
+) -> String {
+    if is_exported_fn
+        || name.starts_with("__ifm_test_")
+        || (u.is_forma_rt && name.starts_with("__forma_"))
+        || (!multi_unit && u.is_entry)
+    {
+        name.to_string()
+    } else {
+        format!("u{}__{name}", u.id)
+    }
+}
+
 fn insert_sym(
     map: &mut BTreeMap<String, SymRef>,
     order: Option<&mut Vec<String>>,
@@ -3129,11 +3146,12 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
                 }
             }
 
+            let multi_unit = graph.units.len() > 1;
             for rf in &u.formas {
                 let sym = SymRef {
                     owner: uid,
                     orig_name: rf.name.clone(),
-                    canonical_name: unit_canonical_name(u, &rf.name, rf.exported),
+                    canonical_name: unit_fn_canonical_name(u, &rf.name, rf.exported, multi_unit),
                     decl_file: u.display_label.clone(),
                     decl_span: rf.span,
                 };
@@ -3169,7 +3187,7 @@ fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagno
                 let sym = SymRef {
                     owner: uid,
                     orig_name: rf.name.clone(),
-                    canonical_name: unit_canonical_name(u, &rf.name, rf.exported),
+                    canonical_name: unit_fn_canonical_name(u, &rf.name, rf.exported, multi_unit),
                     decl_file: u.display_label.clone(),
                     decl_span: rf.span,
                 };
@@ -6021,6 +6039,21 @@ impl ModuleResolver {
                     TargetRef::Named(fname) => {
                         if let Some(sym) = self.lookup_fn_sym(None, fname, Span::zero())? {
                             TargetRef::Named(sym.canonical_name.clone())
+                        } else if fname.starts_with("$forma_") || fname.starts_with("__forma_") {
+                            TargetRef::Named(fname.clone())
+                        } else if self.tables.len() > 1 {
+                            let cur_file = &self.unit_labels[self.cur_uid];
+                            return Err(InfimumDiagnostic::new(
+                                "E022_UNKNOWN_FUNCTION",
+                                "resolve",
+                                format!(
+                                    "{cur_file}: Unknown or unimported function '{fname}'"
+                                ),
+                                Span::zero(),
+                                format!(
+                                    "Declare 'fn {fname}(...)' in '{cur_file}' or import a 'pub fn {fname}' with 'use'"
+                                ),
+                            ));
                         } else {
                             TargetRef::Named(fname.clone())
                         }
@@ -6638,6 +6671,17 @@ fn rewrite_forma_slot_callbacks<E>(
             Ok(sym.canonical_name.clone())
         } else if let Some(sym) = resolver.lookup_fn_sym(None, raw, span)? {
             Ok(sym.canonical_name.clone())
+        } else if raw.starts_with("$forma_") || raw.starts_with("__forma_") {
+            Ok(raw.to_string())
+        } else if resolver.tables.len() > 1 {
+            let cur_file = &resolver.unit_labels[resolver.cur_uid];
+            Err(InfimumDiagnostic::new(
+                "E022_UNKNOWN_FUNCTION",
+                "resolve",
+                format!("{cur_file}: Unknown or unimported Slot callback '{raw}'"),
+                span,
+                format!("Declare 'fn {raw}(...)' in '{cur_file}' or import a 'pub fn {raw}' with 'use'"),
+            ))
         } else {
             Ok(raw.to_string())
         }
@@ -6683,6 +6727,7 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
     resolver.verify_no_layout_overlaps()?;
 
     // 2. Collect all forma definitions keyed by canonical name (paired with their owning UnitId)
+    let multi_unit = graph.units.len() > 1;
     let mut all_raw_formas: Vec<(UnitId, String, crate::forma::FormaDef<RawExpr>)> = Vec::new();
     let mut forma_defs_by_canon: BTreeMap<String, (UnitId, crate::forma::FormaDef<RawExpr>)> =
         BTreeMap::new();
@@ -6691,7 +6736,7 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
         let formas_u = std::mem::take(&mut u.formas);
         resolver.cur_uid = uid;
         for mut rf in formas_u {
-            let cname = unit_canonical_name(u, &rf.name, rf.exported);
+            let cname = unit_fn_canonical_name(u, &rf.name, rf.exported, multi_unit);
             rf.name = cname.clone();
             rewrite_forma_slot_callbacks(&mut rf.root, &resolver)?;
             forma_defs_by_canon.insert(cname.clone(), (uid, rf.clone()));
@@ -6733,7 +6778,7 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
         let fns_u = std::mem::take(&mut u.functions);
         resolver.cur_uid = uid;
         for mut rf in fns_u {
-            let cname = unit_canonical_name(u, &rf.name, rf.exported);
+            let cname = unit_fn_canonical_name(u, &rf.name, rf.exported, multi_unit);
             rf.name = cname.clone();
             if let RawType::Named { module, name, span } = &rf.ret_type {
                 let scanon = resolver.resolve_struct_canon(module.as_deref(), name, *span)?;
@@ -7792,7 +7837,11 @@ forma MainPanel(vw: i64, vh: i64, show_extra: bool)
 "#;
         let module = parse_module(src).expect("Forma components + if/else + for should expand");
         assert_eq!(module.formas.len(), 2);
-        let main_forma = module.formas.iter().find(|f| f.name == "MainPanel").unwrap();
+        let main_forma = module
+            .formas
+            .iter()
+            .find(|f| f.name == "MainPanel" || f.name.ends_with("__MainPanel"))
+            .unwrap();
         let col = &main_forma.root.children[0];
         let row = &col.children[0];
         // `for i in 0..3 { PillBtn(...) }` expanded into 3 Button nodes!
