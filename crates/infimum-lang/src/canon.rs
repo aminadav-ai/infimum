@@ -591,6 +591,99 @@ where
                 )?),
                 index: *index,
             }),
+            Expr::SliceLit { ptr, len, elem_ty } => Ok(Expr::SliceLit {
+                ptr: Box::new(canon_expr(
+                    ptr,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                len: Box::new(canon_expr(
+                    len,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                elem_ty: elem_ty.clone(),
+            }),
+            Expr::SlicePtr(inner) => Ok(Expr::SlicePtr(Box::new(canon_expr(
+                inner,
+                self_name,
+                env,
+                deps,
+                perform_effects,
+                resolve_name,
+                resolve_hash,
+            )?))),
+            Expr::SliceLen(inner) => Ok(Expr::SliceLen(Box::new(canon_expr(
+                inner,
+                self_name,
+                env,
+                deps,
+                perform_effects,
+                resolve_name,
+                resolve_hash,
+            )?))),
+            Expr::BoundsCheck {
+                index,
+                len,
+                inclusive_hi,
+            } => Ok(Expr::BoundsCheck {
+                index: Box::new(canon_expr(
+                    index,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                len: Box::new(canon_expr(
+                    len,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                inclusive_hi: *inclusive_hi,
+            }),
+            Expr::RangeCheck { lo, hi, len } => Ok(Expr::RangeCheck {
+                lo: Box::new(canon_expr(
+                    lo,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                hi: Box::new(canon_expr(
+                    hi,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                len: Box::new(canon_expr(
+                    len,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+            }),
     }
 }
 
@@ -840,6 +933,43 @@ fn format_expr(expr: &Expr, out: &mut String) {
             format_expr(expr, out);
             out.push('.');
             out.push_str(&index.to_string());
+        }
+        Expr::SliceLit { ptr, len, elem_ty } => {
+            out.push_str("slice<");
+            out.push_str(&elem_ty.to_string());
+            out.push_str(">(");
+            format_expr(ptr, out);
+            out.push_str(", ");
+            format_expr(len, out);
+            out.push(')');
+        }
+        Expr::SlicePtr(inner) => {
+            format_expr(inner, out);
+            out.push_str(".ptr");
+        }
+        Expr::SliceLen(inner) => {
+            format_expr(inner, out);
+            out.push_str(".len");
+        }
+        Expr::BoundsCheck {
+            index,
+            len,
+            inclusive_hi,
+        } => {
+            out.push_str(if *inclusive_hi { "bchk_le(" } else { "bchk_lt(" });
+            format_expr(index, out);
+            out.push_str(", ");
+            format_expr(len, out);
+            out.push(')');
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            out.push_str("rchk(");
+            format_expr(lo, out);
+            out.push_str(", ");
+            format_expr(hi, out);
+            out.push_str(", ");
+            format_expr(len, out);
+            out.push(')');
         }
     }
 }

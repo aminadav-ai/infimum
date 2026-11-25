@@ -6,9 +6,10 @@ use crate::diag::{InfimumDiagnostic, Span};
 use crate::lexer::{Token, TokenKind, tokenize};
 
 use super::raw_ast::{
-    RawConst, RawEnum, RawEnumVariant, RawExpr, RawFile, RawFnDef, RawInv, RawItem, RawLayout, RawLayoutField,
-    RawLayoutLoad, RawMatchArm, RawMatchPattern, RawMod, RawModCall, RawStmt, RawStruct,
-    RawStructLit, RawType, RawUse, RawUseItem, RawUseKind,
+    RawConst, RawEnum, RawEnumVariant, RawExpr, RawFile, RawFnDef, RawInv, RawItem, RawLayout,
+    RawLayoutField, RawLayoutLoad, RawMatchArm, RawMatchPattern, RawMod, RawModCall, RawSliceIndex,
+    RawSliceRange, RawSliceStore, RawStmt, RawStruct, RawStructLit, RawType, RawUse, RawUseItem,
+    RawUseKind,
 };
 
 pub(super) fn parse_raw_file(src: &str) -> Result<RawFile, InfimumDiagnostic> {
@@ -524,6 +525,7 @@ impl Parser {
                 struct_type,
                 len_expr,
                 is_array,
+                is_vec: false,
                 is_fixed,
                 at_expr,
                 inv,
@@ -730,6 +732,17 @@ impl Parser {
     }
 
     fn parse_raw_type(&mut self) -> Result<RawType, InfimumDiagnostic> {
+        if matches!(self.peek().kind, TokenKind::LBracket) {
+            self.advance(); // '['
+            let elem = if self.peek_is_contextual_kw("word") {
+                self.advance();
+                RawType::Builtin(Type::I64)
+            } else {
+                self.parse_raw_type()?
+            };
+            self.expect(&TokenKind::RBracket, "Expected ']' to close slice type '[T]'")?;
+            return Ok(RawType::Slice(Box::new(elem)));
+        }
         if matches!(self.peek().kind, TokenKind::LParen) {
             self.advance();
             if matches!(self.peek().kind, TokenKind::RParen) {
@@ -859,6 +872,44 @@ impl Parser {
                     op,
                     value: val,
                 }));
+            }
+            // Slice element assignment: `s[i] = val;`, `s[i] += val;`, `s[i].f = val;`, `s[i].f += val;`
+            if matches!(self.peek_at(1), TokenKind::LBracket) {
+                let saved = self.idx;
+                let (vname, span) = self.expect_ident("Expected slice variable name")?;
+                self.advance(); // '['
+                if !matches!(self.peek().kind, TokenKind::DotDot | TokenKind::RBracket) {
+                    let idx_expr = self.parse_expr()?;
+                    if matches!(self.peek().kind, TokenKind::RBracket) {
+                        self.advance(); // ']'
+                        let subfield = if matches!(self.peek().kind, TokenKind::Dot)
+                            && matches!(self.peek_at(1), TokenKind::Ident(_))
+                        {
+                            self.advance();
+                            let (sf, _) = self.expect_ident("Expected struct field name")?;
+                            Some(sf)
+                        } else {
+                            None
+                        };
+                        if let Some(op) = Self::assign_op_for(&self.peek().kind) {
+                            self.advance();
+                            let val = self.parse_expr()?;
+                            self.expect(
+                                &TokenKind::Semi,
+                                "Terminate slice assignment statement with ';'",
+                            )?;
+                            return Ok(Some(RawStmt::SliceStore(Box::new(RawSliceStore {
+                                base: RawExpr::Var(vname),
+                                index: idx_expr,
+                                subfield,
+                                op,
+                                value: val,
+                                span,
+                            }))));
+                        }
+                    }
+                }
+                self.idx = saved;
             }
             // Layout assignment: `[mod::]Layout.field`, `...field[i]`, `...field.sub`, `...field[i].sub`
             let is_direct_layout = matches!(self.peek_at(1), TokenKind::Dot)
@@ -1792,29 +1843,15 @@ impl Parser {
                     {
                         self.advance(); // '.'
                         let (field, _) = self.expect_ident("Expected layout field name after '.'")?;
-                        let index = if matches!(self.peek().kind, TokenKind::LBracket) {
-                            self.advance();
-                            let idx_expr = self.parse_expr()?;
-                            self.expect(&TokenKind::RBracket, "Expected ']' after layout index")?;
-                            Some(Box::new(idx_expr))
-                        } else {
-                            None
-                        };
-                        let subfield = if matches!(self.peek().kind, TokenKind::Dot) {
-                            self.advance();
-                            let (sf, _) = self.expect_ident("Expected struct field name after '.'")?;
-                            Some(sf)
-                        } else {
-                            None
-                        };
-                        Ok(RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
+                        let base = RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
                             module: Some(segs.remove(0)),
                             layout: segs.remove(0),
                             field,
-                            index,
-                            subfield,
+                            index: None,
+                            subfield: None,
                             span: tok.span,
-                        })))
+                        }));
+                        self.parse_postfix_chain(base, tok.span)
                     } else {
                         Ok(RawExpr::Path {
                             segs,
@@ -1839,29 +1876,17 @@ impl Parser {
                     }
                     self.advance();
                     let (field, _) = self.expect_ident("Expected layout field name after '.'")?;
-                    let index = if matches!(self.peek().kind, TokenKind::LBracket) {
-                        self.advance();
-                        let idx_expr = self.parse_expr()?;
-                        self.expect(&TokenKind::RBracket, "Expected ']' after layout index")?;
-                        Some(Box::new(idx_expr))
-                    } else {
-                        None
-                    };
-                    let subfield = if matches!(self.peek().kind, TokenKind::Dot) {
-                        self.advance();
-                        let (sf, _) = self.expect_ident("Expected struct field name after '.'")?;
-                        Some(sf)
-                    } else {
-                        None
-                    };
-                    Ok(RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
+                    let base = RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
                         module: None,
                         layout: name,
                         field,
-                        index,
-                        subfield,
+                        index: None,
+                        subfield: None,
                         span: tok.span,
-                    })))
+                    }));
+                    self.parse_postfix_chain(base, tok.span)
+                } else if matches!(self.peek().kind, TokenKind::LBracket) {
+                    self.parse_postfix_chain(RawExpr::Var(name), tok.span)
                 } else if matches!(self.peek().kind, TokenKind::LParen) {
                     let args = self.parse_arg_list()?;
                     let target = if name == "$self" {
@@ -1869,33 +1894,12 @@ impl Parser {
                     } else {
                         TargetRef::Named(name)
                     };
-                    let mut expr = RawExpr::Call {
+                    let expr = RawExpr::Call {
                         target,
                         args,
                         span: tok.span,
                     };
-                    while matches!(self.peek().kind, TokenKind::Dot)
-                        && matches!(self.peek_next(), TokenKind::Int(_) | TokenKind::Ident(_))
-                    {
-                        let dot_span = self.advance().span;
-                        match self.advance().kind {
-                            TokenKind::Int(idx) => {
-                                expr = RawExpr::TupleField {
-                                    expr: Box::new(expr),
-                                    index: idx.max(0) as usize,
-                                };
-                            }
-                            TokenKind::Ident(field) => {
-                                expr = RawExpr::FieldAccess {
-                                    expr: Box::new(expr),
-                                    field,
-                                    span: dot_span,
-                                };
-                            }
-                            _ => {}
-                        }
-                    }
-                    Ok(expr)
+                    self.parse_postfix_chain(expr, tok.span)
                 } else if matches!(self.peek().kind, TokenKind::LBrace)
                     && matches!(self.peek_at(1), TokenKind::Ident(_))
                     && matches!(self.peek_at(2), TokenKind::Colon)
@@ -1954,6 +1958,99 @@ impl Parser {
                 "Provide a valid expression (literal, variable, call, block, if/else, match, mem_load/mem_store, or 'do Effect.op(...)')",
             )),
         }
+    }
+
+    fn parse_postfix_chain(
+        &mut self,
+        mut expr: RawExpr,
+        origin_span: Span,
+    ) -> Result<RawExpr, InfimumDiagnostic> {
+        loop {
+            if matches!(self.peek().kind, TokenKind::LBracket) {
+                let lspan = self.advance().span; // '['
+                if matches!(self.peek().kind, TokenKind::DotDot) {
+                    self.advance(); // '..'
+                    let hi = if matches!(self.peek().kind, TokenKind::RBracket) {
+                        None
+                    } else {
+                        Some(self.parse_expr()?)
+                    };
+                    self.expect(&TokenKind::RBracket, "Expected ']' to close slice range")?;
+                    expr = RawExpr::SliceRange(Box::new(RawSliceRange {
+                        base: expr,
+                        lo: None,
+                        hi,
+                        span: lspan,
+                    }));
+                } else {
+                    let first = self.parse_expr()?;
+                    if matches!(self.peek().kind, TokenKind::DotDot) {
+                        self.advance(); // '..'
+                        let hi = if matches!(self.peek().kind, TokenKind::RBracket) {
+                            None
+                        } else {
+                            Some(self.parse_expr()?)
+                        };
+                        self.expect(&TokenKind::RBracket, "Expected ']' to close slice range")?;
+                        expr = RawExpr::SliceRange(Box::new(RawSliceRange {
+                            base: expr,
+                            lo: Some(first),
+                            hi,
+                            span: lspan,
+                        }));
+                    } else {
+                        self.expect(&TokenKind::RBracket, "Expected ']' after index expression")?;
+                        if let RawExpr::LayoutLoad(ref mut ll) = expr {
+                            if ll.index.is_none() && ll.subfield.is_none() {
+                                ll.index = Some(Box::new(first));
+                                continue;
+                            }
+                        }
+                        expr = RawExpr::SliceIndex(Box::new(RawSliceIndex {
+                            base: expr,
+                            index: first,
+                            subfield: None,
+                            span: lspan,
+                        }));
+                    }
+                }
+            } else if matches!(self.peek().kind, TokenKind::Dot)
+                && matches!(self.peek_next(), TokenKind::Int(_) | TokenKind::Ident(_))
+            {
+                let dot_span = self.advance().span;
+                match self.advance().kind {
+                    TokenKind::Int(idx) => {
+                        expr = RawExpr::TupleField {
+                            expr: Box::new(expr),
+                            index: idx.max(0) as usize,
+                        };
+                    }
+                    TokenKind::Ident(field) => {
+                        if let RawExpr::LayoutLoad(ref mut ll) = expr {
+                            if ll.subfield.is_none() {
+                                ll.subfield = Some(field);
+                                continue;
+                            }
+                        }
+                        if let RawExpr::SliceIndex(ref mut si) = expr {
+                            if si.subfield.is_none() {
+                                si.subfield = Some(field);
+                                continue;
+                            }
+                        }
+                        expr = RawExpr::FieldAccess {
+                            expr: Box::new(expr),
+                            field,
+                            span: if dot_span.line > 0 { dot_span } else { origin_span },
+                        };
+                    }
+                    _ => {}
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(expr)
     }
 
     fn parse_arg_list(&mut self) -> Result<Vec<RawExpr>, InfimumDiagnostic> {

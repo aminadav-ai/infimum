@@ -212,6 +212,9 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
             if let RawType::Named { module, name, span } = &rf.ret_type {
                 let scanon = resolver.resolve_struct_canon(module.as_deref(), name, *span)?;
                 resolver.fn_ret_struct.insert(cname, scanon);
+            } else if let RawType::Slice(elem) = &rf.ret_type {
+                let smeta = resolver.resolve_slice_elem(elem)?;
+                resolver.fn_ret_slice.insert(cname, smeta);
             }
             all_raw_fns.push((uid, rf));
         }

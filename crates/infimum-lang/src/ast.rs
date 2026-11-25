@@ -10,6 +10,7 @@ pub enum Type {
     Unit,
     Secret(Box<Type>),
     Tuple(Vec<Type>),
+    Slice(Box<Type>),
 }
 
 impl fmt::Display for Type {
@@ -31,6 +32,7 @@ impl fmt::Display for Type {
                 }
                 write!(f, ")")
             }
+            Type::Slice(inner) => write!(f, "[{inner}]"),
         }
     }
 }
@@ -222,6 +224,24 @@ pub enum Expr {
         expr: Box<Expr>,
         index: usize,
     },
+    SliceLit {
+        ptr: Box<Expr>,
+        len: Box<Expr>,
+        elem_ty: Type,
+    },
+    SlicePtr(Box<Expr>),
+    SliceLen(Box<Expr>),
+    BoundsCheck {
+        index: Box<Expr>,
+        len: Box<Expr>,
+        #[serde(default)]
+        inclusive_hi: bool,
+    },
+    RangeCheck {
+        lo: Box<Expr>,
+        hi: Box<Expr>,
+        len: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +294,12 @@ pub struct LayoutField {
     pub offset: i64,
     pub len: i64,
     pub is_array: bool,
+    #[serde(default)]
+    pub is_vec: bool,
+    #[serde(default)]
+    pub cap: i64,
+    #[serde(default)]
+    pub stride: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

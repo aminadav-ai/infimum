@@ -332,7 +332,23 @@ fn prealloc_x86_expr_slots(expr: &Expr, ctx: &mut X86FnCtx<'_>) {
                 prealloc_x86_expr_slots(a, ctx);
             }
         }
-        Expr::TupleField { expr: inner, .. } => prealloc_x86_expr_slots(inner, ctx),
+        Expr::TupleField { expr: inner, .. }
+        | Expr::SlicePtr(inner)
+        | Expr::SliceLen(inner) => prealloc_x86_expr_slots(inner, ctx),
+        Expr::SliceLit { ptr, len, .. }
+        | Expr::BoundsCheck {
+            index: ptr,
+            len,
+            ..
+        } => {
+            prealloc_x86_expr_slots(ptr, ctx);
+            prealloc_x86_expr_slots(len, ctx);
+        }
+        Expr::RangeCheck { lo, hi, len } => {
+            prealloc_x86_expr_slots(lo, ctx);
+            prealloc_x86_expr_slots(hi, ctx);
+            prealloc_x86_expr_slots(len, ctx);
+        }
         Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::StrLit(_) | Expr::UnitLit | Expr::Var(_) => {}
     }
 }
@@ -645,14 +661,24 @@ fn emit_x86_expr(
             emit_x86_stmts(stmts, ctx, out, relocs)?;
             emit_x86_expr(tail, ctx, out, relocs)?;
         }
-        Expr::TupleLit(_) | Expr::TupleField { .. } => {
+        Expr::TupleLit(_)
+        | Expr::TupleField { .. }
+        | Expr::SliceLit { .. }
+        | Expr::SlicePtr(_)
+        | Expr::SliceLen(_) => {
             return Err(InfimumDiagnostic::new(
                 "E085_STRATA_UNSUPPORTED_TYPE",
                 "strata-elf",
-                "Tuples are supported in Strata Wasm (.ifw), interpreter, and Rust codegen (not yet in raw x86_64 ELF)",
+                "Tuples and slices are supported in Strata Wasm (.ifw), interpreter, and Rust codegen (not yet in raw x86_64 ELF)",
                 Span::zero(),
-                "Use 'infimum compile-wasm' or 'infimum build' for tuple expressions",
+                "Use 'infimum compile-wasm' or 'infimum build' for tuple/slice expressions",
             ));
+        }
+        Expr::BoundsCheck { index, .. } => {
+            emit_x86_expr(index, ctx, out, relocs)?;
+        }
+        Expr::RangeCheck { lo, .. } => {
+            emit_x86_expr(lo, ctx, out, relocs)?;
         }
     }
     Ok(())
@@ -731,7 +757,7 @@ fn emit_x86_start(
     match f.ret_type {
         Type::I64 | Type::Fixed => emit_call_sym(code, relocs, SymTarget::HelperPrintI64),
         Type::Bool => emit_call_sym(code, relocs, SymTarget::HelperPrintBool),
-        Type::Unit | Type::Str | Type::Secret(_) | Type::Tuple(_) => {}
+        Type::Unit | Type::Str | Type::Secret(_) | Type::Tuple(_) | Type::Slice(_) => {}
     }
 
     // sys_exit(0): mov eax, 60; xor edi, edi; syscall

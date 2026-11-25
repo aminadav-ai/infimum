@@ -1998,6 +1998,7 @@ pub(super) fn execute_native_tool(
                         "src/showcase.rs", "src/store.rs", "src/strata_elf.rs", "src/strata_wasm.rs",
                         "src/typecheck.rs", "src/verify.rs", "src/wasm.rs", "src/wasm_api.rs",
                         "tests/module_namespace_tests.rs", "tests/proof_cache_tests.rs",
+                        "tests/slice_vec_tests.rs",
                         "tests/sprint1_tests.rs", "tests/sprint2_z3_tests.rs",
                         "tests/sprint3_security_tests.rs", "tests/sprint4_codegen_tests.rs",
                         "tests/sprint5_wasm_timetravel_tests.rs", "tests/sprint6_showcase_tests.rs",

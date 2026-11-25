@@ -88,6 +88,14 @@ impl<'a> Evaluator<'a> {
         Ok(ptr)
     }
 
+    fn val_as_int_or_str_ptr(&mut self, v: Val) -> Result<i64, String> {
+        match v {
+            Val::Int(i) => Ok(i),
+            Val::Str(s) => self.intern_str(&s),
+            other => Err(format!("Expected i64, got {other:?}")),
+        }
+    }
+
     fn tick(&mut self) -> Result<(), String> {
         self.steps += 1;
         if self.steps > MAX_EVAL_STEPS {
@@ -247,7 +255,10 @@ impl<'a> Evaluator<'a> {
                 let lv = self.eval_expr(lhs, scopes, cur_fn)?;
                 let rv = self.eval_expr(rhs, scopes, cur_fn)?;
                 match op {
-                    BinOp::Add => Ok(Val::Int(lv.as_int()?.wrapping_add(rv.as_int()?))),
+                    BinOp::Add => Ok(Val::Int(
+                        self.val_as_int_or_str_ptr(lv)?
+                            .wrapping_add(self.val_as_int_or_str_ptr(rv)?),
+                    )),
                     BinOp::Sub => Ok(Val::Int(lv.as_int()?.wrapping_sub(rv.as_int()?))),
                     BinOp::Mul => Ok(Val::Int(lv.as_int()?.wrapping_mul(rv.as_int()?))),
                     BinOp::Div => {
@@ -349,7 +360,8 @@ impl<'a> Evaluator<'a> {
                 }
             }
             Expr::MemLoad { index, .. } => {
-                let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
+                let idx_val = self.eval_expr(index, scopes, cur_fn)?;
+                let idx = self.val_as_int_or_str_ptr(idx_val)?;
                 if !(0..MAX_EVAL_MEM_WORDS).contains(&idx) {
                     return Err(format!("Out-of-bounds mem_load({idx})"));
                 }
@@ -399,6 +411,52 @@ impl<'a> Evaluator<'a> {
                     }),
                     other => Err(format!("Expected tuple for .{index}, got {other:?}")),
                 }
+            }
+            Expr::SliceLit { ptr, len, .. } => {
+                let p = self.eval_expr(ptr, scopes, cur_fn)?.as_int()?;
+                let l = self.eval_expr(len, scopes, cur_fn)?.as_int()?;
+                if p < 0 || l < 0 {
+                    return Err(format!("Invalid slice (ptr={p}, len={l}): negative ptr or len"));
+                }
+                Ok(Val::Tuple(vec![Val::Int(p), Val::Int(l)]))
+            }
+            Expr::SlicePtr(inner) => match self.eval_expr(inner, scopes, cur_fn)? {
+                Val::Tuple(elems) if elems.len() == 2 => Ok(elems[0].clone()),
+                other => Err(format!("Expected slice for .ptr, got {other:?}")),
+            },
+            Expr::SliceLen(inner) => match self.eval_expr(inner, scopes, cur_fn)? {
+                Val::Tuple(elems) if elems.len() == 2 => Ok(elems[1].clone()),
+                other => Err(format!("Expected slice for .len, got {other:?}")),
+            },
+            Expr::BoundsCheck {
+                index,
+                len,
+                inclusive_hi,
+            } => {
+                let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
+                let l = self.eval_expr(len, scopes, cur_fn)?.as_int()?;
+                let ok = if *inclusive_hi {
+                    idx >= 0 && idx <= l
+                } else {
+                    idx >= 0 && idx < l
+                };
+                if !ok {
+                    return Err(format!(
+                        "Slice index {idx} out of bounds for length {l} (inclusive_hi={inclusive_hi})"
+                    ));
+                }
+                Ok(Val::Int(idx))
+            }
+            Expr::RangeCheck { lo, hi, len } => {
+                let lo_v = self.eval_expr(lo, scopes, cur_fn)?.as_int()?;
+                let hi_v = self.eval_expr(hi, scopes, cur_fn)?.as_int()?;
+                let l = self.eval_expr(len, scopes, cur_fn)?.as_int()?;
+                if lo_v < 0 || lo_v > hi_v || hi_v > l {
+                    return Err(format!(
+                        "Slice range [{lo_v}..{hi_v}] out of bounds for length {l}"
+                    ));
+                }
+                Ok(Val::Int(lo_v))
             }
         }
     }
