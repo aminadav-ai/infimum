@@ -77,7 +77,7 @@ pub fn fv_is_builtin_type(ptr: i64, len: i64) -[Mem]-> bool {
   if c0 >= 'A' && c0 <= 'Z' {
     true
   } else if len == 3 {
-    slice_eq_str(ptr, len, "i64") || slice_eq_str(ptr, len, "str")
+    slice_eq_str(ptr, len, "i64") || slice_eq_str(ptr, len, "str") || slice_eq_str(ptr, len, "vec")
   } else if len == 4 {
     slice_eq_str(ptr, len, "bool") || slice_eq_str(ptr, len, "unit") || slice_eq_str(ptr, len, "word")
   } else if len == 5 {
