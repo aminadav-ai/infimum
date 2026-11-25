@@ -538,3 +538,53 @@ test "struct array works without std/math and clamps oob" {
         .expect("struct array layout must compile to Wasm without std/math.ifm");
     assert!(wasm.starts_with(b"\0asm"));
 }
+
+#[test]
+fn export_abi_respects_pub_and_pub_use_and_hides_privates() {
+    let mut files = BTreeMap::new();
+    files.insert(
+        "shared.ifm".to_string(),
+        r#"
+const INTERNAL_SECRET: i64 = 999;
+pub const PUBLIC_LIMIT: i64 = 128;
+pub enum Mode {
+  Off = 0,
+  On = 1,
+}
+"#
+        .to_string(),
+    );
+    files.insert(
+        "helper.ifm".to_string(),
+        "pub const HELPER_ONLY: i64 = 77;\n".to_string(),
+    );
+    files.insert(
+        "main.ifm".to_string(),
+        r#"
+pub use "shared.ifm";
+use "helper.ifm";
+
+const LOCAL_PRIV: i64 = 42;
+pub const LOCAL_PUB: i64 = PUBLIC_LIMIT + HELPER_ONLY + LOCAL_PRIV;
+
+pub layout AppMem {
+  state: word,
+}
+
+export fn ping() -> i64 { Mode::On }
+"#
+        .to_string(),
+    );
+
+    let module = parse_module_from_virtual_fs("main.ifm", &files)
+        .expect("module with pub use + private use should parse");
+    let rust_abi = infimum_lang::abi::generate_rust_abi(&module).expect("rust abi");
+    assert!(rust_abi.contains("pub const PUBLIC_LIMIT: i64 = 128;"));
+    assert!(rust_abi.contains("pub const LOCAL_PUB: i64 = 247;"));
+    assert!(rust_abi.contains("pub enum Mode"));
+    assert!(rust_abi.contains("APP_MEM_STATE_WORD"));
+    // Private items and privately-imported items must NOT leak into exported ABI
+    assert!(!rust_abi.contains("INTERNAL_SECRET"));
+    assert!(!rust_abi.contains("HELPER_ONLY"));
+    assert!(!rust_abi.contains("LOCAL_PRIV"));
+}
