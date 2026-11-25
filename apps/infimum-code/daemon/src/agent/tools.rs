@@ -2024,7 +2024,7 @@ pub(super) fn execute_native_tool(
                     "Build/CI scripts (.sh, .py, GitHub Actions .yml), Cargo.toml manifests, Forma UI spec, and Infimum Code system prompt",
                     &[
                         "run_checks.sh", "ci_verify_corpus.sh", "build_studio.sh",
-                        "generate_cleanroom_icon.py", "ci.yml",
+                        "generate_cleanroom_icon.py", "ci.yml", "site-ci.yml",
                         "workspace-Cargo.toml", "lang-Cargo.toml", "web-Cargo.toml", "daemon-Cargo.toml",
                         "INFIMUM_FORMA_SPEC.md", "system_prompt.md",
                     ],
@@ -2034,6 +2034,7 @@ pub(super) fn execute_native_tool(
                     "Cloudflare Worker, Online Infimum Code Studio, WebGPU Player, and infimum-lang.org frontend sources",
                     &[
                         "src/worker.js", "wrangler.toml", "public/_headers",
+                        "scripts/verify_and_deploy.sh",
                         "public/code/code.js", "public/code/agent_worker.js", "public/code/z3_worker.js",
                         "public/code/studio_abi.js", "public/code/index.html",
                         "public/player/player.js", "public/player/index.html",
@@ -2156,6 +2157,10 @@ pub(super) fn execute_native_tool(
                             .unwrap_or_default(),
                         "ci.yml" => monorepo
                             .map(|m| vec![m.join(".github").join("workflows").join("ci.yml")])
+                            .unwrap_or_default(),
+                        "site-ci.yml" => site_root
+                            .as_ref()
+                            .map(|sr| vec![sr.join(".github").join("workflows").join("ci.yml")])
                             .unwrap_or_default(),
                         "workspace-Cargo.toml" => monorepo
                             .map(|m| vec![m.join("Cargo.toml")])
