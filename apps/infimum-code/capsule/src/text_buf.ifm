@@ -8,22 +8,22 @@ use "abi.ifm";
 use "primitives.ifm";
 use "theme.ifm";
 use "daemon_client.ifm";
-use "std/text_edit.ifm";
+pub use "std/text_edit.ifm";
 
 // --- Plain-Text Wrapping, Hit-Test & Selection (delegated to `std/text_edit.ifm`) ---
 
-fn measure_wrapped_ptr(max_w: i64, ptr: i64, size: i64, line_h: i64, style: i64) -[Mem]-> i64 {
+pub fn measure_wrapped_ptr(max_w: i64, ptr: i64, size: i64, line_h: i64, style: i64) -[Mem]-> i64 {
   tbuf_measure_wrapped_h(ptr, MAX_MSG_CHARS, max_w, size, line_h, style)
 }
 
-fn clear_msg_sel() -[Mem]-> unit {
+pub fn clear_msg_sel() -[Mem]-> unit {
   StudioMem.msg_sel_ptr = 0;
   StudioMem.msg_sel_anchor = 0;
   StudioMem.msg_sel_focus = 0;
   StudioMem.msg_sel_dragging = 0;
 }
 
-fn select_word_in_msg(ptr: i64, idx: i64) -[Mem]-> unit {
+pub fn select_word_in_msg(ptr: i64, idx: i64) -[Mem]-> unit {
   let n = tbuf_len(ptr, MAX_MSG_CHARS);
   if n > 0 {
     StudioMem.msg_sel_ptr = ptr;
@@ -33,11 +33,11 @@ fn select_word_in_msg(ptr: i64, idx: i64) -[Mem]-> unit {
   }
 }
 
-fn hit_wrapped_ptr(mx: i64, my: i64, x: i64, y: i64, max_w: i64, ptr: i64, size: i64, line_h: i64, style: i64) -[Mem]-> i64 {
+pub fn hit_wrapped_ptr(mx: i64, my: i64, x: i64, y: i64, max_w: i64, ptr: i64, size: i64, line_h: i64, style: i64) -[Mem]-> i64 {
   tbuf_hit_wrapped(ptr, MAX_MSG_CHARS, mx, my, x, y, max_w, size, line_h, style)
 }
 
-fn emit_wrapped_sel_ptr(x: i64, y: i64, max_w: i64, ptr: i64, size: i64, line_h: i64, style: i64, rgba: i64, clip: i64, vis_y0: i64, vis_y1: i64, sel_lo_i: i64, sel_hi_i: i64) -[Mem]-> i64 {
+pub fn emit_wrapped_sel_ptr(x: i64, y: i64, max_w: i64, ptr: i64, size: i64, line_h: i64, style: i64, rgba: i64, clip: i64, vis_y0: i64, vis_y1: i64, sel_lo_i: i64, sel_hi_i: i64) -[Mem]-> i64 {
   tbuf_draw_wrapped(
     ptr, MAX_MSG_CHARS, x, y, max_w, size, line_h, style, rgba,
     sel_lo_i, sel_hi_i, pack_rgba(59, 130, 246, 115), -1, 0, clip, vis_y0, vis_y1
@@ -46,9 +46,9 @@ fn emit_wrapped_sel_ptr(x: i64, y: i64, max_w: i64, ptr: i64, size: i64, line_h:
 
 // --- Editable Input Buffer (`StudioMem::input_buf`, cap 8192) ---
 
-fn input_len() -[Mem]-> i64 { tbuf_len(StudioMem::input_buf, INPUT_MAX_CHARS) }
+pub fn input_len() -[Mem]-> i64 { tbuf_len(StudioMem::input_buf, INPUT_MAX_CHARS) }
 
-fn input_delete_range(lo: i64, hi: i64) -[Mem]-> unit {
+pub fn input_delete_range(lo: i64, hi: i64) -[Mem]-> unit {
   let prev_len = input_len();
   let next_pos = tbuf_delete_range(StudioMem::input_buf, INPUT_MAX_CHARS, lo, hi);
   if input_len() != prev_len {
@@ -58,7 +58,7 @@ fn input_delete_range(lo: i64, hi: i64) -[Mem]-> unit {
   }
 }
 
-fn input_delete_selection() -[Mem]-> bool {
+pub fn input_delete_selection() -[Mem]-> bool {
   let c = StudioMem.cursor_pos;
   let a = StudioMem.sel_anchor;
   if c != a {
@@ -69,7 +69,7 @@ fn input_delete_selection() -[Mem]-> bool {
   }
 }
 
-fn input_insert_char(cp: i64) -[Mem]-> unit {
+pub fn input_insert_char(cp: i64) -[Mem]-> unit {
   input_delete_selection();
   let prev_len = input_len();
   let next_pos = tbuf_insert_char(StudioMem::input_buf, INPUT_MAX_CHARS, StudioMem.cursor_pos, cp);
@@ -80,7 +80,7 @@ fn input_insert_char(cp: i64) -[Mem]-> unit {
   }
 }
 
-fn measure_input_lines(max_w: i64, size: i64) -[Mem]-> i64 {
+pub fn measure_input_lines(max_w: i64, size: i64) -[Mem]-> i64 {
   let len = input_len();
   let mut lines = 1;
   let mut cx = 0;
@@ -102,7 +102,7 @@ fn measure_input_lines(max_w: i64, size: i64) -[Mem]-> i64 {
   lines
 }
 
-fn hit_input_index_2d(mx: i64, my: i64, box_x: i64, box_y: i64, max_w: i64, size: i64, in_lh: i64) -[Mem]-> i64 {
+pub fn hit_input_index_2d(mx: i64, my: i64, box_x: i64, box_y: i64, max_w: i64, size: i64, in_lh: i64) -[Mem]-> i64 {
   let len = input_len();
   let lh = if in_lh > 0 { in_lh } else { 20 };
   let target_row = clamp_i64((my - box_y) / lh, 0, 2000);
@@ -138,7 +138,7 @@ fn hit_input_index_2d(mx: i64, my: i64, box_x: i64, box_y: i64, max_w: i64, size
   best
 }
 
-fn input_cursor_rel_y(cur_idx: i64, max_w: i64, size: i64, in_lh: i64) -[Mem]-> i64 {
+pub fn input_cursor_rel_y(cur_idx: i64, max_w: i64, size: i64, in_lh: i64) -[Mem]-> i64 {
   let len = input_len();
   let lim = clamp_i64(cur_idx, 0, len);
   let mut row = 0;
@@ -161,7 +161,7 @@ fn input_cursor_rel_y(cur_idx: i64, max_w: i64, size: i64, in_lh: i64) -[Mem]-> 
   row * in_lh
 }
 
-fn input_move_vertical(dir: i64, max_w: i64, size: i64, in_lh: i64, keep_sel: bool) -[Mem]-> unit {
+pub fn input_move_vertical(dir: i64, max_w: i64, size: i64, in_lh: i64, keep_sel: bool) -[Mem]-> unit {
   let len = input_len();
   let cur = clamp_i64(StudioMem.cursor_pos, 0, len);
   let mut row = 0;
@@ -193,7 +193,7 @@ fn input_move_vertical(dir: i64, max_w: i64, size: i64, in_lh: i64, keep_sel: bo
   StudioMem.in_follow_cursor = 1;
 }
 
-fn input_move_line_edge(to_end: bool, max_w: i64, size: i64, keep_sel: bool) -[Mem]-> unit {
+pub fn input_move_line_edge(to_end: bool, max_w: i64, size: i64, keep_sel: bool) -[Mem]-> unit {
   let len = input_len();
   let cur = clamp_i64(StudioMem.cursor_pos, 0, len);
   let mut cx = 0;
@@ -244,7 +244,7 @@ fn input_move_line_edge(to_end: bool, max_w: i64, size: i64, keep_sel: bool) -[M
 
 // --- Settings, Packed Message Pool & Project Tree Helpers ---
 
-fn save_settings() -[Mem, Net]-> unit {
+pub fn save_settings() -[Mem, Net]-> unit {
   StudioMem.settings_theme = StudioMem.theme;
   StudioMem.settings_scale = StudioMem.font_scale_pct;
   StudioMem.settings_currency = StudioMem.currency_id;
@@ -252,7 +252,7 @@ fn save_settings() -[Mem, Net]-> unit {
   daemon::settings_save();
 }
 
-fn reset_tl_expanded() -[Mem]-> unit {
+pub fn reset_tl_expanded() -[Mem]-> unit {
   let mut i = 0;
   while i < MAX_MESSAGES max 128 {
     StudioMem.msg_tl_expanded[i] = 0;
@@ -260,7 +260,7 @@ fn reset_tl_expanded() -[Mem]-> unit {
   }
 }
 
-fn reset_messages() -[Mem]-> unit {
+pub fn reset_messages() -[Mem]-> unit {
   StudioMem.msg_count = 0;
   StudioMem.msg_pool_cursor = StudioMem::msg_pool;
   StudioMem.img_count = 0;
@@ -277,7 +277,7 @@ fn reset_messages() -[Mem]-> unit {
   clear_msg_sel();
 }
 
-fn copy_msg_meta(dst_slot: i64, src_slot: i64) -[Mem]-> unit {
+pub fn copy_msg_meta(dst_slot: i64, src_slot: i64) -[Mem]-> unit {
   StudioMem.msg_meta[dst_slot] = StudioMem.msg_meta[src_slot];
   StudioMem.msg_tl_expanded[dst_slot] = StudioMem.msg_tl_expanded[src_slot];
 }
@@ -285,7 +285,7 @@ fn copy_msg_meta(dst_slot: i64, src_slot: i64) -[Mem]-> unit {
 // Evict or invalidate any existing messages whose `text_ptr` or `tl_ptr` overlaps
 // `[alloc_start, alloc_end)` before writing into `msg_pool` (prevents silent corruption on wrap-around).
 // Returns the updated index of `keep_slot` (or -1 if `keep_slot < 0`).
-fn evict_msg_pool_range(alloc_start: i64, alloc_end: i64, keep_slot: i64) -[Mem]-> i64 {
+pub fn evict_msg_pool_range(alloc_start: i64, alloc_end: i64, keep_slot: i64) -[Mem]-> i64 {
   let cnt = clamp_i64(StudioMem.msg_count, 0, MAX_MESSAGES);
   let mut dst = 0;
   let mut new_keep = -1;
@@ -324,7 +324,7 @@ fn evict_msg_pool_range(alloc_start: i64, alloc_end: i64, keep_slot: i64) -[Mem]
   new_keep
 }
 
-fn append_message(role: i64, src_ptr: i64, el_tenths: i64, cost_m: i64, tokens: i64) -[Mem]-> unit {
+pub fn append_message(role: i64, src_ptr: i64, el_tenths: i64, cost_m: i64, tokens: i64) -[Mem]-> unit {
   let cur_raw = StudioMem.msg_pool_cursor;
   let mut cursor = if cur_raw < StudioMem::msg_pool || cur_raw > StudioMem::msg_pool + MSG_POOL_WRAP_OFFSET {
     StudioMem::msg_pool
@@ -374,7 +374,7 @@ fn append_message(role: i64, src_ptr: i64, el_tenths: i64, cost_m: i64, tokens: 
   StudioMem.auto_scroll_bottom = 1;
 }
 
-fn attach_live_timeline_to_last_msg() -[Mem]-> unit {
+pub fn attach_live_timeline_to_last_msg() -[Mem]-> unit {
   let tl_n = clamp_i64(StudioMem.live_timeline_words, 0, LIVE_TIMELINE_MAX_WORDS);
   let cnt = clamp_i64(StudioMem.msg_count, 0, MAX_MESSAGES);
   if tl_n >= 7 && cnt > 0 {
@@ -403,7 +403,7 @@ fn attach_live_timeline_to_last_msg() -[Mem]-> unit {
   StudioMem.live_cmd_killing = 0;
 }
 
-fn spans_equal(buf_a: i64, start_a: i64, len_a: i64, buf_b: i64, start_b: i64, len_b: i64) -[Mem]-> bool {
+pub fn spans_equal(buf_a: i64, start_a: i64, len_a: i64, buf_b: i64, start_b: i64, len_b: i64) -[Mem]-> bool {
   if len_a != len_b || len_a <= 0 {
     false
   } else {
@@ -420,7 +420,7 @@ fn spans_equal(buf_a: i64, start_a: i64, len_a: i64, buf_b: i64, start_b: i64, l
   }
 }
 
-fn project_has_convs(p_start: i64, p_len: i64) -[Mem]-> bool {
+pub fn project_has_convs(p_start: i64, p_len: i64) -[Mem]-> bool {
   let clen = clamp_i64(mem_load(StudioMem::convs_buf), 0, 3500);
   let mut cpi = 0;
   let mut found = false;
@@ -447,7 +447,7 @@ fn project_has_convs(p_start: i64, p_len: i64) -[Mem]-> bool {
   found
 }
 
-fn count_and_init_project_tree() -[Mem]-> unit {
+pub fn count_and_init_project_tree() -[Mem]-> unit {
   for k in 0..MAX_PROJECTS max 64 {
     StudioMem.proj_expanded[k] = 0;
   }
@@ -489,7 +489,7 @@ fn count_and_init_project_tree() -[Mem]-> unit {
   }
 }
 
-fn extract_active_project_to(dst_ptr: i64) -[Mem]-> unit {
+pub fn extract_active_project_to(dst_ptr: i64) -[Mem]-> unit {
   let target = StudioMem.active_proj_idx;
   let plen = clamp_i64(mem_load(StudioMem::projects_buf), 0, 3500);
   let mut pi = 0;
@@ -516,7 +516,7 @@ fn extract_active_project_to(dst_ptr: i64) -[Mem]-> unit {
   }
 }
 
-fn daemon_fetch_conv_msg(msg_idx: i64) -[Mem, Net]-> i64 {
+pub fn daemon_fetch_conv_msg(msg_idx: i64) -[Mem, Net]-> i64 {
   buf_clear(StudioMem::http_req_buf);
   daemon::buf_append_lit(StudioMem::http_req_buf, 35900, "GET\n");
   daemon::buf_append_buf(StudioMem::http_req_buf, 35900, StudioMem::agent_url_buf);
@@ -530,7 +530,7 @@ fn daemon_fetch_conv_msg(msg_idx: i64) -[Mem, Net]-> i64 {
   host_ret()
 }
 
-fn daemon_load_gpu_img(msg_idx: i64, img_idx: i64) -[Mem, Net]-> i64 {
+pub fn daemon_load_gpu_img(msg_idx: i64, img_idx: i64) -[Mem, Net]-> i64 {
   buf_clear(StudioMem::http_req_buf);
   daemon::buf_append_buf(StudioMem::http_req_buf, 2000, StudioMem::agent_url_buf);
   daemon::buf_append_lit(StudioMem::http_req_buf, 2000, "/conversations/img/");
@@ -543,7 +543,7 @@ fn daemon_load_gpu_img(msg_idx: i64, img_idx: i64) -[Mem, Net]-> i64 {
   host_ret()
 }
 
-fn daemon_upload_pending_images(cnt: i64) -[Mem, Net]-> unit {
+pub fn daemon_upload_pending_images(cnt: i64) -[Mem, Net]-> unit {
   let n = clamp_i64(cnt, 0, 6);
   if n > 0 {
     daemon::http("DELETE", "/images", 0);
@@ -558,7 +558,7 @@ fn daemon_upload_pending_images(cnt: i64) -[Mem, Net]-> unit {
   }
 }
 
-fn daemon_load_conv(idx: i64) -[Mem, Net]-> i64 {
+pub fn daemon_load_conv(idx: i64) -[Mem, Net]-> i64 {
   buf_clear(StudioMem::http_body_tmp);
   buf_push_int(StudioMem::http_body_tmp, 32, idx);
   let code = daemon::http("POST", "/conversations/load?format=ifm", StudioMem::http_body_tmp);
@@ -629,7 +629,7 @@ fn daemon_load_conv(idx: i64) -[Mem, Net]-> i64 {
   }
 }
 
-fn start_new_dialog_for_project(p_idx: i64) -[Mem, Net]-> unit {
+pub fn start_new_dialog_for_project(p_idx: i64) -[Mem, Net]-> unit {
   let clamped = clamp_i64(p_idx, 0, 63);
   StudioMem.active_proj_idx = clamped;
   StudioMem.proj_expanded[clamped] = 1;
@@ -646,7 +646,7 @@ fn start_new_dialog_for_project(p_idx: i64) -[Mem, Net]-> unit {
   StudioMem.auto_scroll_bottom = 0;
 }
 
-fn start_gemini_async() -[Mem, Net]-> unit {
+pub fn start_gemini_async() -[Mem, Net]-> unit {
   let len = input_len();
   let has_img = StudioMem.pasted_img_w > 0 && StudioMem.pasted_img_h > 0;
   if (len > 0 || has_img) && StudioMem.ai_running == 0 {
@@ -691,7 +691,7 @@ fn start_gemini_async() -[Mem, Net]-> unit {
 
 // --- Clipboard Export Implementations ---
 
-fn handle_paste_text(ptr: i64, len: i64) -[Mem]-> i64 {
+pub fn handle_paste_text(ptr: i64, len: i64) -[Mem]-> i64 {
   input_delete_selection();
   let cur_len = input_len();
   let avail = clamp_i64(INPUT_MAX_CHARS - cur_len, 0, INPUT_MAX_CHARS);
@@ -731,7 +731,7 @@ fn handle_paste_text(ptr: i64, len: i64) -[Mem]-> i64 {
   ins
 }
 
-fn handle_copy_text() -[Mem]-> i64 {
+pub fn handle_copy_text() -[Mem]-> i64 {
   let ov = StudioMem.copy_override_ptr;
   if ov == -1 {
     StudioMem.copy_override_ptr = 0;

@@ -10,12 +10,12 @@ use "theme.ifm";
 use "icons.ifm";
 use "text_buf.ifm";
 use "daemon_client.ifm";
-mod md from "markdown.ifm";
-mod tl from "timeline.ifm";
+use "markdown.ifm" as md;
+use "timeline.ifm" as tl;
 
 // Detect trailing `[PLAY:<app.ifw>]` tag at the end of an assistant reply.
 // Returns the word offset where the tag (including preceding `\n` if any) starts, or -1 if absent.
-fn find_play_tag(text_ptr: i64) -[Mem]-> i64 {
+pub fn find_play_tag(text_ptr: i64) -[Mem]-> i64 {
   let n = clamp_i64(mem_load(text_ptr), 0, MAX_MSG_CHARS);
   let mut end_i = n;
   while end_i > 0 max 32 {
@@ -53,7 +53,7 @@ fn find_play_tag(text_ptr: i64) -[Mem]-> i64 {
   }
 }
 
-fn extract_play_name(text_ptr: i64, tag_pos: i64, dst: i64) -[Mem]-> i64 {
+pub fn extract_play_name(text_ptr: i64, tag_pos: i64, dst: i64) -[Mem]-> i64 {
   let n = clamp_i64(mem_load(text_ptr), 0, MAX_MSG_CHARS);
   let mut p = tag_pos;
   if p < n && mem_load(text_ptr + 1 + p) == '\n' {
@@ -75,7 +75,7 @@ fn extract_play_name(text_ptr: i64, tag_pos: i64, dst: i64) -[Mem]-> i64 {
   w
 }
 
-fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem]-> unit {
+pub fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let scale = StudioMem.font_scale_pct;
   let hdr_sz = sf(15);
@@ -102,7 +102,7 @@ fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem]-> uni
   }
 }
 
-fn render_feed(
+pub fn render_feed(
   w: i64, side_w: i64, main_x: i64, col_x: i64, col_w: i64,
   feed_y: i64, feed_h: i64, in_scroll_capture: bool
 ) -[Mem, Net]-> unit {

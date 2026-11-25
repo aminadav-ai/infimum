@@ -11,7 +11,7 @@ use "logic.ifm";
 
 // --- Articulated 3D Polygon Monsters (Grunt=1, Knight=2, Boss Shambler=3) ---
 
-fn draw_enemy_mesh_3d(idx: i64) -[Mem]-> unit {
+pub fn draw_enemy_mesh_3d(idx: i64) -[Mem]-> unit {
   let i = clamp_i64(idx, 0, 15);
   let st = FpsMem.enemies[i].state;
   if st != 2 {
@@ -88,7 +88,7 @@ fn draw_enemy_mesh_3d(idx: i64) -[Mem]-> unit {
 
 // --- Glowing 3D Wall Torches + Dynamic Point Lights ---
 
-fn emit_wall_torch(x: i64, y: i64, z: i64, idx: i64) -[Mem]-> unit {
+pub fn emit_wall_torch(x: i64, y: i64, z: i64, idx: i64) -[Mem]-> unit {
   let flick = ((FpsMem.tick * 13 + idx * 37) & 15);
   let fl_h = 220 + flick * 10;
   mesh3d_box(0, x - 45, y - 240, z - 45, x + 45, y, z + 45, MAT_METAL, pack_rgba(88, 82, 84, 255), 220, 0, 400);
@@ -98,7 +98,7 @@ fn emit_wall_torch(x: i64, y: i64, z: i64, idx: i64) -[Mem]-> unit {
 
 // --- True 3D Twin-Barrel Super-Shotgun Viewmodel (Camera-Space Mesh, Real Normal-Mapped Lighting!) ---
 
-fn draw_shotgun_mesh_vm() -[Mem]-> unit {
+pub fn draw_shotgun_mesh_vm() -[Mem]-> unit {
   let bob_x = fixed_to_int(fixed_cos(FpsMem.bob_t / 2) * 18.0);
   let bob_y = fixed_to_int(fixed_abs(fixed_sin(FpsMem.bob_t)) * 16.0);
   let rec_z = FpsMem.recoil_t * 14;
@@ -130,7 +130,7 @@ fn draw_shotgun_mesh_vm() -[Mem]-> unit {
 
 // --- Live Top-Right Radar Minimap (Mapped to Full 6-Zone Citadel: X=-10900..10900, Z=-20900..8900) ---
 
-fn draw_radar_minimap(vw: i64) -[Mem]-> unit {
+pub fn draw_radar_minimap(vw: i64) -[Mem]-> unit {
   let mw = 144;
   let mh = 196;
   let mx0 = vw - mw - 16;
@@ -178,7 +178,7 @@ fn draw_radar_minimap(vw: i64) -[Mem]-> unit {
 
 // --- Full Frame Renderer (Pass 1: Vulkan 3D Mesh + PBR Normal Maps + 24 Lights, Pass 2: 2D HUD) ---
 
-fn render_slipgate_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
+pub fn render_slipgate_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
   req vw >= 560 && vh >= 460
 {
   set_clip_rect(0, 0, 0, vw, vh);

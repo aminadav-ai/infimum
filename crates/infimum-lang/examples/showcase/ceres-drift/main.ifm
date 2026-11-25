@@ -5,13 +5,13 @@
 // True 6-DOF Zero-Gravity 3D Room-and-Tube Spaceship Shooter in Infimum Lang
 
 use "abi.ifm";
-use "maze.ifm";
-use "logic.ifm";
-use "render.ifm";
+use "maze.ifm" as maze;
+use "logic.ifm" as logic;
+use "render.ifm" as render;
 
 fn try_restart_key(r_now: i64) -[Mem, Gpu]-> i64 {
   let triggered = if r_now == 1 && GameMem.prev_r_key == 0 && GameMem.phase == GamePhase::Dead {
-    reset_ceres();
+    logic::reset_ceres();
     sfx_click();
     1
   } else {
@@ -24,7 +24,7 @@ fn try_restart_key(r_now: i64) -[Mem, Gpu]-> i64 {
 export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu]-> i64 {
   GameMem.prev_r_key = 0;
   GameMem.prev_e_key = 0;
-  reset_ceres();
+  logic::reset_ceres();
   1
 }
 
@@ -88,52 +88,52 @@ export fn step_ui(
     fire_missile = 0;
     // Keep pointer lock active so pressing [R] (or clicking) restarts seamlessly without re-locking!
     if locked && m_clicked == 1 {
-      reset_ceres();
+      logic::reset_ceres();
       sfx_click();
     }
   }
 
-  step_ceres_sim(fwd, strafe, vert, turn_yaw, turn_pitch, fire_laser, fire_missile);
-  render_ceres_frame(w, h, mx, my, m_clicked);
+  logic::step_ceres_sim(fwd, strafe, vert, turn_yaw, turn_pitch, fire_laser, fire_missile);
+  render::render_ceres_frame(w, h, mx, my, m_clicked);
   gfx_end_frame()
 }
 
 // --- Built-in Unit Tests (auto-stripped from .ifw binary) ---
 
 test "fixed Ceres-1 mine has all 11 chambers across 3 decks connected by 13 tubes" {
-  build_ceres_mine();
+  maze::build_ceres_mine();
   for r in 0..11 {
-    assert(mine_rooms_reachable(ROOM_START, r));
+    assert(maze::mine_rooms_reachable(ROOM_START, r));
   }
-  assert(mine_rooms_reachable(ROOM_START, ROOM_REACTOR));
-  assert(mine_rooms_reachable(ROOM_MINE, ROOM_DOME));
+  assert(maze::mine_rooms_reachable(ROOM_START, ROOM_REACTOR));
+  assert(maze::mine_rooms_reachable(ROOM_MINE, ROOM_DOME));
 }
 
 test "seamless flight from Airlock through octagonal Entry Tube into Central Atrium" {
   let _ = init_app(1, 1024, 768);
-  assert(find_current_room(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z) == ROOM_START);
+  assert(maze::find_current_room(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z) == ROOM_START);
   // Fly forward straight through Tube 0 (z = 20400 -> 9000) without snagging at either doorway!
   for _t in 0..55 {
-    step_ceres_sim(1, 0, 0, 0, 0, 0, 0);
+    logic::step_ceres_sim(1, 0, 0, 0, 0, 0, 0);
   }
-  assert(find_current_room(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z) == ROOM_ATRIUM);
+  assert(maze::find_current_room(GameMem.ship_x, GameMem.ship_y, GameMem.ship_z) == ROOM_ATRIUM);
   // Verify octagonal tube wall blocks sideways clipping inside Tube 0
-  assert(!hits_maze_3d(0, 10000, 15000, 420));
-  assert(hits_maze_3d(1000, 10000, 15000, 420));
-  assert(hits_maze_3d(750, 10750, 15000, 420)); // hits 45-degree chamfer bevel!
+  assert(!maze::hits_maze_3d(0, 10000, 15000, 420));
+  assert(maze::hits_maze_3d(1000, 10000, 15000, 420));
+  assert(maze::hits_maze_3d(750, 10750, 15000, 420)); // hits 45-degree chamfer bevel!
 }
 
 test "vertical elevator shafts connect Atrium seamlessly to Deck 1 and Deck 3" {
-  build_ceres_mine();
+  maze::build_ceres_mine();
   // Check continuous open path along vertical Shaft 10 (Atrium y=10000 -> Upper Bridge y=18000)
   for s in 0..40 {
     let py = 10000 + s * 200;
-    assert(!hits_maze_3d(0, py, 9000, 420));
+    assert(!maze::hits_maze_3d(0, py, 9000, 420));
   }
   // Check continuous open path along vertical Shaft 7 (Atrium y=10000 -> Lower Ore Mine y=2000)
   for s in 0..40 {
     let py = 10000 - s * 200;
-    assert(!hits_maze_3d(0, py, 9000, 420));
+    assert(!maze::hits_maze_3d(0, py, 9000, 420));
   }
 }
 
@@ -147,7 +147,7 @@ test "weapons and reactor destruction escape sequence work on fixed mine" {
   fire_player_missile();
   assert(GameMem.missiles == m0 - 1);
 
-  damage_reactor(300);
+  logic::damage_reactor(300);
   assert(GameMem.reactor_hp == 0);
   assert(GameMem.phase == GamePhase::Escape);
   assert(GameMem.escape_ticks == 2700);

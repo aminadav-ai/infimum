@@ -11,7 +11,7 @@
 
 use "abi.ifm";
 
-fn add_sector(x0: i64, z0: i64, x1: i64, z1: i64, fy: i64, mat: i64, col: i64) -[Mem]-> unit {
+pub fn add_sector(x0: i64, z0: i64, x1: i64, z1: i64, fy: i64, mat: i64, col: i64) -[Mem]-> unit {
   let n = FpsMem.sector_cnt;
   if n >= 0 && n < 40 {
     FpsMem.sectors[n].x0 = x0;
@@ -26,7 +26,7 @@ fn add_sector(x0: i64, z0: i64, x1: i64, z1: i64, fy: i64, mat: i64, col: i64) -
   }
 }
 
-fn add_wall_box(x0: i64, z0: i64, x1: i64, z1: i64, y0: i64, y1: i64, mat: i64, col: i64) -[Mem]-> unit {
+pub fn add_wall_box(x0: i64, z0: i64, x1: i64, z1: i64, y0: i64, y1: i64, mat: i64, col: i64) -[Mem]-> unit {
   let n = FpsMem.wall_cnt;
   if n >= 0 && n < 112 {
     FpsMem.walls[n].x0 = x0;
@@ -41,7 +41,7 @@ fn add_wall_box(x0: i64, z0: i64, x1: i64, z1: i64, y0: i64, y1: i64, mat: i64, 
   }
 }
 
-fn spawn_enemy(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
+pub fn spawn_enemy(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
   req idx >= 0 && idx < 16
 {
   let hp = if kind == 3 { 210 } else if kind == 2 { 115 } else { 70 };
@@ -59,7 +59,7 @@ fn spawn_enemy(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
   FpsMem.enemies[idx].spawn_z = z;
 }
 
-fn spawn_item(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
+pub fn spawn_item(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
   req idx >= 0 && idx < 16
 {
   FpsMem.items[idx].x = x;
@@ -70,7 +70,7 @@ fn spawn_item(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
   FpsMem.items[idx].pad = 0;
 }
 
-fn build_citadel_world() -[Mem]-> unit {
+pub fn build_citadel_world() -[Mem]-> unit {
   FpsMem.sector_cnt = 0;
   FpsMem.wall_cnt = 0;
 

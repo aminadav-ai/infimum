@@ -5,7 +5,7 @@
 // 100% Clean-Room Original IP • Written 100% in Infimum (Telos + Flux + Strata + Forma)
 // Runs natively on Vulkan/Wayland via `infimum-web` (0% Chromium, 0% HTML/CSS/JS).
 
-use "abi.ifm";
+pub use "abi.ifm";
 use "primitives.ifm";
 use "theme.ifm";
 use "icons.ifm";

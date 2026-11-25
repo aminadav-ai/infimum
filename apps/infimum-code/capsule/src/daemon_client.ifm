@@ -9,9 +9,10 @@
 
 use "abi.ifm";
 use "primitives.ifm";
+use "std/sys_mem.ifm";
 use "std/buf.ifm";
 
-mod daemon {
+pub mod daemon {
   // --- String Buffer Builders (UTF-32 word-addressed: [len, cp0, cp1, ...]) ---
 
   pub fn buf_append_buf(dst: i64, max_cap: i64, src: i64) -[Mem]-> unit {

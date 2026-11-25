@@ -10,7 +10,7 @@ use "logic.ifm";
 
 // --- 7 Saturated Gemstone Pigments (1=Ruby, 2=Emerald, 3=Sapphire, 4=Amber, 5=Aqua, 6=Amethyst, 7=Garnet) ---
 
-fn gem_r(cid: i64) -> i64 {
+pub fn gem_r(cid: i64) -> i64 {
   match cid {
     1 => 242,
     2 => 36,
@@ -22,7 +22,7 @@ fn gem_r(cid: i64) -> i64 {
   }
 }
 
-fn gem_g(cid: i64) -> i64 {
+pub fn gem_g(cid: i64) -> i64 {
   match cid {
     1 => 46,
     2 => 214,
@@ -34,7 +34,7 @@ fn gem_g(cid: i64) -> i64 {
   }
 }
 
-fn gem_b(cid: i64) -> i64 {
+pub fn gem_b(cid: i64) -> i64 {
   match cid {
     1 => 68,
     2 => 104,
@@ -49,25 +49,25 @@ fn gem_b(cid: i64) -> i64 {
 // --- 3D Tabletop Perspective Projection (Fixed-Point 1000 units = 1 cell) ---
 // Camera at (0, 9200, 11200) pitched down ~42 deg (cos=742, sin=670 / 1024).
 
-fn cam_fl(vw: i64, vh: i64) -> i64 {
+pub fn cam_fl(vw: i64, vh: i64) -> i64 {
   let m = if vw < vh { vw } else { vh };
   clamp_i64((m * 116) / 100, 420, 2400)
 }
 
-fn proj_vz(wy: i64, wz: i64) -> i64 {
+pub fn proj_vz(wy: i64, wz: i64) -> i64 {
   let dy = wy - 9200;
   let dz = 11200 - wz;
   let vz = (dz * 742 - dy * 670) / 1024;
   if vz < 400 { 400 } else { vz }
 }
 
-fn proj_sx(wx: i64, wy: i64, wz: i64, vw: i64, vh: i64) -> i64 {
+pub fn proj_sx(wx: i64, wy: i64, wz: i64, vw: i64, vh: i64) -> i64 {
   let vz = proj_vz(wy, wz);
   let fl = cam_fl(vw, vh);
   vw / 2 + (wx * fl) / vz
 }
 
-fn proj_sy(wy: i64, wz: i64, vw: i64, vh: i64) -> i64 {
+pub fn proj_sy(wy: i64, wz: i64, vw: i64, vh: i64) -> i64 {
   let dy = wy - 9200;
   let dz = 11200 - wz;
   let vz = proj_vz(wy, wz);
@@ -76,16 +76,16 @@ fn proj_sy(wy: i64, wz: i64, vw: i64, vh: i64) -> i64 {
   (vh * 53) / 100 - (vy * fl) / vz
 }
 
-fn proj_zbuf(wy: i64, wz: i64) -> i64 {
+pub fn proj_zbuf(wy: i64, wz: i64) -> i64 {
   clamp_i64(proj_vz(wy, wz) / 28, 2, 1020)
 }
 
 // Exact 2D point-in-convex-quad test for pixel-accurate 3D tile picking
-fn cross_2d(ax: i64, ay: i64, bx: i64, by: i64, px: i64, py: i64) -> i64 {
+pub fn cross_2d(ax: i64, ay: i64, bx: i64, by: i64, px: i64, py: i64) -> i64 {
   (bx - ax) * (py - ay) - (by - ay) * (px - ax)
 }
 
-fn point_in_quad(px: i64, py: i64, x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64, x3: i64, y3: i64) -> bool {
+pub fn point_in_quad(px: i64, py: i64, x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64, x3: i64, y3: i64) -> bool {
   let c0 = cross_2d(x0, y0, x1, y1, px, py);
   let c1 = cross_2d(x1, y1, x2, y2, px, py);
   let c2 = cross_2d(x2, y2, x3, y3, px, py);
@@ -94,7 +94,7 @@ fn point_in_quad(px: i64, py: i64, x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, 
 }
 
 // Emit a horizontal 3D quad on plane y = wy spanning [x0..x1] x [z0..z1]
-fn emit_horiz_quad(
+pub fn emit_horiz_quad(
   x0: i64, x1: i64, z0: i64, z1: i64, wy: i64,
   u_rep: i64, v_rep: i64, mat: i64, col: i64, light: i64, vw: i64, vh: i64
 ) -[Mem]-> unit {
@@ -118,7 +118,7 @@ fn emit_horiz_quad(
 }
 
 // Emit a front-facing vertical 3D skirt quad at z = wz spanning [x0..x1] x [y_top..y_bot]
-fn emit_front_skirt(
+pub fn emit_front_skirt(
   x0: i64, x1: i64, wz: i64, y_top: i64, y_bot: i64,
   u_rep: i64, v_rep: i64, mat: i64, col: i64, light: i64, vw: i64, vh: i64
 ) -[Mem]-> unit {
@@ -142,7 +142,7 @@ fn emit_front_skirt(
 }
 
 // Emit a true 3D ray-shaded refractive glass jewel sphere + its floor contact shadow & colored caustic
-fn draw_jewel_3d(
+pub fn draw_jewel_3d(
   wx: i64, wy_lift: i64, wz: i64, world_rad: i64,
   cid: i64, is_sel: bool, floor_y: i64, alpha: i64, vw: i64, vh: i64
 ) -[Mem]-> unit {
@@ -188,7 +188,7 @@ fn draw_jewel_3d(
   );
 }
 
-fn draw_explosion_3d(wx: i64, wz: i64, cid: i64, rem: i64, vw: i64, vh: i64) -[Mem]-> unit {
+pub fn draw_explosion_3d(wx: i64, wz: i64, cid: i64, rem: i64, vw: i64, vh: i64) -[Mem]-> unit {
   let prog = clamp_i64(14 - rem, 0, 14);
   let dist = 120 + prog * 55;
   let lift = 180 + prog * 48;
@@ -204,13 +204,13 @@ fn draw_explosion_3d(wx: i64, wz: i64, cid: i64, rem: i64, vw: i64, vh: i64) -[M
 
 // --- HUD & Full 3D Scene Renderer ---
 
-fn draw_hud_card(x: i64, y: i64, w: i64, h: i64, label: str, val: i64, accent: i64) -[Mem]-> unit {
+pub fn draw_hud_card(x: i64, y: i64, w: i64, h: i64, label: str, val: i64, accent: i64) -[Mem]-> unit {
   ui_rect(x, y, w, h, 10, 1, 4, pack_rgba(24, 22, 30, 238), pack_rgba(124, 102, 68, 210), 0);
   ui_text(x + 12, y + 6, label, 11, 1, pack_rgba(188, 174, 150, 255), 0);
   ui_int(x + 12, y + 21, val, 21, 1, accent, 0);
 }
 
-fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
+pub fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
   req vw >= 560 && vh >= 460
 {
   set_clip_rect(0, 0, 0, vw, vh);

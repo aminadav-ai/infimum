@@ -5,39 +5,39 @@
 
 use "abi.ifm";
 use "primitives.ifm";
-use "std/theme.ifm";
+pub use "std/theme.ifm";
 
-fn sf(base_px: i64) -[Mem]-> i64 {
+pub fn sf(base_px: i64) -[Mem]-> i64 {
   clamp_i64((base_px * StudioMem.font_scale_pct + 50) / 100, 10, 44)
 }
 
-fn col_bg(th: i64) -> i64 { theme_bg(th) }
-fn col_side(th: i64) -> i64 { theme_side(th) }
-fn col_surf(th: i64) -> i64 { theme_surf(th) }
-fn col_surf2(th: i64) -> i64 { theme_surf2(th) }
-fn col_border(th: i64) -> i64 { theme_border(th) }
-fn col_text(th: i64) -> i64 { theme_text(th) }
-fn col_muted(th: i64) -> i64 { theme_muted(th) }
-fn col_accent() -> i64 { theme_accent() }
-fn col_emerald() -> i64 { theme_success() }
-fn col_red() -> i64 { theme_danger() }
-fn col_sel() -> i64 { pack_rgba(59, 130, 246, 110) }
+pub fn col_bg(th: i64) -> i64 { theme_bg(th) }
+pub fn col_side(th: i64) -> i64 { theme_side(th) }
+pub fn col_surf(th: i64) -> i64 { theme_surf(th) }
+pub fn col_surf2(th: i64) -> i64 { theme_surf2(th) }
+pub fn col_border(th: i64) -> i64 { theme_border(th) }
+pub fn col_text(th: i64) -> i64 { theme_text(th) }
+pub fn col_muted(th: i64) -> i64 { theme_muted(th) }
+pub fn col_accent() -> i64 { theme_accent() }
+pub fn col_emerald() -> i64 { theme_success() }
+pub fn col_red() -> i64 { theme_danger() }
+pub fn col_sel() -> i64 { pack_rgba(59, 130, 246, 110) }
 
-fn col_heading(th: i64) -> i64 {
+pub fn col_heading(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(12, 18, 32, 255) } else { pack_rgba(248, 250, 255, 255) }
 }
 
-fn col_code_bg(th: i64) -> i64 { theme_code_bg(th) }
+pub fn col_code_bg(th: i64) -> i64 { theme_code_bg(th) }
 
-fn col_code_pill(th: i64) -> i64 {
+pub fn col_code_pill(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(224, 232, 244, 255) } else { pack_rgba(33, 39, 52, 255) }
 }
 
-fn col_code_text(th: i64) -> i64 {
+pub fn col_code_text(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(28, 66, 130, 255) } else { pack_rgba(196, 218, 255, 255) }
 }
 
-fn is_openrouter_model(m_idx: i64) -> bool {
+pub fn is_openrouter_model(m_idx: i64) -> bool {
   m_idx == ModelId::OpenRouterQwenFree
     || m_idx == ModelId::OpenRouterDeepSeekFree
     || m_idx == ModelId::OpenRouterNemotron35VlFree
@@ -47,7 +47,7 @@ fn is_openrouter_model(m_idx: i64) -> bool {
     || m_idx == ModelId::OpenRouterGlm53Flash
 }
 
-fn model_provider_group(m_idx: i64) -> i64 {
+pub fn model_provider_group(m_idx: i64) -> i64 {
   if m_idx <= ModelId::Gemini25FlashLite {
     2 // Google Gemini
   } else if m_idx == ModelId::OpenAiGpt41 || m_idx == ModelId::OpenAiGpt41Mini || m_idx == ModelId::OpenAiO4Mini {
@@ -65,7 +65,7 @@ fn model_provider_group(m_idx: i64) -> i64 {
   }
 }
 
-fn provider_short_name(p: i64) -> str {
+pub fn provider_short_name(p: i64) -> str {
   match p {
     0 => "Gemini",
     1 => "OpenAI",
@@ -77,7 +77,7 @@ fn provider_short_name(p: i64) -> str {
   }
 }
 
-fn model_display_name(m_idx: i64) -> str {
+pub fn model_display_name(m_idx: i64) -> str {
   match m_idx {
     ModelId::Gemini4Carbon => "Gemini 4 Carbon",
     ModelId::Gemini4Argon => "Gemini 4 Argon",
@@ -104,7 +104,7 @@ fn model_display_name(m_idx: i64) -> str {
   }
 }
 
-fn model_api_slug(m_idx: i64) -> str {
+pub fn model_api_slug(m_idx: i64) -> str {
   match m_idx {
     ModelId::Gemini4Carbon => "gemini-4-carbon",
     ModelId::Gemini4Argon => "gemini-4-argon",
@@ -131,7 +131,7 @@ fn model_api_slug(m_idx: i64) -> str {
   }
 }
 
-fn currency_short_label(cur_id: i64) -> str {
+pub fn currency_short_label(cur_id: i64) -> str {
   match cur_id {
     Currency::Usd => "USD $",
     Currency::Eur => "EUR €",
@@ -139,7 +139,7 @@ fn currency_short_label(cur_id: i64) -> str {
   }
 }
 
-fn currency_menu_label(cur_id: i64) -> str {
+pub fn currency_menu_label(cur_id: i64) -> str {
   match cur_id {
     Currency::Usd => "USD ($)",
     Currency::Eur => "EUR (€)",

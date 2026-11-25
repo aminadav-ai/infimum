@@ -3,29 +3,29 @@
 //
 // INFIMUM SLIPGATE — Shared Typed ABI & Memory Layout (Z3-Verified, Large 6-Zone Citadel)
 
-use "std/prelude.ifm";
-use "std/mesh3d.ifm";
+pub use "std/prelude.ifm";
+pub use "std/mesh3d.ifm";
 
-const ENEMY_COUNT: i64 = 16;
-const ITEM_COUNT: i64 = 16;
-const PARTICLE_COUNT: i64 = 32;
-const MAX_WALLS: i64 = 112;
-const MAX_SECTORS: i64 = 40;
-const MAT_ROCK: i64 = 7;
-const MAT_TIMBER: i64 = 8;
+pub const ENEMY_COUNT: i64 = 16;
+pub const ITEM_COUNT: i64 = 16;
+pub const PARTICLE_COUNT: i64 = 32;
+pub const MAX_WALLS: i64 = 112;
+pub const MAX_SECTORS: i64 = 40;
+pub const MAT_ROCK: i64 = 7;
+pub const MAT_TIMBER: i64 = 8;
 
-enum GameState {
+pub enum GameState {
   Playing = 0,
   Victory = 1,
   Dead = 2,
 }
 
-enum CursorKind {
+pub enum CursorKind {
   Default = 0,
   Pointer = 1,
 }
 
-struct Sector {
+pub struct Sector {
   x0: word,
   z0: word,
   x1: word,
@@ -36,7 +36,7 @@ struct Sector {
   pad: word,
 }
 
-struct Wall {
+pub struct Wall {
   x0: word,
   z0: word,
   x1: word,
@@ -47,7 +47,7 @@ struct Wall {
   col: word,
 }
 
-struct Enemy {
+pub struct Enemy {
   x: word,
   y: word,
   z: word,
@@ -62,7 +62,7 @@ struct Enemy {
   spawn_z: word,
 }
 
-struct Item {
+pub struct Item {
   x: word,
   y: word,
   z: word,
@@ -71,7 +71,7 @@ struct Item {
   pad: word,
 }
 
-struct Particle {
+pub struct Particle {
   x: word,
   y: word,
   z: word,
@@ -83,7 +83,7 @@ struct Particle {
 }
 
 // Auto-placed non-overlapping linear memory layout (compiler safely places at word 705536+)
-layout FpsMem {
+pub layout FpsMem {
   tick: word,
   cam_x: word,
   cam_y: word,

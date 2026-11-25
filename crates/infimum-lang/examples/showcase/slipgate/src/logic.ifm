@@ -8,27 +8,27 @@ use "world.ifm";
 
 // --- Z3-Verified Pure Telos Kernels ---
 
-fn clamp_stat(v: i64, max_v: i64) -> i64
+pub fn clamp_stat(v: i64, max_v: i64) -> i64
   req max_v >= 0
   ens result >= 0 && result <= max_v
 {
   if v < 0 { 0 } else if v > max_v { max_v } else { v }
 }
 
-fn clamp_pitch(p: i64) -> i64
+pub fn clamp_pitch(p: i64) -> i64
   ens result >= -260 && result <= 260
 {
   if p < -260 { -260 } else if p > 260 { 260 } else { p }
 }
 
-fn compute_fps_score(kills: i64, hp_left: i64, slipgate_bonus: i64) -> i64
+pub fn compute_fps_score(kills: i64, hp_left: i64, slipgate_bonus: i64) -> i64
   req kills >= 0 && kills <= 16 && hp_left >= 0 && hp_left <= 100 && slipgate_bonus >= 0 && slipgate_bonus <= 1500
   ens result >= 0 && result <= 6000
 {
   kills * 250 + hp_left * 5 + slipgate_bonus
 }
 
-fn next_rand() -[Mem]-> i64 {
+pub fn next_rand() -[Mem]-> i64 {
   let s = FpsMem.rng_state;
   let nxt = (s * 1103515245 + 12345) & 2147483647;
   let safe = if nxt == 0 { 19960622 } else { nxt };
@@ -38,7 +38,7 @@ fn next_rand() -[Mem]-> i64 {
 
 // --- 3D Collision & Elevation Helpers ---
 
-fn hits_wall_3d(px: i64, foot_y: i64, pz: i64, rad: i64) -[Mem]-> bool {
+pub fn hits_wall_3d(px: i64, foot_y: i64, pz: i64, rad: i64) -[Mem]-> bool {
   let n = clamp_i64(FpsMem.wall_cnt, 0, 112);
   let mut hit = false;
   for i in 0..n max 112 {
@@ -62,11 +62,11 @@ fn hits_wall_3d(px: i64, foot_y: i64, pz: i64, rad: i64) -[Mem]-> bool {
   hit
 }
 
-fn enemy_radius(kind: i64) -> i64 {
+pub fn enemy_radius(kind: i64) -> i64 {
   if kind == 3 { 440 } else { 320 }
 }
 
-fn hits_enemy_3d(px: i64, foot_y: i64, pz: i64, rad: i64, skip_idx: i64) -[Mem]-> bool {
+pub fn hits_enemy_3d(px: i64, foot_y: i64, pz: i64, rad: i64, skip_idx: i64) -[Mem]-> bool {
   let mut hit = false;
   for e in 0..16 {
     if e == skip_idx || FpsMem.enemies[e].state == 2 { continue; }
@@ -87,7 +87,7 @@ fn hits_enemy_3d(px: i64, foot_y: i64, pz: i64, rad: i64, skip_idx: i64) -[Mem]-
   hit
 }
 
-fn find_floor_below(px: i64, foot_y: i64, pz: i64) -[Mem]-> i64 {
+pub fn find_floor_below(px: i64, foot_y: i64, pz: i64) -[Mem]-> i64 {
   let n = clamp_i64(FpsMem.sector_cnt, 0, 40);
   let mut best = 0;
   for i in 0..n max 40 {
@@ -104,7 +104,7 @@ fn find_floor_below(px: i64, foot_y: i64, pz: i64) -[Mem]-> i64 {
 }
 
 // 16-step 3D line-of-sight ray check against solid wall boxes
-fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> bool {
+pub fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> bool {
   let mut clear = true;
   for s in 1..16 {
     let px = x0 + ((x1 - x0) * s) / 16;
@@ -120,7 +120,7 @@ fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> boo
 
 // --- 3D Particles ---
 
-fn spawn_particles(wx: i64, wy: i64, wz: i64, is_blood: i64) -[Mem]-> unit {
+pub fn spawn_particles(wx: i64, wy: i64, wz: i64, is_blood: i64) -[Mem]-> unit {
   let mut spawned = 0;
   for i in 0..32 {
     if spawned >= 6 { break; }
@@ -141,7 +141,7 @@ fn spawn_particles(wx: i64, wy: i64, wz: i64, is_blood: i64) -[Mem]-> unit {
   }
 }
 
-fn step_particles() -[Mem]-> unit {
+pub fn step_particles() -[Mem]-> unit {
   for i in 0..32 {
     let life = FpsMem.particles[i].life;
     if life > 0 {
@@ -156,7 +156,7 @@ fn step_particles() -[Mem]-> unit {
 
 // --- Full Level Reset ---
 
-fn reset_slipgate(seed: i64) -[Mem]-> unit {
+pub fn reset_slipgate(seed: i64) -[Mem]-> unit {
   FpsMem.tick = 0;
   FpsMem.cam_x = 0;
   FpsMem.foot_y = 0;
@@ -188,7 +188,7 @@ fn reset_slipgate(seed: i64) -[Mem]-> unit {
   build_citadel_world();
 }
 
-fn damage_player(raw_dmg: i64) -[Mem, Gpu]-> unit {
+pub fn damage_player(raw_dmg: i64) -[Mem, Gpu]-> unit {
   let arm = FpsMem.armor;
   let absorb = if arm > 0 { (raw_dmg * 3) / 5 } else { 0 };
   let act = if absorb > arm { arm } else { absorb };
@@ -204,7 +204,7 @@ fn damage_player(raw_dmg: i64) -[Mem, Gpu]-> unit {
   }
 }
 
-fn fire_super_shotgun() -[Mem, Gpu]-> unit {
+pub fn fire_super_shotgun() -[Mem, Gpu]-> unit {
   if FpsMem.ammo > 0 && FpsMem.recoil_t == 0 && FpsMem.game_state == GameState::Playing {
     FpsMem.ammo -= 1;
     FpsMem.muzzle_t = 6;
@@ -264,7 +264,7 @@ fn fire_super_shotgun() -[Mem, Gpu]-> unit {
   }
 }
 
-fn step_enemies_and_pickups() -[Mem, Gpu]-> unit {
+pub fn step_enemies_and_pickups() -[Mem, Gpu]-> unit {
   let px = FpsMem.cam_x;
   let py = FpsMem.foot_y;
   let pz = FpsMem.cam_z;
@@ -361,7 +361,7 @@ fn step_enemies_and_pickups() -[Mem, Gpu]-> unit {
   }
 }
 
-fn step_fps_sim(fwd: i64, strafe: i64, turn: i64, jump: i64, fire: i64) -[Mem, Gpu]-> unit {
+pub fn step_fps_sim(fwd: i64, strafe: i64, turn: i64, jump: i64, fire: i64) -[Mem, Gpu]-> unit {
   if FpsMem.game_state == GameState::Playing {
     let tick = FpsMem.tick + 1;
     FpsMem.tick = tick;

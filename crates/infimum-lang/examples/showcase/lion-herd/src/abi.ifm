@@ -3,21 +3,21 @@
 //
 // INFIMUM LION HERD — Shared Typed ABI & Memory Layout (Z3-Verified)
 
-use "std/prelude.ifm";
-use "std/mesh3d.ifm";
+pub use "std/prelude.ifm";
+pub use "std/mesh3d.ifm";
 
-const MAT_ROCK: i64 = 7;
-const MAT_TIMBER: i64 = 8;
+pub const MAT_ROCK: i64 = 7;
+pub const MAT_TIMBER: i64 = 8;
 
-const SHEEP_COUNT: i64 = 14;
-const MAX_SNAPS: i64 = 240;
+pub const SHEEP_COUNT: i64 = 14;
+pub const MAX_SNAPS: i64 = 240;
 
-enum CursorKind {
+pub enum CursorKind {
   Default = 0,
   Pointer = 1,
 }
 
-struct Sheep {
+pub struct Sheep {
   x: word,
   y: word,
   vx: word,
@@ -28,7 +28,7 @@ struct Sheep {
   yaw: word,
 }
 
-struct SnapHeader {
+pub struct SnapHeader {
   tick: word,
   lion_x: word,
   lion_y: word,
@@ -43,7 +43,7 @@ struct SnapHeader {
   lion_yaw: word,
 }
 
-struct SnapSheep {
+pub struct SnapSheep {
   x: word,
   y: word,
   penned: word inv 0..=1,
@@ -51,7 +51,7 @@ struct SnapSheep {
 }
 
 // Auto-placed non-overlapping linear memory layout (compiler safely places at word 705536+)
-layout HerdMem {
+pub layout HerdMem {
   tick: word,
   lion_x: word,
   lion_y: word,
