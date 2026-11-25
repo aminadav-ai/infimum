@@ -108,14 +108,14 @@ test "private helpers isolated" {
     let err = parse_module_from_virtual_fs("main.ifm", &bad_sel).unwrap_err();
     assert_eq!(err.code, "E068_PRIVATE_ITEM");
 
-    // Selective import of nonexistent item must fail with E067_UNKNOWN_IMPORT
+    // Selective import of nonexistent item must fail with E075_UNKNOWN_IMPORT
     let mut bad_unk = files.clone();
     bad_unk.insert(
         "main.ifm".to_string(),
         "use \"a.ifm\" { does_not_exist };\nexport fn run() -> i64 { 0 }\n".to_string(),
     );
     let err = parse_module_from_virtual_fs("main.ifm", &bad_unk).unwrap_err();
-    assert_eq!(err.code, "E067_UNKNOWN_IMPORT");
+    assert_eq!(err.code, "E075_UNKNOWN_IMPORT");
 }
 
 #[test]
@@ -411,6 +411,8 @@ export fn run() -> i64 { leak_call() }
     let err = parse_module_from_virtual_fs("main.ifm", &files)
         .expect_err("child unit must not call private fn of entry unit without use/pub");
     assert_eq!(err.code, "E022_UNKNOWN_FUNCTION");
+    assert_eq!(err.span.line, 1);
+    assert!(err.span.col > 1, "expected exact call column, got {}", err.span.col);
 
     // 2. Module `a.ifm` must NOT be able to call `export fn` in `b.ifm` without `use` + `pub`
     let mut files2 = BTreeMap::new();

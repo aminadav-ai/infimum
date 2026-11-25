@@ -256,6 +256,7 @@ pub(crate) enum RawExpr {
     Call {
         target: TargetRef,
         args: Vec<RawExpr>,
+        span: Span,
     },
     ModCall(Box<RawModCall>),
     Perform {

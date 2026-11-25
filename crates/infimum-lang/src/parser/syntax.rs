@@ -1697,6 +1697,7 @@ impl Parser {
                 Ok(RawExpr::Call {
                     target: TargetRef::Hash(hash),
                     args,
+                    span: tok.span,
                 })
             }
             TokenKind::Ident(name) => {
@@ -1868,7 +1869,11 @@ impl Parser {
                     } else {
                         TargetRef::Named(name)
                     };
-                    let mut expr = RawExpr::Call { target, args };
+                    let mut expr = RawExpr::Call {
+                        target,
+                        args,
+                        span: tok.span,
+                    };
                     while matches!(self.peek().kind, TokenKind::Dot)
                         && matches!(self.peek_next(), TokenKind::Int(_) | TokenKind::Ident(_))
                     {
@@ -2100,6 +2105,7 @@ fn rewrite_assert_stmt(stmt: RawStmt, default_line: i64) -> RawStmt {
         RawStmt::Expr(RawExpr::Call {
             target: TargetRef::Named(name),
             args,
+            span: _,
         }) if name == "assert" && args.len() == 1 => {
             let cond = args.into_iter().next().unwrap();
             RawStmt::Expr(RawExpr::If {
