@@ -19,6 +19,7 @@ pub fn embedded_std_file(name: &str) -> Option<&'static str> {
     match clean {
         "audio.ifm" => Some(include_str!("../std/audio.ifm")),
         "buf.ifm" => Some(include_str!("../std/buf.ifm")),
+        "slice.ifm" => Some(include_str!("../std/slice.ifm")),
         "color.ifm" => Some(include_str!("../std/color.ifm")),
         "fmt.ifm" => Some(include_str!("../std/fmt.ifm")),
         "gfx.ifm" => Some(include_str!("../std/gfx.ifm")),
@@ -43,6 +44,7 @@ pub fn list_embedded_std_files() -> &'static [&'static str] {
     &[
         "audio.ifm",
         "buf.ifm",
+        "slice.ifm",
         "color.ifm",
         "fmt.ifm",
         "gfx.ifm",
