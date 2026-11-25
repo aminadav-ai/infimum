@@ -9,7 +9,7 @@ use "std/math.ifm";
 use "std/text.ifm";
 
 // Render fixed-point tenths (e.g. 1192 -> "119.2") and return pixel width.
-fn fmt_fixed_1(x: i64, y: i64, tenths: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn fmt_fixed_1(x: i64, y: i64, tenths: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   let mut v = tenths;
   let mut cx = x;
   if v < 0 {
@@ -24,7 +24,7 @@ fn fmt_fixed_1(x: i64, y: i64, tenths: i64, size: i64, style: i64, rgba: i64, cl
   cx - x
 }
 
-fn fmt_fixed_1_width(tenths: i64, size: i64, style: i64) -[Mem]-> i64 {
+pub fn fmt_fixed_1_width(tenths: i64, size: i64, style: i64) -[Mem]-> i64 {
   let mut v = tenths;
   let mut w = 0;
   if v < 0 {
@@ -40,7 +40,7 @@ fn fmt_fixed_1_width(tenths: i64, size: i64, style: i64) -[Mem]-> i64 {
 }
 
 // Render fixed-point hundredths (e.g. 125 -> "1.25") and return pixel width.
-fn fmt_fixed_2(x: i64, y: i64, hundredths: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn fmt_fixed_2(x: i64, y: i64, hundredths: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   let mut v = hundredths;
   let mut cx = x;
   if v < 0 {
@@ -57,20 +57,20 @@ fn fmt_fixed_2(x: i64, y: i64, hundredths: i64, size: i64, style: i64, rgba: i64
 }
 
 // Render memory size in MB from tenths of MB (e.g. 1192 -> "119.2 MB").
-fn fmt_mb(x: i64, y: i64, tenths_mb: i64, size: i64, col_num: i64, col_unit: i64, clip: i64) -[Mem]-> i64 {
+pub fn fmt_mb(x: i64, y: i64, tenths_mb: i64, size: i64, col_num: i64, col_unit: i64, clip: i64) -[Mem]-> i64 {
   let v = clamp_i64(tenths_mb, 0, 999999);
   let w1 = fmt_fixed_1(x, y, v, size, 2, col_num, clip);
   let w2 = ui_text(x + w1 + 4, y, "MB", size, 0, col_unit, clip);
   w1 + 4 + w2
 }
 
-fn fmt_mb_width(tenths_mb: i64, size: i64) -[Mem]-> i64 {
+pub fn fmt_mb_width(tenths_mb: i64, size: i64) -[Mem]-> i64 {
   let v = clamp_i64(tenths_mb, 0, 999999);
   fmt_fixed_1_width(v, size, 2) + 4 + ui_text_width("MB", size, 0)
 }
 
 // Render duration from tenths of seconds: "Mm Ss" when >= 60s, else "X.Xs".
-fn fmt_duration(x: i64, y: i64, tenths: i64, size: i64, col_num: i64, col_unit: i64, clip: i64) -[Mem]-> i64 {
+pub fn fmt_duration(x: i64, y: i64, tenths: i64, size: i64, col_num: i64, col_unit: i64, clip: i64) -[Mem]-> i64 {
   let t = clamp_i64(tenths, 0, 999999);
   if t >= 600 {
     let total_s = t / 10;
@@ -89,7 +89,7 @@ fn fmt_duration(x: i64, y: i64, tenths: i64, size: i64, col_num: i64, col_unit: 
   }
 }
 
-fn fmt_duration_width(tenths: i64, size: i64) -[Mem]-> i64 {
+pub fn fmt_duration_width(tenths: i64, size: i64) -[Mem]-> i64 {
   let t = clamp_i64(tenths, 0, 999999);
   if t >= 600 {
     let total_s = t / 10;
@@ -105,7 +105,7 @@ fn fmt_duration_width(tenths: i64, size: i64) -[Mem]-> i64 {
 }
 
 // Render string `s` strictly within `max_w`, appending "..." if it overflows.
-fn fmt_text_ellipsis(x: i64, y: i64, max_w: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn fmt_text_ellipsis(x: i64, y: i64, max_w: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   if max_w <= 0 {
     0
   } else {

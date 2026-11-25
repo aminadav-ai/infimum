@@ -10,59 +10,59 @@
 // starting at `SYS_USER_LAYOUT_START_WORD` and auto-sizes Wasm memory (8..64 MiB).
 
 // --- Core System Registers (words 0..63) ---
-const SYS_CURSOR_KIND_WORD: i64 = 11;
-const SYS_PRIM_COUNT_WORD: i64 = 12;
-const SYS_SCRATCH_CURSOR_WORD: i64 = 16;
-const SYS_STR_SCRATCH_WORD: i64 = 17;
-const SYS_HOST_RET_WORD: i64 = 62;
+pub const SYS_CURSOR_KIND_WORD: i64 = 11;
+pub const SYS_PRIM_COUNT_WORD: i64 = 12;
+pub const SYS_SCRATCH_CURSOR_WORD: i64 = 16;
+pub const SYS_STR_SCRATCH_WORD: i64 = 17;
+pub const SYS_HOST_RET_WORD: i64 = 62;
 
 // --- Hardware Clip Rects: 16 x 4 words (words 64..127, byte offset 256) ---
-const SYS_CLIP_RECTS_WORD: i64 = 64;
-const GPU_CLIPS_BYTE_OFFSET: i64 = 256;
+pub const SYS_CLIP_RECTS_WORD: i64 = 64;
+pub const GPU_CLIPS_BYTE_OFFSET: i64 = 256;
 
 // --- Infimum.Forma Mailbox & Interactive Widget State (words 128..191) ---
-const SYS_FORMA_MAILBOX_WORD: i64 = 128;
-const SYS_FORMA_MX_WORD: i64 = 128;
-const SYS_FORMA_MY_WORD: i64 = 129;
-const SYS_FORMA_CLICKED_WORD: i64 = 130;
-const SYS_FORMA_WHEEL_WORD: i64 = 131;
-const SYS_FORMA_HOVERED_WORD: i64 = 132;
+pub const SYS_FORMA_MAILBOX_WORD: i64 = 128;
+pub const SYS_FORMA_MX_WORD: i64 = 128;
+pub const SYS_FORMA_MY_WORD: i64 = 129;
+pub const SYS_FORMA_CLICKED_WORD: i64 = 130;
+pub const SYS_FORMA_WHEEL_WORD: i64 = 131;
+pub const SYS_FORMA_HOVERED_WORD: i64 = 132;
 // Reserved for interactive Forma widgets (TextInput / Slider / Toggle):
-const SYS_FORMA_MDOWN_WORD: i64 = 133;
-const SYS_FORMA_KEY_CHAR_WORD: i64 = 134;
-const SYS_FORMA_KEY_SPECIAL_WORD: i64 = 135;
-const SYS_FORMA_TICK_WORD: i64 = 136;
-const SYS_FORMA_FOCUS_ID_WORD: i64 = 137;
-const SYS_FORMA_DRAG_ID_WORD: i64 = 138;
-const SYS_FORMA_CARET_POS_WORD: i64 = 139;
-const SYS_FORMA_TEXT_SCROLL_WORD: i64 = 140;
-const SYS_FORMA_SEL_ANCHOR_WORD: i64 = 141;
-const SYS_FORMA_TEXT_BUF_WORD: i64 = 142;
-const SYS_FORMA_TEXT_MAX_WORD: i64 = 143;
-const SYS_FORMA_TEXT_MASK_WORD: i64 = 144;
-const SYS_FORMA_TEXT_CHANGED_WORD: i64 = 145;
-const SYS_FORMA_FOCUS_SET_THIS_FRAME_WORD: i64 = 146;
+pub const SYS_FORMA_MDOWN_WORD: i64 = 133;
+pub const SYS_FORMA_KEY_CHAR_WORD: i64 = 134;
+pub const SYS_FORMA_KEY_SPECIAL_WORD: i64 = 135;
+pub const SYS_FORMA_TICK_WORD: i64 = 136;
+pub const SYS_FORMA_FOCUS_ID_WORD: i64 = 137;
+pub const SYS_FORMA_DRAG_ID_WORD: i64 = 138;
+pub const SYS_FORMA_CARET_POS_WORD: i64 = 139;
+pub const SYS_FORMA_TEXT_SCROLL_WORD: i64 = 140;
+pub const SYS_FORMA_SEL_ANCHOR_WORD: i64 = 141;
+pub const SYS_FORMA_TEXT_BUF_WORD: i64 = 142;
+pub const SYS_FORMA_TEXT_MAX_WORD: i64 = 143;
+pub const SYS_FORMA_TEXT_MASK_WORD: i64 = 144;
+pub const SYS_FORMA_TEXT_CHANGED_WORD: i64 = 145;
+pub const SYS_FORMA_FOCUS_SET_THIS_FRAME_WORD: i64 = 146;
 
 // --- Real-Time Host Input Mailbox (words 192..223, byte offset 768) ---
-const SYS_INPUT_BASE_WORD: i64 = 192;
-const SYS_INPUT_BYTE_OFFSET: i64 = 768;
-const SYS_KEYS_HELD_WORD: i64 = 192;
-const SYS_MOUSE_DX_WORD: i64 = 193;
-const SYS_MOUSE_DY_WORD: i64 = 194;
-const SYS_POINTER_LOCK_WORD: i64 = 195;
+pub const SYS_INPUT_BASE_WORD: i64 = 192;
+pub const SYS_INPUT_BYTE_OFFSET: i64 = 768;
+pub const SYS_KEYS_HELD_WORD: i64 = 192;
+pub const SYS_MOUSE_DX_WORD: i64 = 193;
+pub const SYS_MOUSE_DY_WORD: i64 = 194;
+pub const SYS_POINTER_LOCK_WORD: i64 = 195;
 
 // --- Host-Uploaded TrueType Font Metrics (words 256..1023, byte offset 1024) ---
-const SYS_FONT_METRICS_FLAG_WORD: i64 = 256;
-const SYS_FONT_METRICS_TABLE_WORD: i64 = 257;
-const SYS_FONT_METRICS_BYTE_OFFSET: i64 = 1024;
+pub const SYS_FONT_METRICS_FLAG_WORD: i64 = 256;
+pub const SYS_FONT_METRICS_TABLE_WORD: i64 = 257;
+pub const SYS_FONT_METRICS_BYTE_OFFSET: i64 = 1024;
 
 // --- Per-Frame Scratch Bump Arena (words 4096..65535, ~240 KiB) ---
-const SYS_SCRATCH_BASE_WORD: i64 = 4096;
-const SYS_SCRATCH_CAP_WORDS: i64 = 61440;
+pub const SYS_SCRATCH_BASE_WORD: i64 = 4096;
+pub const SYS_SCRATCH_CAP_WORDS: i64 = 61440;
 
 // --- Unified 1-Draw-Call GPU Primitive Stream (words 65536..705535, 2.5 MiB) ---
-const SYS_GPU_PRIMS_WORD: i64 = 65536;
-const GPU_CMD_BYTE_OFFSET: i64 = 262144;
+pub const SYS_GPU_PRIMS_WORD: i64 = 65536;
+pub const GPU_CMD_BYTE_OFFSET: i64 = 262144;
 
 // --- Clean Auto-Placed User & Module Layout Segment (705536..16777216) ---
-const SYS_USER_LAYOUT_START_WORD: i64 = 705536;
+pub const SYS_USER_LAYOUT_START_WORD: i64 = 705536;

@@ -16,51 +16,51 @@ use "std/color.ifm";
 use "std/sys_mem.ifm";
 use "std/mem.ifm";
 
-const STD_MAX_GPU_PRIMS: i64 = 80000;
-const STD_CURSOR_KIND_WORD: i64 = SYS_CURSOR_KIND_WORD;
-const STD_PRIM_COUNT_WORD: i64 = SYS_PRIM_COUNT_WORD;
-const STD_CLIP_RECTS_WORD: i64 = SYS_CLIP_RECTS_WORD;
-const STD_FORMA_MAILBOX_WORD: i64 = SYS_FORMA_MAILBOX_WORD;
-const STD_GPU_PRIMS_WORD: i64 = SYS_GPU_PRIMS_WORD;
+pub const STD_MAX_GPU_PRIMS: i64 = 80000;
+pub const STD_CURSOR_KIND_WORD: i64 = SYS_CURSOR_KIND_WORD;
+pub const STD_PRIM_COUNT_WORD: i64 = SYS_PRIM_COUNT_WORD;
+pub const STD_CLIP_RECTS_WORD: i64 = SYS_CLIP_RECTS_WORD;
+pub const STD_FORMA_MAILBOX_WORD: i64 = SYS_FORMA_MAILBOX_WORD;
+pub const STD_GPU_PRIMS_WORD: i64 = SYS_GPU_PRIMS_WORD;
 
-fn gfx_begin_frame(vw: i64, vh: i64) -[Mem]-> unit {
+pub fn gfx_begin_frame(vw: i64, vh: i64) -[Mem]-> unit {
   mem_store(STD_PRIM_COUNT_WORD, 0);
   mem_store(STD_CURSOR_KIND_WORD, 0);
   scratch_reset();
   set_clip_rect(0, 0, 0, clamp_i64(vw, 1, 4096), clamp_i64(vh, 1, 2160));
 }
 
-fn forma_set_pointer(mx: i64, my: i64, m_clicked: i64, wheel_dy: i64) -[Mem]-> unit {
+pub fn forma_set_pointer(mx: i64, my: i64, m_clicked: i64, wheel_dy: i64) -[Mem]-> unit {
   mem_store(STD_FORMA_MAILBOX_WORD, mx);
   mem_store(STD_FORMA_MAILBOX_WORD + 1, my);
   mem_store(STD_FORMA_MAILBOX_WORD + 2, m_clicked);
   mem_store(STD_FORMA_MAILBOX_WORD + 3, wheel_dy);
 }
 
-fn forma_begin_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64, wheel_dy: i64) -[Mem]-> unit {
+pub fn forma_begin_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64, wheel_dy: i64) -[Mem]-> unit {
   gfx_begin_frame(vw, vh);
   forma_set_pointer(mx, my, m_clicked, wheel_dy);
   mem_store(STD_FORMA_MAILBOX_WORD + 4, 0);
   mem_store(SYS_FORMA_FOCUS_SET_THIS_FRAME_WORD, 0);
 }
 
-fn forma_wheel_dy() -[Mem]-> i64 {
+pub fn forma_wheel_dy() -[Mem]-> i64 {
   mem_load(STD_FORMA_MAILBOX_WORD + 3)
 }
 
-fn forma_hovered() -[Mem]-> bool {
+pub fn forma_hovered() -[Mem]-> bool {
   mem_load(STD_FORMA_MAILBOX_WORD + 4) > 0
 }
 
 /// Cursor kind suggested by the last Forma render pass: 0 = Default, 1 = Pointer, 2 = Text.
-fn forma_cursor() -[Mem]-> i64 {
+pub fn forma_cursor() -[Mem]-> i64 {
   let h = mem_load(STD_FORMA_MAILBOX_WORD + 4);
   if h < 0 { 2 } else if h > 0 { 1 } else { 0 }
 }
 
 /// Provide per-frame drag, keyboard, and animation tick input for interactive Forma widgets
 /// (`Toggle`, `Slider`, `TextInput`). Automatically releases active slider drag when `m_down == 0`.
-fn forma_set_input(m_down: i64, key_char: i64, key_special: i64, tick: i64) -[Mem]-> unit {
+pub fn forma_set_input(m_down: i64, key_char: i64, key_special: i64, tick: i64) -[Mem]-> unit {
   mem_store(SYS_FORMA_MDOWN_WORD, m_down);
   mem_store(SYS_FORMA_KEY_CHAR_WORD, key_char);
   mem_store(SYS_FORMA_KEY_SPECIAL_WORD, key_special);
@@ -70,11 +70,11 @@ fn forma_set_input(m_down: i64, key_char: i64, key_special: i64, tick: i64) -[Me
   }
 }
 
-fn forma_focus_id() -[Mem]-> i64 {
+pub fn forma_focus_id() -[Mem]-> i64 {
   mem_load(SYS_FORMA_FOCUS_ID_WORD)
 }
 
-fn forma_set_focus(id: i64) -[Mem]-> unit {
+pub fn forma_set_focus(id: i64) -[Mem]-> unit {
   if id != 0 {
     mem_store(SYS_FORMA_FOCUS_SET_THIS_FRAME_WORD, 1);
   }
@@ -91,7 +91,7 @@ fn forma_set_focus(id: i64) -[Mem]-> unit {
 }
 
 /// Length of the active selection range in the focused Forma `TextInput` (0 if none).
-fn forma_sel_range_len() -[Mem]-> i64 {
+pub fn forma_sel_range_len() -[Mem]-> i64 {
   let c = mem_load(SYS_FORMA_CARET_POS_WORD);
   let a = mem_load(SYS_FORMA_SEL_ANCHOR_WORD);
   if c >= a { c - a } else { a - c }
@@ -100,7 +100,7 @@ fn forma_sel_range_len() -[Mem]-> i64 {
 /// Paste UTF-32 codepoints from `src_ptr` (len at `src_ptr[0]`, chars at `src_ptr[1..]`)
 /// into the currently focused Forma `TextInput`. Replaces any active selection.
 /// Returns the number of inserted codepoints (0 if no TextInput is focused).
-fn forma_paste_text(src_ptr: i64, src_len: i64) -[Mem]-> i64 {
+pub fn forma_paste_text(src_ptr: i64, src_len: i64) -[Mem]-> i64 {
   let fid = mem_load(SYS_FORMA_FOCUS_ID_WORD);
   let buf = mem_load(SYS_FORMA_TEXT_BUF_WORD);
   if fid == 0 || buf <= 0 || src_ptr <= 0 || src_len <= 0 {
@@ -153,7 +153,7 @@ fn forma_paste_text(src_ptr: i64, src_len: i64) -[Mem]-> i64 {
 
 /// Copy the selected range of the currently focused Forma `TextInput` into UTF-32 `dst_ptr`.
 /// Refuses to copy masked password fields (`mask: true`). Returns copied length (0 if none).
-fn forma_copy_text(dst_ptr: i64, dst_cap: i64) -[Mem]-> i64 {
+pub fn forma_copy_text(dst_ptr: i64, dst_cap: i64) -[Mem]-> i64 {
   let fid = mem_load(SYS_FORMA_FOCUS_ID_WORD);
   let buf = mem_load(SYS_FORMA_TEXT_BUF_WORD);
   let masked = mem_load(SYS_FORMA_TEXT_MASK_WORD);
@@ -176,18 +176,18 @@ fn forma_copy_text(dst_ptr: i64, dst_cap: i64) -[Mem]-> i64 {
   }
 }
 
-fn gfx_set_cursor(kind: i64) -[Mem]-> unit {
+pub fn gfx_set_cursor(kind: i64) -[Mem]-> unit {
   mem_store(STD_CURSOR_KIND_WORD, kind);
 }
 
-fn gfx_end_frame() -[Mem, Gpu]-> i64 {
+pub fn gfx_end_frame() -[Mem, Gpu]-> i64 {
   let total = mem_load(STD_PRIM_COUNT_WORD);
   let cur = mem_load(STD_CURSOR_KIND_WORD);
   do Gpu.submit(total, cur);
   total
 }
 
-fn set_clip_rect(cid: i64, x0: i64, y0: i64, x1: i64, y1: i64) -[Mem]-> unit {
+pub fn set_clip_rect(cid: i64, x0: i64, y0: i64, x1: i64, y1: i64) -[Mem]-> unit {
   if cid >= 0 && cid < 16 {
     let b = STD_CLIP_RECTS_WORD + cid * 4;
     mem_store(b, x0);
@@ -197,7 +197,7 @@ fn set_clip_rect(cid: i64, x0: i64, y0: i64, x1: i64, y1: i64) -[Mem]-> unit {
   }
 }
 
-fn push_prim(w0: i64, w1: i64, w2: i64, w3: i64, pmeta: i64, col1: i64, col2: i64, clip_id: i64) -[Mem]-> unit {
+pub fn push_prim(w0: i64, w1: i64, w2: i64, w3: i64, pmeta: i64, col1: i64, col2: i64, clip_id: i64) -[Mem]-> unit {
   let idx = mem_load(STD_PRIM_COUNT_WORD);
   if idx >= 0 && idx < STD_MAX_GPU_PRIMS {
     let b = STD_GPU_PRIMS_WORD + idx * 8;
@@ -213,7 +213,7 @@ fn push_prim(w0: i64, w1: i64, w2: i64, w3: i64, pmeta: i64, col1: i64, col2: i6
   }
 }
 
-fn ui_rect(x: i64, y: i64, w: i64, h: i64, radius: i64, border_px: i64, shadow_px: i64, fill_rgba: i64, border_rgba: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_rect(x: i64, y: i64, w: i64, h: i64, radius: i64, border_px: i64, shadow_px: i64, fill_rgba: i64, border_rgba: i64, clip: i64) -[Mem]-> unit {
   if w > 0 && h > 0 {
     let r = clamp_i64(radius, 0, 120);
     let bw = clamp_i64(border_px, 0, 15);
@@ -222,12 +222,12 @@ fn ui_rect(x: i64, y: i64, w: i64, h: i64, radius: i64, border_px: i64, shadow_p
   }
 }
 
-fn ui_line(x0: i64, y0: i64, x1: i64, y1: i64, thickness: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_line(x0: i64, y0: i64, x1: i64, y1: i64, thickness: i64, rgba: i64, clip: i64) -[Mem]-> unit {
   let th = clamp_i64(thickness, 1, 24);
   push_prim(x0, y0, x1, y1, 2 | (th << 4), rgba, 0, clip);
 }
 
-fn ui_circle(cx: i64, cy: i64, r_out: i64, r_in: i64, rgba: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_circle(cx: i64, cy: i64, r_out: i64, r_in: i64, rgba: i64, clip: i64) -[Mem]-> unit {
   if r_out > 0 {
     push_prim(cx, cy, r_out, clamp_i64(r_in, 0, r_out), 3, rgba, 0, clip);
   }
@@ -235,7 +235,7 @@ fn ui_circle(cx: i64, cy: i64, r_out: i64, r_in: i64, rgba: i64, clip: i64) -[Me
 
 // Hardware-accelerated Gradient Rounded Rect (kind = 5)
 // mode: 0 = vertical (top->bottom), 1 = horizontal (left->right), 2 = diagonal, 3 = radial
-fn ui_grad_rect(x: i64, y: i64, w: i64, h: i64, radius: i64, mode: i64, shadow_px: i64, col1: i64, col2: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_grad_rect(x: i64, y: i64, w: i64, h: i64, radius: i64, mode: i64, shadow_px: i64, col1: i64, col2: i64, clip: i64) -[Mem]-> unit {
   if w > 0 && h > 0 {
     let r = clamp_i64(radius, 0, 120);
     let m = clamp_i64(mode, 0, 3);
@@ -247,7 +247,7 @@ fn ui_grad_rect(x: i64, y: i64, w: i64, h: i64, radius: i64, mode: i64, shadow_p
 // Hardware-accelerated 3D PBR Raymarched Sphere (kind = 6)
 // material: 0 = Glass/Crystal Jewel (caustics + Fresnel), 1 = Metallic/Chrome, 2 = Marble/Ceramic
 // roughness: 0..15 (lower = sharper specular highlight), shadow_px: 0..60
-fn ui_sphere_3d(cx: i64, cy: i64, radius: i64, material: i64, roughness: i64, shadow_px: i64, base_rgba: i64, rim_rgba: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_sphere_3d(cx: i64, cy: i64, radius: i64, material: i64, roughness: i64, shadow_px: i64, base_rgba: i64, rim_rgba: i64, clip: i64) -[Mem]-> unit {
   if radius > 0 {
     let mat = clamp_i64(material, 0, 2);
     let rgh = clamp_i64(roughness, 0, 15);
@@ -257,7 +257,7 @@ fn ui_sphere_3d(cx: i64, cy: i64, radius: i64, material: i64, roughness: i64, sh
 }
 
 // 1-primitive 3D PBR Crystal Jewel Orb (with caustics, specular highlight, Fresnel rim & soft contact shadow)
-fn ui_orb(cx: i64, cy: i64, radius: i64, base_rgba: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_orb(cx: i64, cy: i64, radius: i64, base_rgba: i64, clip: i64) -[Mem]-> unit {
   if radius > 0 {
     ui_sphere_3d(cx, cy, radius, 0, 2, 10, base_rgba, 0, clip);
   }
@@ -265,14 +265,14 @@ fn ui_orb(cx: i64, cy: i64, radius: i64, base_rgba: i64, clip: i64) -[Mem]-> uni
 
 // Hardware-accelerated Soft Radial Glow / Light Halo (kind = 7)
 // falloff_x10: 10..60 (20 = smooth quadratic falloff, 30 = tighter bloom)
-fn ui_glow(cx: i64, cy: i64, radius: i64, falloff_x10: i64, core_rgba: i64, outer_rgba: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_glow(cx: i64, cy: i64, radius: i64, falloff_x10: i64, core_rgba: i64, outer_rgba: i64, clip: i64) -[Mem]-> unit {
   if radius > 0 {
     let f = clamp_i64(falloff_x10, 8, 60);
     push_prim(cx, cy, radius, f, 7, core_rgba, outer_rgba, clip);
   }
 }
 
-fn pack_s16_xy(x: i64, y: i64) -> i64 {
+pub fn pack_s16_xy(x: i64, y: i64) -> i64 {
   let sx = clamp_i64(x, -32768, 32767) & 65535;
   let sy = clamp_i64(y, -32768, 32767) & 65535;
   sx | (sy << 16)
@@ -280,7 +280,7 @@ fn pack_s16_xy(x: i64, y: i64) -> i64 {
 
 // Hardware-accelerated Anti-Aliased Shaded 3D Triangle (kind = 8)
 // light_1000: 0 = unlit, 1000 = 1.0x brightness, >1000 = specular boost
-fn ui_tri(x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64, col1: i64, col2: i64, light_1000: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_tri(x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64, col1: i64, col2: i64, light_1000: i64, clip: i64) -[Mem]-> unit {
   let w0 = pack_s16_xy(x0, y0);
   let w1 = pack_s16_xy(x1, y1);
   let w2 = pack_s16_xy(x2, y2);
@@ -289,7 +289,7 @@ fn ui_tri(x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64, col1: i64, col2:
 }
 
 // 2-triangle shaded 3D quad helper (p0 -> p1 -> p2 -> p3) for walls, floors, pillars, weapons.
-fn ui_quad_3d(
+pub fn ui_quad_3d(
   x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64, x3: i64, y3: i64,
   col1: i64, col2: i64, light_1000: i64, clip: i64
 ) -[Mem]-> unit {
@@ -299,30 +299,30 @@ fn ui_quad_3d(
 
 // --- Hardware Z-Buffered Perspective-Textured 3D Pipeline (kind = 9) ---
 // Procedural GPU materials (zero external assets, 60 FPS):
-const MAT_SOLID: i64 = 0;  // Smooth tinted surface
-const MAT_BRICK: i64 = 1;  // Gothic bricks with dark mortar, stone grain & moss
-const MAT_PILLAR: i64 = 2; // Weathered temple stone column with bands & rust
-const MAT_METAL: i64 = 3;  // Ribbed dark techno-metal (weapons, frames)
-const MAT_PORTAL: i64 = 4; // Animated glowing Slipgate vortex (emissive)
-const MAT_LAVA: i64 = 5;   // Animated glowing lava / magma (emissive)
-const MAT_TILE: i64 = 6;   // Beveled stone floor / ceiling tiles
-const MAT_SKY: i64 = 7;    // Animated crimson stormy Quake sky (emissive)
-const MAT_WOOD: i64 = 8;   // Wooden planks / crates
-const MAT_GLOW: i64 = 9;   // Emissive torch / energy core
-const MAT_MARBLE: i64 = 10; // Carved veined marble tile with inlaid golden socket ring
-const MAT_WALNUT: i64 = 11; // Burled walnut wood with satin varnish
-const MAT_GLASS_SPHERE: i64 = 12; // Analytical ray-shaded 3D refractive glass sphere (Fresnel + dual specular)
-const MAT_SHADOW_CAUSTIC: i64 = 13; // Soft contact shadow + colored gemstone floor caustic
+pub const MAT_SOLID: i64 = 0;  // Smooth tinted surface
+pub const MAT_BRICK: i64 = 1;  // Gothic bricks with dark mortar, stone grain & moss
+pub const MAT_PILLAR: i64 = 2; // Weathered temple stone column with bands & rust
+pub const MAT_METAL: i64 = 3;  // Ribbed dark techno-metal (weapons, frames)
+pub const MAT_PORTAL: i64 = 4; // Animated glowing Slipgate vortex (emissive)
+pub const MAT_LAVA: i64 = 5;   // Animated glowing lava / magma (emissive)
+pub const MAT_TILE: i64 = 6;   // Beveled stone floor / ceiling tiles
+pub const MAT_SKY: i64 = 7;    // Animated crimson stormy Quake sky (emissive)
+pub const MAT_WOOD: i64 = 8;   // Wooden planks / crates
+pub const MAT_GLOW: i64 = 9;   // Emissive torch / energy core
+pub const MAT_MARBLE: i64 = 10; // Carved veined marble tile with inlaid golden socket ring
+pub const MAT_WALNUT: i64 = 11; // Burled walnut wood with satin varnish
+pub const MAT_GLASS_SPHERE: i64 = 12; // Analytical ray-shaded 3D refractive glass sphere (Fresnel + dual specular)
+pub const MAT_SHADOW_CAUSTIC: i64 = 13; // Soft contact shadow + colored gemstone floor caustic
 
-const FOG_DARK: i64 = 0;   // Dark dungeon depth fog
-const FOG_RED: i64 = 1;    // Crimson volcanic depth fog
-const FOG_NONE: i64 = 2;   // No fog (e.g. first-person 3D weapon / sky)
+pub const FOG_DARK: i64 = 0;   // Dark dungeon depth fog
+pub const FOG_RED: i64 = 1;    // Crimson volcanic depth fog
+pub const FOG_NONE: i64 = 2;   // No fog (e.g. first-person 3D weapon / sky)
 
 // Hardware Z-buffered perspective-correct 3D triangle (kind = 9).
 // z0..z2: vertex depth in 1..1023 (e.g. world_z * 16).
 // u0..v2: texture UV in 0..255 (64 = 1.0 tile repeat, 255 = ~4.0 repeats).
 // light_255: 0..255 surface lighting (255 = full bright).
-fn ui_tri_3d(
+pub fn ui_tri_3d(
   x0: i64, y0: i64, z0: i64, u0: i64, v0: i64,
   x1: i64, y1: i64, z1: i64, u1: i64, v1: i64,
   x2: i64, y2: i64, z2: i64, u2: i64, v2: i64,
@@ -350,7 +350,7 @@ fn ui_tri_3d(
 }
 
 // Textured image quad (kind = 4) referencing GPU image slot 0..15 with rounded corners.
-fn ui_image_slot(x: i64, y: i64, w: i64, h: i64, radius: i64, slot: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_image_slot(x: i64, y: i64, w: i64, h: i64, radius: i64, slot: i64, clip: i64) -[Mem]-> unit {
   if w > 0 && h > 0 {
     let r = clamp_i64(radius, 0, 120);
     let s = clamp_i64(slot, 0, 15);
@@ -358,13 +358,13 @@ fn ui_image_slot(x: i64, y: i64, w: i64, h: i64, radius: i64, slot: i64, clip: i
   }
 }
 
-fn ui_image(x: i64, y: i64, w: i64, h: i64, radius: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_image(x: i64, y: i64, w: i64, h: i64, radius: i64, clip: i64) -[Mem]-> unit {
   ui_image_slot(x, y, w, h, radius, 0, clip);
 }
 
 // Hardware Z-buffered perspective-textured 3D quad (p0 -> p1 -> p2 -> p3).
 // u_rep, v_rep: texture tiling in 0..255 (64 = 1x1 tile, 128 = 2x2, 255 = 4x4).
-fn ui_quad_3d_mat(
+pub fn ui_quad_3d_mat(
   x0: i64, y0: i64, z0: i64,
   x1: i64, y1: i64, z1: i64,
   x2: i64, y2: i64, z2: i64,

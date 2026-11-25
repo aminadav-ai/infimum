@@ -453,6 +453,8 @@ pub struct FormaDef<E = Expr> {
     pub name: String,
     #[serde(default)]
     pub exported: bool,
+    #[serde(default)]
+    pub is_pub: bool,
     pub params: Vec<Param>,
     pub effects: Vec<EffectCap>,
     pub ret_type: Type,
@@ -479,6 +481,7 @@ impl<E> FormaDef<E> {
         Ok(FormaDef {
             name: self.name,
             exported: self.exported,
+            is_pub: self.is_pub,
             params: self.params,
             effects: self.effects,
             ret_type: self.ret_type,

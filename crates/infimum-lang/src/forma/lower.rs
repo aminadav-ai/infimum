@@ -1745,6 +1745,10 @@ fn emit_render_node(stmts: &mut Vec<Stmt>, n: &LoweredNodeInfo) {
 /// Generate the shared `Infimum.Forma` runtime helper functions (`$forma_clamp`, `$forma_set_clip`,
 /// `$forma_push_rect`) targeting the `infimum-web` 1-Draw-Call linear memory ABI.
 pub fn forma_runtime_helpers() -> Vec<FnDef> {
+    forma_runtime_helpers_with_text(HELPER_CP_ATLAS, HELPER_GLYPH_PX)
+}
+
+pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> Vec<FnDef> {
     let mem_eff = vec![EffectCap {
         name: "Mem".to_string(),
         scope: None,
@@ -2056,7 +2060,7 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
                             value: bin(
                                 BinOp::Add,
                                 var("tw"),
-                                call_named(HELPER_GLYPH_PX, vec![var("cp"), var("sz"), var("st")]),
+                                call_named(glyph_px_fn, vec![var("cp"), var("sz"), var("st")]),
                             ),
                         },
                         Stmt::Assign {
@@ -2251,7 +2255,7 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
                                         BinOp::Add,
                                         var("tw"),
                                         call_named(
-                                            HELPER_GLYPH_PX,
+                                            glyph_px_fn,
                                             vec![var("mcp"), var("sz"), var("st")],
                                         ),
                                     ),
@@ -2279,7 +2283,7 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
                     mutable: false,
                     ty: None,
                     value: call_named(
-                        HELPER_GLYPH_PX,
+                        glyph_px_fn,
                         vec![Expr::IntLit(46), var("sz"), var("st")],
                     ),
                 },
@@ -2383,7 +2387,7 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
                             name: "adv".to_string(),
                             mutable: false,
                             ty: None,
-                            value: call_named(HELPER_GLYPH_PX, vec![var("cp"), var("sz"), var("st")]),
+                            value: call_named(glyph_px_fn, vec![var("cp"), var("sz"), var("st")]),
                         },
                         // Wrap mode (overflow_code == 3): newline or line-wrap at rx + rw
                         Stmt::Expr(if_unit(
@@ -2455,7 +2459,7 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
                                         name: "g_idx".to_string(),
                                         mutable: false,
                                         ty: None,
-                                        value: call_named(HELPER_CP_ATLAS, vec![var("cp")]),
+                                        value: call_named(cp_atlas_fn, vec![var("cp")]),
                                     }];
                                     draw_body.extend(emit_glyph_stmts(
                                         var("cx"),
@@ -2499,7 +2503,7 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
                             name: "dot_g".to_string(),
                             mutable: false,
                             ty: None,
-                            value: call_named(HELPER_CP_ATLAS, vec![Expr::IntLit(46)]),
+                            value: call_named(cp_atlas_fn, vec![Expr::IntLit(46)]),
                         },
                         Stmt::Let {
                             name: "di".to_string(),
@@ -2538,20 +2542,13 @@ pub fn forma_runtime_helpers() -> Vec<FnDef> {
         },
     };
 
-    let mut helpers = vec![
+    let helpers = vec![
         clamp_fn,
         set_clip_fn,
         push_rect_fn,
         measure_text_fn,
         draw_text_fn,
     ];
-    static WIDGET_HELPERS: std::sync::OnceLock<Vec<FnDef>> = std::sync::OnceLock::new();
-    let w_fns = WIDGET_HELPERS.get_or_init(|| {
-        crate::parser::parse_module(include_str!("widgets_rt.ifm"))
-            .expect("built-in Forma widgets_rt.ifm must parse cleanly")
-            .functions
-    });
-    helpers.extend(w_fns.iter().cloned());
     helpers
 }
 

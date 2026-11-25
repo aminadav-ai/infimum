@@ -46,12 +46,12 @@ fn test_multifile_use_diamond_dedup_and_cycle_detection() {
     fs::write(
         ws.join("common.ifm"),
         r#"
-        const BASE_OFFSET: i64 = 100;
-        enum Mode {
+        pub const BASE_OFFSET: i64 = 100;
+        pub enum Mode {
           Idle = 0,
           Active = 1,
         }
-        fn common_helper(x: i64) -> i64
+        pub fn common_helper(x: i64) -> i64
           ens result == x + BASE_OFFSET
         {
           x + BASE_OFFSET
@@ -63,9 +63,9 @@ fn test_multifile_use_diamond_dedup_and_cycle_detection() {
     fs::write(
         ws.join("left.ifm"),
         r#"
-        use "common.ifm";
-        const LEFT_DELTA: i64 = BASE_OFFSET + 10;
-        fn left_fn(v: i64) -> i64
+        pub use "common.ifm";
+        pub const LEFT_DELTA: i64 = BASE_OFFSET + 10;
+        pub fn left_fn(v: i64) -> i64
           ens result == v + LEFT_DELTA
         {
           common_helper(v) + 10
@@ -77,8 +77,8 @@ fn test_multifile_use_diamond_dedup_and_cycle_detection() {
     fs::write(
         sub.join("right.ifm"),
         r#"
-        use "../common.ifm";
-        fn right_fn(m: i64) -> i64 {
+        pub use "../common.ifm";
+        pub fn right_fn(m: i64) -> i64 {
           if m == Mode::Active { BASE_OFFSET } else { 0 }
         }
         "#,
@@ -490,11 +490,11 @@ fn test_export_abi_rust_and_json_compiles_with_rustc() {
     fs::write(
         ws.join("shared.ifm"),
         r#"
-        const MAX_INPUT_CAP: i64 = 8192;
-        const INPUT_BUF_END: i64 = 500 + MAX_INPUT_CAP + 4;
-        const DEBUG_FLAG: bool = false;
+        pub const MAX_INPUT_CAP: i64 = 8192;
+        pub const INPUT_BUF_END: i64 = 500 + MAX_INPUT_CAP + 4;
+        pub const DEBUG_FLAG: bool = false;
 
-        enum HostAction {
+        pub enum HostAction {
           None = 0,
           SendChat = 1,
           PickImage = 11,
@@ -508,9 +508,9 @@ fn test_export_abi_rust_and_json_compiles_with_rustc() {
     fs::write(
         &entry,
         r#"
-        use "shared.ifm";
+        pub use "shared.ifm";
 
-        layout StudioMem at 0 {
+        pub layout StudioMem at 0 {
           tick: word,
           theme: word,
           in_scroll_y: word at 47,

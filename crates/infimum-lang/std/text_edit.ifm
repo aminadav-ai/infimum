@@ -10,18 +10,18 @@ use "std/math.ifm";
 use "std/gfx.ifm";
 use "std/text.ifm";
 
-fn tbuf_len(buf_ptr: i64, max_cap: i64) -[Mem]-> i64 {
+pub fn tbuf_len(buf_ptr: i64, max_cap: i64) -[Mem]-> i64 {
   let cap = clamp_i64(max_cap, 1, 32768);
   clamp_i64(mem_load(buf_ptr), 0, cap)
 }
 
-fn tbuf_is_word_sep(cp: i64) -> bool {
+pub fn tbuf_is_word_sep(cp: i64) -> bool {
   cp <= ' ' || cp == '(' || cp == ')' || cp == '*' || cp == ',' || cp == '.' || cp == ':' || cp == ';' ||
   cp == '!' || cp == '?' || cp == '"' || cp == '\'' || cp == '`' || cp == '[' || cp == ']' ||
   cp == '{' || cp == '}' || cp == '/' || cp == '\\' || cp == '<' || cp == '>'
 }
 
-fn tbuf_insert_char(buf_ptr: i64, max_cap: i64, pos: i64, ch: i64) -[Mem]-> i64 {
+pub fn tbuf_insert_char(buf_ptr: i64, max_cap: i64, pos: i64, ch: i64) -[Mem]-> i64 {
   let cap = clamp_i64(max_cap, 1, 8192);
   let n = clamp_i64(mem_load(buf_ptr), 0, cap);
   let p = clamp_i64(pos, 0, n);
@@ -39,7 +39,7 @@ fn tbuf_insert_char(buf_ptr: i64, max_cap: i64, pos: i64, ch: i64) -[Mem]-> i64 
   }
 }
 
-fn tbuf_delete_range(buf_ptr: i64, max_cap: i64, a: i64, b: i64) -[Mem]-> i64 {
+pub fn tbuf_delete_range(buf_ptr: i64, max_cap: i64, a: i64, b: i64) -[Mem]-> i64 {
   let cap = clamp_i64(max_cap, 1, 8192);
   let n = clamp_i64(mem_load(buf_ptr), 0, cap);
   let lo = clamp_i64(min_i64(a, b), 0, n);
@@ -54,7 +54,7 @@ fn tbuf_delete_range(buf_ptr: i64, max_cap: i64, a: i64, b: i64) -[Mem]-> i64 {
   lo
 }
 
-fn tbuf_backspace(buf_ptr: i64, max_cap: i64, pos: i64, anchor: i64) -[Mem]-> i64 {
+pub fn tbuf_backspace(buf_ptr: i64, max_cap: i64, pos: i64, anchor: i64) -[Mem]-> i64 {
   if pos != anchor {
     tbuf_delete_range(buf_ptr, max_cap, pos, anchor)
   } else if pos > 0 {
@@ -64,7 +64,7 @@ fn tbuf_backspace(buf_ptr: i64, max_cap: i64, pos: i64, anchor: i64) -[Mem]-> i6
   }
 }
 
-fn tbuf_word_lo(buf_ptr: i64, max_cap: i64, idx: i64) -[Mem]-> i64 {
+pub fn tbuf_word_lo(buf_ptr: i64, max_cap: i64, idx: i64) -[Mem]-> i64 {
   let cap = clamp_i64(max_cap, 1, 32768);
   let n = clamp_i64(mem_load(buf_ptr), 0, cap);
   if n == 0 {
@@ -79,7 +79,7 @@ fn tbuf_word_lo(buf_ptr: i64, max_cap: i64, idx: i64) -[Mem]-> i64 {
   }
 }
 
-fn tbuf_word_hi(buf_ptr: i64, max_cap: i64, idx: i64) -[Mem]-> i64 {
+pub fn tbuf_word_hi(buf_ptr: i64, max_cap: i64, idx: i64) -[Mem]-> i64 {
   let cap = clamp_i64(max_cap, 1, 32768);
   let n = clamp_i64(mem_load(buf_ptr), 0, cap);
   if n == 0 {
@@ -94,7 +94,7 @@ fn tbuf_word_hi(buf_ptr: i64, max_cap: i64, idx: i64) -[Mem]-> i64 {
   }
 }
 
-fn tbuf_measure_word_px(buf_ptr: i64, start: i64, total: i64, size: i64, style: i64) -[Mem]-> i64 {
+pub fn tbuf_measure_word_px(buf_ptr: i64, start: i64, total: i64, size: i64, style: i64) -[Mem]-> i64 {
   let mut w = 0;
   for i in start..total max 96 {
     let ch = mem_load(buf_ptr + 1 + i);
@@ -104,7 +104,7 @@ fn tbuf_measure_word_px(buf_ptr: i64, start: i64, total: i64, size: i64, style: 
   w
 }
 
-fn tbuf_measure_wrapped_h(buf_ptr: i64, max_cap: i64, max_w: i64, size: i64, line_h: i64, style: i64) -[Mem]-> i64 {
+pub fn tbuf_measure_wrapped_h(buf_ptr: i64, max_cap: i64, max_w: i64, size: i64, line_h: i64, style: i64) -[Mem]-> i64 {
   let cap = clamp_i64(max_cap, 1, 32768);
   let n = clamp_i64(mem_load(buf_ptr), 0, cap);
   let mw = clamp_i64(max_w, 40, 4000);
@@ -144,7 +144,7 @@ fn tbuf_measure_wrapped_h(buf_ptr: i64, max_cap: i64, max_w: i64, size: i64, lin
   cy + lh
 }
 
-fn tbuf_hit_wrapped(
+pub fn tbuf_hit_wrapped(
   buf_ptr: i64, max_cap: i64, mx: i64, my: i64, x: i64, y: i64,
   max_w: i64, size: i64, line_h: i64, style: i64
 ) -[Mem]-> i64 {
@@ -226,7 +226,7 @@ fn tbuf_hit_wrapped(
 }
 
 // Draw wrapped UTF-32 text buffer with optional selection [sel_lo, sel_hi) and caret (cursor_pos >= 0).
-fn tbuf_draw_wrapped(
+pub fn tbuf_draw_wrapped(
   buf_ptr: i64, max_cap: i64, x: i64, y: i64, max_w: i64,
   size: i64, line_h: i64, style: i64, fg: i64,
   sel_lo: i64, sel_hi: i64, sel_bg: i64,

@@ -6,31 +6,31 @@
 
 use "std/math.ifm";
 
-fn pack_rgba(r: i64, g: i64, b: i64, a: i64) -> i64 {
+pub fn pack_rgba(r: i64, g: i64, b: i64, a: i64) -> i64 {
   clamp_byte(r) | (clamp_byte(g) << 8) | (clamp_byte(b) << 16) | (clamp_byte(a) << 24)
 }
 
-fn rgba_r(c: i64) -> i64 ens result >= 0 && result <= 255 {
+pub fn rgba_r(c: i64) -> i64 ens result >= 0 && result <= 255 {
   clamp_byte(c & 255)
 }
 
-fn rgba_g(c: i64) -> i64 ens result >= 0 && result <= 255 {
+pub fn rgba_g(c: i64) -> i64 ens result >= 0 && result <= 255 {
   clamp_byte((c >> 8) & 255)
 }
 
-fn rgba_b(c: i64) -> i64 ens result >= 0 && result <= 255 {
+pub fn rgba_b(c: i64) -> i64 ens result >= 0 && result <= 255 {
   clamp_byte((c >> 16) & 255)
 }
 
-fn rgba_a(c: i64) -> i64 ens result >= 0 && result <= 255 {
+pub fn rgba_a(c: i64) -> i64 ens result >= 0 && result <= 255 {
   clamp_byte((c >> 24) & 255)
 }
 
-fn with_alpha(c: i64, a: i64) -> i64 {
+pub fn with_alpha(c: i64, a: i64) -> i64 {
   pack_rgba(rgba_r(c), rgba_g(c), rgba_b(c), a)
 }
 
-fn lerp_rgba(c1: i64, c2: i64, t1000: i64) -> i64 {
+pub fn lerp_rgba(c1: i64, c2: i64, t1000: i64) -> i64 {
   let t = clamp_i64(t1000, 0, 1000);
   pack_rgba(
     lerp_i64(rgba_r(c1), rgba_r(c2), t),
@@ -40,7 +40,7 @@ fn lerp_rgba(c1: i64, c2: i64, t1000: i64) -> i64 {
   )
 }
 
-fn darken_rgba(c: i64, pct: i64) -> i64 {
+pub fn darken_rgba(c: i64, pct: i64) -> i64 {
   let k = clamp_i64(100 - clamp_i64(pct, 0, 100), 0, 100);
   pack_rgba(
     (rgba_r(c) * k) / 100,
@@ -50,7 +50,7 @@ fn darken_rgba(c: i64, pct: i64) -> i64 {
   )
 }
 
-fn lighten_rgba(c: i64, pct: i64) -> i64 {
+pub fn lighten_rgba(c: i64, pct: i64) -> i64 {
   let p = clamp_i64(pct, 0, 100);
   pack_rgba(
     rgba_r(c) + ((255 - rgba_r(c)) * p) / 100,

@@ -379,12 +379,11 @@ export fn add_clamped(a: i64, b: i64) -> i64
         );
         files.insert(
             "render.ifm".to_string(),
-            "\n\nfn clamp_i64(v: i64, lo: i64, hi: i64) -> i64 {\n  v\n}\n".to_string(),
+            "\n\npub fn clamp_i64(v: i64, lo: i64, hi: i64) -> i64 {\n  v\n}\n".to_string(),
         );
         let mut runner = test_z3_runner;
         let err = compile_project_in_memory_with_z3("main.ifm", &files, &mut runner).unwrap_err();
-        assert_eq!(err.code, "E024_DUPLICATE_FN_NAME");
-        assert_eq!(err.span.line, 3);
+        assert_eq!(err.code, "E024_DUPLICATE_SYMBOL");
         assert!(
             err.message.contains("std/math.ifm:") && err.message.contains("render.ifm:3"),
             "Unexpected diagnostic message: {}",
