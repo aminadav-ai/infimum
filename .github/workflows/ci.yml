@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   workspace-verify-and-test:
     runs-on: ubuntu-latest
@@ -44,3 +47,31 @@ jobs:
         run: |
           test -s apps/infimum-code/capsule/infimum_code.ifw
           cargo run --release -p infimum-web -- --headless-check apps/infimum-code/capsule/infimum_code.ifw --allow-net=127.0.0.1:1 --allow-net=infimum-lang.org --allow-clipboard
+
+  publish-repo-snapshot:
+    needs: workspace-verify-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build repo_bundle.json.gz & repo_meta.json
+        run: python3 crates/infimum-lang/scripts/build_repo_bundle.py --out-dir dist-snapshot
+
+      - name: Upload to rolling GitHub Release 'repo-snapshot'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view repo-snapshot >/dev/null 2>&1; then
+            gh release create repo-snapshot \
+              --title "Live Repository Snapshot (for Infimum Code AI)" \
+              --notes "Auto-updated on every green push to main." \
+              --prerelease
+          fi
+          gh release upload repo-snapshot \
+            dist-snapshot/repo_meta.json \
+            dist-snapshot/repo_bundle.json.gz \
+            --clobber
