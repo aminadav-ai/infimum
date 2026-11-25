@@ -460,3 +460,43 @@ test "pub export fn callable" {
         .expect("pub export fn must be callable via use");
     assert_all_ifm_tests_pass(&ok_mod);
 }
+
+#[test]
+fn inline_mod_rejects_duplicates_and_parent_shadowing_with_e024() {
+    // 1. Duplicate fn inside the same inline `mod` -> E024_DUPLICATE_SYMBOL
+    let dup_in_mod = r#"
+mod m {
+  fn f() -> i64 { 1 }
+  fn f() -> i64 { 2 }
+}
+export fn run() -> i64 { 0 }
+"#;
+    let err = infimum_lang::parser::parse_module(dup_in_mod)
+        .expect_err("duplicate fn inside inline mod must fail with E024");
+    assert_eq!(err.code, "E024_DUPLICATE_SYMBOL");
+
+    // 2. Duplicate const inside the same inline `mod` -> E024_DUPLICATE_SYMBOL
+    let dup_const_in_mod = r#"
+mod m {
+  const K: i64 = 1;
+  const K: i64 = 2;
+}
+export fn run() -> i64 { 0 }
+"#;
+    let err2 = infimum_lang::parser::parse_module(dup_const_in_mod)
+        .expect_err("duplicate const inside inline mod must fail with E024");
+    assert_eq!(err2.code, "E024_DUPLICATE_SYMBOL");
+
+    // 3. Shadowing parent's fn inside inline `mod` -> E024_DUPLICATE_SYMBOL (zero shadowing)
+    let shadow_parent = r#"
+fn helper() -> i64 { 1 }
+mod m {
+  fn helper() -> i64 { 2 }
+  pub fn call() -> i64 { helper() }
+}
+export fn run() -> i64 { m::call() }
+"#;
+    let err3 = infimum_lang::parser::parse_module(shadow_parent)
+        .expect_err("inline mod must not shadow parent fn");
+    assert_eq!(err3.code, "E024_DUPLICATE_SYMBOL");
+}
