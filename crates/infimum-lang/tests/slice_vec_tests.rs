@@ -569,6 +569,44 @@ export fn bad_len_write() -[Mem]-> unit {
         .expect_err("direct write to vec .len must be rejected");
     assert_eq!(e4.code, "E061_LAYOUT_ARRAY_ACCESS");
 
+    // 5. Proving only `0 <= i < M.xs.cap` (without `i < M.xs.len`) is NOT enough -> E056
+    let mut f5 = BTreeMap::new();
+    f5.insert(
+        "main.ifm".to_string(),
+        r#"
+layout M { xs: vec<word>[4] }
+export fn bad_cap_only(i: i64) -[Mem]-> i64
+  req i >= 0 && i < M.xs.cap
+{
+  M.xs[i]
+}
+"#
+        .to_string(),
+    );
+    let m5 = parse_module_from_virtual_fs("main.ifm", &f5).expect("parse ok");
+    let e5 = store
+        .verify_module(&m5)
+        .expect_err("i < cap without i < len must fail Z3");
+    assert_eq!(e5.code, "E056_SLICE_OUT_OF_BOUNDS");
+
+    // 6. `M.xs.swap_remove(M.xs.len)` is OOB -> E056
+    let mut f6 = BTreeMap::new();
+    f6.insert(
+        "main.ifm".to_string(),
+        r#"
+layout M { xs: vec<word>[4] }
+export fn bad_swap_remove() -[Mem]-> unit {
+  M.xs.swap_remove(M.xs.len);
+}
+"#
+        .to_string(),
+    );
+    let m6 = parse_module_from_virtual_fs("main.ifm", &f6).expect("parse ok");
+    let e6 = store
+        .verify_module(&m6)
+        .expect_err("swap_remove(len) must fail Z3");
+    assert_eq!(e6.code, "E056_SLICE_OUT_OF_BOUNDS");
+
     let _ = fs::remove_dir_all(&ws);
 }
 
