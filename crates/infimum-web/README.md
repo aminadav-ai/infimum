@@ -1,6 +1,6 @@
 # `infimum-web` — Native `.ifw` Capsule Runtime & Browser (Zero Chromium / Zero JS)
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![License: AGPL-3.0 / Commercial](https://img.shields.io/badge/License-AGPL--3.0%20%7C%20Commercial-blue.svg)](../../LICENSE)
 
 `infimum-web` is the native Rust + `wgpu` (Vulkan/GL) + `winit` (Wayland/X11) + `wasmi` runtime for **Infimum** (`.ifw` / `.wasm`) applications and 3D games — completely eliminating Chromium, Electron, HTML, CSS, and JavaScript.
 

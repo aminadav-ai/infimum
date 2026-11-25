@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // Zero-heap Slices (`[T]`) & Variable-Length Layout Arrays (`vec<T>[CAP]`) Demo.
 // Demonstrates whole-value struct elements, Z3-proven bounds & field invariants,

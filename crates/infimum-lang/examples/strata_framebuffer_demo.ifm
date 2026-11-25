@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // Demo: Infimum.Strata Direct Zero-rustc Framebuffer & Linear Memory Kernel
 // Compiles directly to W3C WebAssembly (.wasm) and Linux x86_64 ELF64 in <5ms!

@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 //
 // Pure-HTTP Client for `infimum-agentd` over `infimum-web`'s universal `CAP_NET`
 // (`HostOp::NetHttpRequest` + `HostOp::CapArgGet`).

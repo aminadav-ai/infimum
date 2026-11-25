@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // Infimum Standard Library: std/audio.ifm
 // Zero-asset procedural sound effects via infimum-web built-in audio synthesizer (opcodes 50 & 51).

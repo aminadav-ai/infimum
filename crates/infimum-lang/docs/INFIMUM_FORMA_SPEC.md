@@ -1,6 +1,7 @@
 <!--
   Infimum.Forma Engineering Specification
-  License: Apache-2.0
+  Copyright (c) 2026 Yehuda Aminadav
+  SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 -->
 
 # Infimum.Forma — Spatial-Interactive UI Layer Specification

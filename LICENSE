@@ -30,12 +30,15 @@ Version 3.0, the copyright holder grants you the following additional permission
    compiler and is **not** subject to the copyleft terms of AGPLv3. You may
    license, distribute, and commercialize your own Infimum programs and compiled
    capsules under any license of your choice.
-2. **Standard Library & Examples (`Apache-2.0`):** The Infimum standard library
-   in `crates/infimum-lang/std/` and the showcase examples in
-   `crates/infimum-lang/examples/` are separately licensed under the **Apache
-   License, Version 2.0** (see their respective `LICENSE` files). Linking or
-   embedding `std/` into your compiled `.ifw`/`.wasm` capsules does not trigger
-   AGPLv3 obligations on your application code.
+2. **Standard Library, Embedded UI Runtime & Examples (`Apache-2.0`):** The Infimum
+   standard library in `crates/infimum-lang/std/`, the compiler-embedded Forma UI
+   widget runtime in `crates/infimum-lang/src/forma/widgets_rt.ifm` (along with
+   automatically generated compiler runtime glue code), the showcase examples in
+   `crates/infimum-lang/examples/`, and the demo capsule in
+   `crates/infimum-web/capsules/m2_text_demo/` are separately licensed under the
+   **Apache License, Version 2.0**. Linking or embedding `std/`, `widgets_rt.ifm`,
+   or compiler-generated runtime glue into your compiled `.ifw`/`.wasm` capsules
+   does not trigger AGPLv3 obligations on your application code.
 
 This exception does **not** apply to distributing or providing networked access
 to the Infimum compiler, Z3 verifier, `infimum-web` runtime, or `infimum-code`

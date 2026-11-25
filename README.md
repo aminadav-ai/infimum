@@ -55,5 +55,5 @@ cargo test --workspace
 ## Licensing (Simple 3-Line Summary)
 
 - **Open Source, Evaluation & Local Development:** Free under **GNU AGPL-3.0** (see [`LICENSE`](LICENSE)).
-- **Your Code & Compiled `.ifw`/`.wasm` Capsules:** **100% yours** — `std/` and `examples/` are under **Apache-2.0**, and `LICENSE` includes a **Compiler Output & Stdlib Exception** so your compiled applications are never subject to AGPL.
+- **Your Code & Compiled `.ifw`/`.wasm` Capsules:** **100% yours** — `std/`, `src/forma/widgets_rt.ifm`, and `examples/` are under **Apache-2.0**, and `LICENSE` includes a **Compiler Output & Stdlib Exception** (covering compiler-generated runtime glue) so your compiled applications are never subject to AGPL.
 - **Closed-Source Commercial Products & SaaS Embedding:** Available under a simple **Infimum Commercial License** — email **`licensing@infimum-lang.org`**.

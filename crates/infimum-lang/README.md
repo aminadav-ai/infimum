@@ -2,11 +2,11 @@
 
 [![Infimum CI](https://github.com/aminadav-ai/infimum-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/aminadav-ai/infimum-lang/actions/workflows/ci.yml)
 [![Deploy Showcase](https://github.com/aminadav-ai/infimum-lang/actions/workflows/pages.yml/badge.svg)](https://aminadav-ai.github.io/infimum-lang/)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![License: AGPL-3.0 / Commercial](https://img.shields.io/badge/License-AGPL--3.0%20%7C%20Commercial-blue.svg)](../../LICENSE)
 
 > **Official Ecosystem Portal:** **[https://infimum-lang.org](https://infimum-lang.org)**  
-> **Native Capsule Runtime (Vulkan/wgpu):** **[`aminadav-ai/infimum-web`](https://github.com/aminadav-ai/infimum-web)** *(Apache-2.0)*  
-> **Native AI-First IDE & Examples:** **[`aminadav-ai/infimum-code`](https://github.com/aminadav-ai/infimum-code)** *(PolyForm Noncommercial 1.0.0)*  
+> **Native Capsule Runtime (Vulkan/wgpu):** **[`crates/infimum-web`](../infimum-web)** *(AGPL-3.0 / Commercial)*  
+> **Native AI-First IDE:** **[`apps/infimum-code`](../../apps/infimum-code)** *(AGPL-3.0 / Commercial)*  
 > **Live Interactive Compiler & Taint Inspector:** **[https://aminadav-ai.github.io/infimum-lang/](https://aminadav-ai.github.io/infimum-lang/)**
 
 **Infimum** is an AI-native programming language stack built for a world where autonomous AI agents write software and humans verify **intent, mathematical guarantees, and capability boundaries** rather than auditing tens of thousands of lines of code.

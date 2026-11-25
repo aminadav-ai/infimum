@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 //
 // Z3-Verified Source Code Outline Extractor (`capsules/core/outline_core.ifm`).
 // Extracts top-level declarations and line spans for Infimum (`.ifm`) and Rust (`.rs`)

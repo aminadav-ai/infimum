@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 //
 // Z3-Verified Agent Logic Core (`cores/agent_core.ifm`):
 //   1. Exact integer token-cost accounting (`calc_cost_milli_ils_ifm`) across all 22 models.

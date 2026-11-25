@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // INFIMUM COLOR LINES 98 — True 3D Hardware Z-Buffered Refractive Glass & Carved Marble Renderer
 // Uses `infimum-web` 3D pipeline (`ui_quad_3d_mat`) with MAT_MARBLE, MAT_WALNUT,

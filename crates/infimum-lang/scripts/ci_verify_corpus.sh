@@ -41,7 +41,7 @@ check_ifm() {
   fi
 }
 
-echo "=== [1/4] Verifying infimum-lang stdlib tests & examples ==="
+echo "=== [1/5] Verifying infimum-lang stdlib tests & examples ==="
 check_ifm "tests/std_tests.ifm" "$REPO_ROOT/tests/std_tests.ifm" 1 0
 check_ifm "examples/forma_ui_demo.ifm" "$REPO_ROOT/examples/forma_ui_demo.ifm" 1 1
 check_ifm "examples/slices_vec_demo.ifm" "$REPO_ROOT/examples/slices_vec_demo.ifm" 1 1
@@ -52,7 +52,7 @@ check_ifm "showcase/lion-herd" "$REPO_ROOT/examples/showcase/lion-herd/src/main.
 check_ifm "showcase/slipgate" "$REPO_ROOT/examples/showcase/slipgate/src/main.ifm" 1 1
 
 echo ""
-echo "=== [2/4] Extracting & verifying Example 1 from docs/INFIMUM_LANG_GUIDE.md ==="
+echo "=== [2/5] Extracting & verifying Example 1 from docs/INFIMUM_LANG_GUIDE.md ==="
 python3 - "$REPO_ROOT/docs/INFIMUM_LANG_GUIDE.md" "$TMP_DIR/guide_ex1.ifm" <<'PY'
 import sys
 from pathlib import Path
@@ -66,7 +66,7 @@ check_ifm "INFIMUM_LANG_GUIDE.md Example 1" "$TMP_DIR/guide_ex1.ifm" 0 1
 
 if [[ -d "$MONOREPO_ROOT/crates/infimum-web/capsules" ]]; then
   echo ""
-  echo "=== [3/4] Verifying infimum-web cores & demos ==="
+  echo "=== [3/5] Verifying infimum-web cores & demos ==="
   check_ifm "web-cores/audio_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/audio_core.ifm" 1 1
   check_ifm "web-cores/passport_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/passport_core.ifm" 0 1
   check_ifm "web-cores/sanitizer_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/sanitizer_core.ifm" 0 1
@@ -80,7 +80,7 @@ fi
 
 if [[ -n "$INFIMUM_CODE_DIR" ]]; then
   echo ""
-  echo "=== [4/4] Verifying infimum-code capsule, cores, templates & guide sync ==="
+  echo "=== [4/5] Verifying infimum-code capsule, cores, templates & guide sync ==="
   check_ifm "infimum-code/infimum_code.ifm" "$INFIMUM_CODE_DIR/capsule/src/infimum_code.ifm" 1 1
   check_ifm "infimum-code/agent_core.ifm" "$INFIMUM_CODE_DIR/cores/agent_core.ifm" 1 1
   check_ifm "infimum-code/editor_core.ifm" "$INFIMUM_CODE_DIR/cores/editor_core.ifm" 0 1
@@ -127,4 +127,76 @@ PY
 fi
 
 echo ""
-echo "=== ALL CORPUS, TEMPLATES & GUIDE CHECKS PASSED ==="
+echo "=== [5/5] Verifying license headers & copyright hygiene ==="
+python3 - "$MONOREPO_ROOT" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+SCAN_EXTS = {".rs", ".ifm", ".wgsl", ".sh", ".md", ".toml"}
+SKIP_DIRS = {".git", "target", "node_modules"}
+
+APACHE_ALLOWED_PREFIXES = (
+    "crates/infimum-lang/std/",
+    "crates/infimum-lang/examples/",
+    "crates/infimum-web/capsules/m2_text_demo/",
+)
+APACHE_ALLOWED_EXACT = {
+    "crates/infimum-lang/src/forma/widgets_rt.ifm",
+    "LICENSE-APACHE",
+}
+DOC_MENTION_ALLOWED = {
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "crates/infimum-lang/README.md",
+    "crates/infimum-lang/docs/INFIMUM_LANG_GUIDE.md",
+}
+
+FORBIDDEN_POLYFORM = "Poly" + "Form"
+LEGACY_COPYRIGHT = "Infimum Language " + "Contributors"
+LEGACY_APACHE_HDR = "License: " + "Apache-2.0"
+
+errors = []
+for p in sorted(root.rglob("*")):
+    if not p.is_file():
+        continue
+    rel = p.relative_to(root).as_posix()
+    if any(part in SKIP_DIRS for part in p.parts):
+        continue
+    if p.suffix not in SCAN_EXTS and p.name not in ("LICENSE", "LICENSE-APACHE"):
+        continue
+
+    text = p.read_text(encoding="utf-8", errors="replace")
+    head = "\n".join(text.splitlines()[:12])
+
+    if FORBIDDEN_POLYFORM in text:
+        errors.append(f"{rel}: forbidden legacy license '{FORBIDDEN_POLYFORM}'")
+    if LEGACY_COPYRIGHT in head:
+        errors.append(f"{rel}: legacy copyright '{LEGACY_COPYRIGHT}' (use 'Yehuda Aminadav')")
+    if LEGACY_APACHE_HDR in head:
+        errors.append(f"{rel}: use 'SPDX-License-Identifier:' instead of '{LEGACY_APACHE_HDR}'")
+
+    is_apache_allowed = (
+        rel in APACHE_ALLOWED_EXACT
+        or any(rel.startswith(pref) for pref in APACHE_ALLOWED_PREFIXES)
+    )
+    if not is_apache_allowed and rel not in DOC_MENTION_ALLOWED:
+        if "SPDX-License-Identifier: Apache-2.0" in head or "Apache-2.0" in head:
+            errors.append(f"{rel}: Apache-2.0 header outside allowed std/examples/widgets_rt paths")
+
+    if is_apache_allowed and p.suffix == ".ifm":
+        if "AGPL-3.0" in head:
+            errors.append(f"{rel}: AGPL-3.0 header inside Apache-2.0 exception path")
+
+if errors:
+    print("LICENSE HYGIENE CHECK FAILED:")
+    for e in errors:
+        print("  -", e)
+    sys.exit(1)
+
+print("  [license] All monorepo license & copyright headers verified clean")
+PY
+
+echo ""
+echo "=== ALL CORPUS, TEMPLATES, GUIDE & LICENSE CHECKS PASSED ==="

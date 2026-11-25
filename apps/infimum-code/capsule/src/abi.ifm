@@ -1,9 +1,9 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 //
 // Shared Typed ABI for Infimum Code Native (.ifw <-> Rust host).
 // Exported to Rust via:
-//   infimum export-abi capsules/studio/src/abi.ifm --rust -o src/studio_abi.rs
+//   infimum export-abi apps/infimum-code/capsule/src/abi.ifm --rust -o apps/infimum-code/daemon/src/studio_abi.rs
 
 // --- Capacity & Protocol Constants ---
 pub const MAX_GPU_PRIMS: i64 = 80000;

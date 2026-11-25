@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // Infimum Standard Library: std/markdown.ifm
 // Full GFM Rich Markdown Layout, Hit-Test & Render Engine:

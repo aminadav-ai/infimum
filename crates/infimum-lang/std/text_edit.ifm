@@ -1,5 +1,5 @@
-// Copyright (c) 2026 Infimum Language Contributors
-// License: Apache-2.0
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
 //
 // Infimum Standard Library: std/text_edit.ifm
 // Reusable UTF-32 text buffer editing, word-wrapping, hit-testing, selection,

@@ -27,7 +27,7 @@ to this repository, you agree to the following Contributor License Agreement:
    non-exclusive, no-charge, royalty-free, irrevocable copyright and patent license
    to reproduce, prepare derivative works of, publicly display, publicly perform,
    sublicense, and distribute your contribution and such derivative works under
-   **GNU AGPL-3.0**, **Apache-2.0** (for `std/` and `examples/`), and/or any
+   **GNU AGPL-3.0**, **Apache-2.0** (for `std/`, `src/forma/widgets_rt.ifm`, `examples/`, and `m2_text_demo/`), and/or any
    **Infimum Commercial License**.
 
 If you have questions about contributing or licensing, email **`licensing@infimum-lang.org`**.
