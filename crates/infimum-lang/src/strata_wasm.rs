@@ -528,10 +528,10 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
                 "E082_NON_SCALAR_EXPORT",
                 "strata-wasm",
                 format!(
-                    "Exported function '{exp_name}' cannot take or return tuple/value-struct types across the Wasm ABI boundary"
+                    "Exported function '{exp_name}' cannot take or return tuple/value-struct/slice types across the Wasm ABI boundary"
                 ),
                 Span::zero(),
-                "Use scalar types (i64, fixed, bool, unit) on 'export fn' signatures, or keep tuple/struct helpers non-exported",
+                "Use scalar types (i64, fixed, bool, unit) on 'export fn' signatures, or keep tuple/struct/slice helpers non-exported",
             ));
         }
         let arity = target_node.ast.params.len();
