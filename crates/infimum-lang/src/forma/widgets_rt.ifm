@@ -4,10 +4,13 @@
 // Built-in Z3-verified runtime helpers for interactive Infimum.Forma widgets
 // (`Toggle`, `Slider`, `TextInput`). Parsed once and appended to `forma_runtime_helpers()`.
 
+use "std/sys_mem.ifm";
+use "std/math.ifm";
+use "std/gfx.ifm";
 use "std/text.ifm";
 
 // Toggle switch widget: returns 1 if clicked/toggled this frame, 0 otherwise.
-fn __forma_toggle(
+pub fn __forma_toggle(
   rx: i64, ry: i64, rw: i64, rh: i64,
   bind_addr: i64, checked_in: bool,
   hovered_in: i64, clicked_in: i64,
@@ -45,7 +48,7 @@ fn __forma_toggle(
 
 // Horizontal Slider widget: updates `bind_addr` in `min_v..=max_v` (with optional `step_v`),
 // supports smooth drag capture via `SYS_FORMA_DRAG_ID_WORD (138)`. Returns 1 if value changed.
-fn __forma_slider(
+pub fn __forma_slider(
   rx: i64, ry: i64, rw: i64, rh: i64,
   bind_addr: i64, min_v: i64, max_v: i64, step_v: i64,
   wid: i64, hovered_in: i64, clicked_in: i64,
@@ -151,7 +154,7 @@ fn __fw_text_delete_range(buf_addr: i64, cur_len: i64, lo: i64, hi: i64) -[Mem]-
 // Shift+Arrows/Home/End, Ctrl+A/C/X/V clipboard integration, smooth horizontal scroll,
 // full password masking, and placeholder.
 // Returns: 0 = unchanged, 1 = text changed, 2 = Enter submitted.
-fn __forma_text_input(
+pub fn __forma_text_input(
   rx: i64, ry: i64, rw: i64, rh: i64,
   buf_addr: i64, max_len_in: i64, wid: i64,
   hovered_in: i64, clicked_in: i64,

@@ -4,16 +4,16 @@
 // Infimum Standard Library: std/prelude.ifm
 // Single-import convenience prelude for Infimum Lang + infimum-web applications.
 
-use "std/math.ifm";
-use "std/color.ifm";
-use "std/sys_mem.ifm";
-use "std/mem.ifm";
-use "std/buf.ifm";
-use "std/gfx.ifm";
-use "std/text.ifm";
-use "std/audio.ifm";
-use "std/input.ifm";
-use "std/fmt.ifm";
-use "std/theme.ifm";
-use "std/icons.ifm";
-use "std/ui.ifm";
+pub use "std/math.ifm";
+pub use "std/color.ifm";
+pub use "std/sys_mem.ifm";
+pub use "std/mem.ifm";
+pub use "std/buf.ifm";
+pub use "std/gfx.ifm";
+pub use "std/text.ifm";
+pub use "std/audio.ifm";
+pub use "std/input.ifm";
+pub use "std/fmt.ifm";
+pub use "std/theme.ifm";
+pub use "std/icons.ifm";
+pub use "std/ui.ifm";

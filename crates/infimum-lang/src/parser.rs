@@ -12,19 +12,33 @@ use std::path::{Path, PathBuf};
 // Internal Raw AST (pre-resolution / pre-desugaring)
 // ---------------------------------------------------------------------------
 
-struct RawUse {
-    path: String,
+#[derive(Clone)]
+struct RawUseItem {
+    name: String,
+    alias: Option<String>,
     span: Span,
 }
 
-struct RawModFile {
-    name: String,
+#[derive(Clone)]
+enum RawUseKind {
+    All,
+    Alias(String, Span),
+    Selective(Vec<RawUseItem>),
+}
+
+#[derive(Clone)]
+struct RawUse {
+    is_pub: bool,
     path: String,
+    kind: RawUseKind,
     span: Span,
 }
 
 struct RawMod {
     name: String,
+    is_pub: bool,
+    span: Span,
+    uses: Vec<RawUse>,
     items: Vec<RawItem>,
     formas: Vec<crate::forma::FormaDef<RawExpr>>,
     functions: Vec<RawFnDef>,
@@ -46,6 +60,7 @@ struct RawEnumVariant {
 
 struct RawEnum {
     name: String,
+    is_pub: bool,
     variants: Vec<RawEnumVariant>,
     span: Span,
 }
@@ -59,6 +74,7 @@ struct RawInv {
 
 struct RawStruct {
     name: String,
+    is_pub: bool,
     fields: Vec<(String, bool, Option<RawInv>, Span)>,
     span: Span,
 }
@@ -85,6 +101,7 @@ struct LayoutFieldMeta {
 
 struct RawLayoutField {
     name: String,
+    struct_module: Option<String>,
     struct_type: Option<String>,
     len_expr: Option<RawExpr>,
     is_array: bool,
@@ -96,6 +113,7 @@ struct RawLayoutField {
 
 struct RawLayout {
     name: String,
+    is_pub: bool,
     base_expr: Option<RawExpr>,
     fields: Vec<RawLayoutField>,
     span: Span,
@@ -115,8 +133,7 @@ pub(crate) enum RawMatchPattern {
     Int(i64),
     Bool(bool),
     ConstRef(String, Span),
-    Path2(String, String, Span),
-    Path3(String, String, String, Span),
+    Path(Vec<String>, Span),
 }
 
 #[derive(Clone)]
@@ -128,7 +145,11 @@ pub(crate) struct RawMatchArm {
 #[derive(Clone)]
 pub(crate) enum RawType {
     Builtin(Type),
-    Named(String, Span),
+    Named {
+        module: Option<String>,
+        name: String,
+        span: Span,
+    },
     Secret(Box<RawType>),
     Tuple(Vec<RawType>),
 }
@@ -151,6 +172,7 @@ pub(crate) enum RawStmt {
         value: RawExpr,
     },
     LayoutStore {
+        module: Option<String>,
         layout: String,
         field: String,
         index: Option<RawExpr>,
@@ -180,6 +202,32 @@ pub(crate) enum RawStmt {
 }
 
 #[derive(Clone)]
+pub(crate) struct RawLayoutLoad {
+    module: Option<String>,
+    layout: String,
+    field: String,
+    index: Option<Box<RawExpr>>,
+    subfield: Option<String>,
+    span: Span,
+}
+
+#[derive(Clone)]
+pub(crate) struct RawModCall {
+    module: String,
+    func: String,
+    args: Vec<RawExpr>,
+    span: Span,
+}
+
+#[derive(Clone)]
+pub(crate) struct RawStructLit {
+    module: Option<String>,
+    name: String,
+    fields: Vec<(String, RawExpr, Span)>,
+    span: Span,
+}
+
+#[derive(Clone)]
 pub(crate) enum RawExpr {
     IntLit(i64),
     FixedLit(i64),
@@ -187,24 +235,11 @@ pub(crate) enum RawExpr {
     StrLit(String),
     UnitLit,
     Var(String),
-    Path2 {
-        head: String,
-        member: String,
+    Path {
+        segs: Vec<String>,
         span: Span,
     },
-    Path3 {
-        head: String,
-        member: String,
-        prop: String,
-        span: Span,
-    },
-    LayoutLoad {
-        layout: String,
-        field: String,
-        index: Option<Box<RawExpr>>,
-        subfield: Option<String>,
-        span: Span,
-    },
+    LayoutLoad(Box<RawLayoutLoad>),
     Unary {
         op: UnaryOp,
         expr: Box<RawExpr>,
@@ -228,12 +263,7 @@ pub(crate) enum RawExpr {
         target: TargetRef,
         args: Vec<RawExpr>,
     },
-    ModCall {
-        module: String,
-        func: String,
-        args: Vec<RawExpr>,
-        span: Span,
-    },
+    ModCall(Box<RawModCall>),
     Perform {
         effect: String,
         op: String,
@@ -260,11 +290,7 @@ pub(crate) enum RawExpr {
         expr: Box<RawExpr>,
         index: usize,
     },
-    StructLit {
-        name: String,
-        fields: Vec<(String, RawExpr, Span)>,
-        span: Span,
-    },
+    StructLit(Box<RawStructLit>),
     FieldAccess {
         expr: Box<RawExpr>,
         field: String,
@@ -276,7 +302,6 @@ struct RawFnDef {
     name: String,
     exported: bool,
     is_pub: bool,
-    module: Option<String>,
     test_label: Option<String>,
     params: Vec<(String, RawType)>,
     effects: Vec<EffectCap>,
@@ -290,7 +315,6 @@ struct RawFnDef {
 
 struct RawFile {
     uses: Vec<RawUse>,
-    mod_files: Vec<RawModFile>,
     items: Vec<RawItem>,
     formas: Vec<crate::forma::FormaDef<RawExpr>>,
     functions: Vec<RawFnDef>,
@@ -372,128 +396,118 @@ fn diag_with_file(diag: InfimumDiagnostic, file_label: &str) -> InfimumDiagnosti
     }
 }
 
-fn load_std_recursive(
-    spec: &str,
-    use_span: Span,
-    visiting: &mut Vec<PathBuf>,
-    visited: &mut HashSet<PathBuf>,
-    all_items: &mut Vec<RawItem>,
-    all_formas: &mut Vec<crate::forma::FormaDef<RawExpr>>,
-    all_fns: &mut Vec<RawFnDef>,
-) -> Result<(), InfimumDiagnostic> {
-    let Some((virtual_key, src)) = resolve_embedded_std(spec) else {
-        return Err(InfimumDiagnostic::new(
-            "E040_FILE_READ",
-            "parse",
-            format!("Unknown built-in Infimum stdlib module '{spec}'"),
-            use_span,
-            "Available stdlib modules: std/prelude.ifm, std/sys_mem.ifm, std/mem.ifm, std/math.ifm, std/color.ifm, std/gfx.ifm, std/input.ifm, std/text.ifm, std/audio.ifm, std/fmt.ifm, std/theme.ifm, std/icons.ifm, std/ui.ifm, std/text_edit.ifm, std/markdown.ifm, std/buf.ifm, std/json.ifm",
-        ));
-    };
-    let canon = PathBuf::from(virtual_key);
-    if visiting.iter().any(|p| p == &canon) {
-        return Err(InfimumDiagnostic::new(
-            "E019_IMPORT_CYCLE",
-            "parse",
-            format!("Circular stdlib import detected: {virtual_key}"),
-            use_span,
-            "Break the import cycle",
-        ));
-    }
-    if visited.contains(&canon) {
-        return Ok(());
-    }
-    let display_label = format!("std/{}", virtual_key.trim_start_matches("__std__/"));
-    let mut raw = parse_raw_file(src).map_err(|d| diag_with_file(d, &display_label))?;
-    tag_raw_file_source(&mut raw, &display_label);
-    visiting.push(canon.clone());
-    for u in &raw.uses {
-        load_std_recursive(
-            &u.path,
-            u.span,
-            visiting,
-            visited,
-            all_items,
-            all_formas,
-            all_fns,
-        )?;
-    }
-    visiting.pop();
-    visited.insert(canon);
+// ---------------------------------------------------------------------------
+// Unified UnitLoader & UnitGraph (Pascal-style isolated compilation units)
+// ---------------------------------------------------------------------------
 
-    all_items.extend(raw.items);
-    all_formas.extend(raw.formas);
-    all_fns.extend(raw.functions);
-    Ok(())
+type UnitId = usize;
+
+struct RawUnit {
+    id: UnitId,
+    display_label: String,
+    parent: Option<UnitId>,
+    inline_mod: Option<(String, bool, Span)>,
+    is_entry: bool,
+    is_forma_rt: bool,
+    uses: Vec<(RawUse, UnitId)>,
+    items: Vec<RawItem>,
+    formas: Vec<crate::forma::FormaDef<RawExpr>>,
+    functions: Vec<RawFnDef>,
+    inline_children: Vec<UnitId>,
 }
 
-pub fn parse_module(src: &str) -> Result<Module, InfimumDiagnostic> {
-    let raw = parse_raw_file(src)?;
-    if raw.uses.is_empty() {
-        return resolve_and_lower(raw.items, raw.formas, raw.functions);
+struct UnitGraph {
+    units: Vec<RawUnit>,
+    by_key: BTreeMap<String, UnitId>,
+    topo_order: Vec<UnitId>,
+    entry_uid: UnitId,
+}
+
+impl UnitGraph {
+    fn find_unit(&self, canonical_key: &str) -> Option<UnitId> {
+        self.by_key.get(canonical_key).copied()
     }
-    let mut visiting: Vec<PathBuf> = Vec::new();
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut all_items: Vec<RawItem> = Vec::new();
-    let mut all_formas: Vec<crate::forma::FormaDef<RawExpr>> = Vec::new();
-    let mut all_fns: Vec<RawFnDef> = Vec::new();
-    for u in &raw.uses {
-        if u.path.starts_with("std/") {
-            load_std_recursive(
-                &u.path,
-                u.span,
-                &mut visiting,
-                &mut visited,
-                &mut all_items,
-                &mut all_formas,
-                &mut all_fns,
-            )?;
-        } else {
-            return Err(InfimumDiagnostic::new(
-                "E018_USE_WITHOUT_PATH",
-                "parse",
-                format!(
-                    "Cannot resolve 'use \"{}\"' without a source file path",
-                    u.path
-                ),
-                u.span,
-                "Load multi-file modules with parse_module_from_path(entry_path) or CLI file commands",
-            ));
+}
+
+trait FileSource {
+    /// Resolve a `use "<spec>"` relative to `requester_key` into `(canonical_key, display_label, source_text)`.
+    fn resolve_use(
+        &self,
+        requester_key: &str,
+        spec: &str,
+        use_span: Span,
+    ) -> Result<(String, String, String), InfimumDiagnostic>;
+}
+
+struct MemorySource;
+
+impl FileSource for MemorySource {
+    fn resolve_use(
+        &self,
+        _requester_key: &str,
+        spec: &str,
+        use_span: Span,
+    ) -> Result<(String, String, String), InfimumDiagnostic> {
+        Err(InfimumDiagnostic::new(
+            "E018_USE_WITHOUT_PATH",
+            "parse",
+            format!("Cannot resolve 'use \"{spec}\"' without a source file path"),
+            use_span,
+            "Load multi-file modules with parse_module_from_path(entry_path) or CLI file commands",
+        ))
+    }
+}
+
+struct DiskSource {
+    entry_dir: Option<PathBuf>,
+}
+
+impl DiskSource {
+    fn display_for(&self, canon: &Path) -> String {
+        if let Some(ed) = &self.entry_dir {
+            if let Ok(rel) = canon.strip_prefix(ed) {
+                return rel.to_string_lossy().replace('\\', "/");
+            }
         }
+        canon
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| canon.display().to_string())
     }
-    all_items.extend(raw.items);
-    all_formas.extend(raw.formas);
-    all_fns.extend(raw.functions);
-    resolve_and_lower(all_items, all_formas, all_fns)
 }
 
-/// Load and parse a multi-file Infimum module starting at `entry_path`.
-///
-/// Resolves `use "relative/path.ifm";` directives recursively relative to each file's directory,
-/// deduplicates diamond imports by canonical path, detects import cycles, and collects all
-/// declarations in deterministic topological order (dependencies before dependents).
-pub fn parse_module_from_path(entry_path: &Path) -> Result<Module, InfimumDiagnostic> {
-    let mut visiting: Vec<PathBuf> = Vec::new();
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut all_items: Vec<RawItem> = Vec::new();
-    let mut all_formas: Vec<crate::forma::FormaDef<RawExpr>> = Vec::new();
-    let mut all_fns: Vec<RawFnDef> = Vec::new();
-    let entry_dir = fs::canonicalize(entry_path)
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-
-    load_file_recursive(
-        entry_path,
-        entry_dir.as_deref(),
-        Span::zero(),
-        &mut visiting,
-        &mut visited,
-        &mut all_items,
-        &mut all_formas,
-        &mut all_fns,
-    )?;
-
-    resolve_and_lower(all_items, all_formas, all_fns)
+impl FileSource for DiskSource {
+    fn resolve_use(
+        &self,
+        requester_key: &str,
+        spec: &str,
+        use_span: Span,
+    ) -> Result<(String, String, String), InfimumDiagnostic> {
+        let base_dir = Path::new(requester_key)
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let dep_path = base_dir.join(spec);
+        let canon = fs::canonicalize(&dep_path).map_err(|e| {
+            InfimumDiagnostic::new(
+                "E040_FILE_READ",
+                "parse",
+                format!("Failed to resolve '{}': {e}", dep_path.display()),
+                use_span,
+                "Check that the imported .ifm file path exists relative to the importing file",
+            )
+        })?;
+        let text = fs::read_to_string(&canon).map_err(|e| {
+            InfimumDiagnostic::new(
+                "E040_FILE_READ",
+                "parse",
+                format!("Failed to read '{}': {e}", canon.display()),
+                use_span,
+                "Ensure the .ifm file is readable UTF-8 text",
+            )
+        })?;
+        let label = self.display_for(&canon);
+        Ok((canon.to_string_lossy().to_string(), label, text))
+    }
 }
 
 fn normalize_virtual_rel(base_dir: &str, rel: &str) -> String {
@@ -522,304 +536,369 @@ fn virtual_parent_dir(path: &str) -> &str {
     }
 }
 
+struct VirtualFsSource<'a> {
+    files: &'a BTreeMap<String, String>,
+}
+
+impl<'a> FileSource for VirtualFsSource<'a> {
+    fn resolve_use(
+        &self,
+        requester_key: &str,
+        spec: &str,
+        use_span: Span,
+    ) -> Result<(String, String, String), InfimumDiagnostic> {
+        let base_dir = virtual_parent_dir(requester_key);
+        let dep_key = normalize_virtual_rel(base_dir, spec);
+        let Some(text) = self.files.get(&dep_key) else {
+            return Err(InfimumDiagnostic::new(
+                "E040_FILE_READ",
+                "parse",
+                format!("Failed to resolve virtual import '{dep_key}'"),
+                use_span,
+                "Check that the imported .ifm file exists in the project workspace",
+            ));
+        };
+        Ok((dep_key.clone(), dep_key, text.clone()))
+    }
+}
+
+struct UnitLoader<'a, S: FileSource> {
+    source: &'a S,
+    units: Vec<RawUnit>,
+    by_key: BTreeMap<String, UnitId>,
+    visiting: Vec<(String, String)>, // (canonical_key, display_label)
+    topo_order: Vec<UnitId>,
+}
+
+impl<'a, S: FileSource> UnitLoader<'a, S> {
+    fn new(source: &'a S) -> Self {
+        Self {
+            source,
+            units: Vec::new(),
+            by_key: BTreeMap::new(),
+            visiting: Vec::new(),
+            topo_order: Vec::new(),
+        }
+    }
+
+    fn resolve_spec(
+        &self,
+        requester_key: &str,
+        spec: &str,
+        use_span: Span,
+    ) -> Result<(String, String, String), InfimumDiagnostic> {
+        if spec == "__forma__/widgets_rt.ifm" {
+            return Ok((
+                "__forma__/widgets_rt.ifm".to_string(),
+                "forma/widgets_rt.ifm".to_string(),
+                include_str!("forma/widgets_rt.ifm").to_string(),
+            ));
+        }
+        if spec.starts_with("std/") {
+            let Some((virtual_key, text)) = resolve_embedded_std(spec) else {
+                return Err(InfimumDiagnostic::new(
+                    "E040_FILE_READ",
+                    "parse",
+                    format!("Unknown built-in Infimum stdlib module '{spec}'"),
+                    use_span,
+                    "Available stdlib modules: std/prelude.ifm, std/sys_mem.ifm, std/mem.ifm, std/math.ifm, std/color.ifm, std/gfx.ifm, std/mesh3d.ifm, std/input.ifm, std/text.ifm, std/audio.ifm, std/fmt.ifm, std/theme.ifm, std/icons.ifm, std/ui.ifm, std/text_edit.ifm, std/markdown.ifm, std/buf.ifm, std/json.ifm",
+                ));
+            };
+            let label = format!("std/{}", virtual_key.trim_start_matches("__std__/"));
+            return Ok((virtual_key.to_string(), label, text.to_string()));
+        }
+        self.source.resolve_use(requester_key, spec, use_span)
+    }
+
+    fn load_unit(
+        &mut self,
+        canonical_key: String,
+        display_label: String,
+        src: &str,
+        is_entry: bool,
+        is_forma_rt: bool,
+        use_span: Span,
+    ) -> Result<UnitId, InfimumDiagnostic> {
+        if let Some(pos) = self.visiting.iter().position(|(k, _)| k == &canonical_key) {
+            let mut chain: Vec<&str> = self.visiting[pos..]
+                .iter()
+                .map(|(_, lbl)| lbl.as_str())
+                .collect();
+            chain.push(&display_label);
+            return Err(InfimumDiagnostic::new(
+                "E019_IMPORT_CYCLE",
+                "parse",
+                format!("Circular import detected: {}", chain.join(" -> ")),
+                use_span,
+                "Break the circular 'use' dependency between modules",
+            ));
+        }
+        if let Some(&uid) = self.by_key.get(&canonical_key) {
+            return Ok(uid);
+        }
+
+        let mut raw = parse_raw_file(src).map_err(|d| {
+            if is_entry && display_label == "<memory>" {
+                d
+            } else {
+                diag_with_file(d, &display_label)
+            }
+        })?;
+        tag_raw_file_source(&mut raw, &display_label);
+
+        self.visiting
+            .push((canonical_key.clone(), display_label.clone()));
+
+        let mut resolved_uses = Vec::with_capacity(raw.uses.len());
+        for u in raw.uses {
+            let (dep_key, dep_label, dep_src) =
+                self.resolve_spec(&canonical_key, &u.path, u.span)?;
+            let dep_uid = self.load_unit(dep_key, dep_label, &dep_src, false, false, u.span)?;
+            resolved_uses.push((u, dep_uid));
+        }
+
+        // Separate inline `mod name { ... }` items into child RawUnits
+        let mut own_items = Vec::new();
+        let mut raw_inline_mods = Vec::new();
+        for item in raw.items {
+            match item {
+                RawItem::Mod(rm) => raw_inline_mods.push(rm),
+                other => own_items.push(other),
+            }
+        }
+
+        self.visiting.pop();
+
+        let uid = self.units.len();
+        self.units.push(RawUnit {
+            id: uid,
+            display_label: display_label.clone(),
+            parent: None,
+            inline_mod: None,
+            is_entry,
+            is_forma_rt,
+            uses: resolved_uses,
+            items: own_items,
+            formas: raw.formas,
+            functions: raw.functions,
+            inline_children: Vec::new(),
+        });
+        self.by_key.insert(canonical_key.clone(), uid);
+        self.topo_order.push(uid);
+
+        // Register inline `mod` children (their `use` directives resolve relative to parent file)
+        for rm in raw_inline_mods {
+            let child_uid = self.register_inline_mod(uid, &canonical_key, &display_label, rm)?;
+            self.units[uid].inline_children.push(child_uid);
+        }
+
+        Ok(uid)
+    }
+
+    fn register_inline_mod(
+        &mut self,
+        parent_uid: UnitId,
+        parent_key: &str,
+        parent_label: &str,
+        rm: RawMod,
+    ) -> Result<UnitId, InfimumDiagnostic> {
+        let mut resolved_uses = Vec::with_capacity(rm.uses.len());
+        for u in rm.uses {
+            let (dep_key, dep_label, dep_src) = self.resolve_spec(parent_key, &u.path, u.span)?;
+            let dep_uid = self.load_unit(dep_key, dep_label, &dep_src, false, false, u.span)?;
+            resolved_uses.push((u, dep_uid));
+        }
+
+        let mut own_items = Vec::new();
+        let mut nested_mods = Vec::new();
+        for item in rm.items {
+            match item {
+                RawItem::Mod(nested) => nested_mods.push(nested),
+                other => own_items.push(other),
+            }
+        }
+
+        let child_uid = self.units.len();
+        let child_label = parent_label.to_string();
+        self.units.push(RawUnit {
+            id: child_uid,
+            display_label: child_label,
+            parent: Some(parent_uid),
+            inline_mod: Some((rm.name, rm.is_pub, rm.span)),
+            is_entry: false,
+            is_forma_rt: false,
+            uses: resolved_uses,
+            items: own_items,
+            formas: rm.formas,
+            functions: rm.functions,
+            inline_children: Vec::new(),
+        });
+        self.topo_order.push(child_uid);
+
+        for nested in nested_mods {
+            let n_uid = self.register_inline_mod(child_uid, parent_key, parent_label, nested)?;
+            self.units[child_uid].inline_children.push(n_uid);
+        }
+
+        Ok(child_uid)
+    }
+
+    fn finish(mut self, entry_uid: UnitId) -> Result<UnitGraph, InfimumDiagnostic> {
+        let has_forma = self.units.iter().any(|u| !u.formas.is_empty());
+        if has_forma {
+            let (k, l, s) =
+                self.resolve_spec("", "__forma__/widgets_rt.ifm", Span::zero())?;
+            let _ = self.load_unit(k, l, &s, false, true, Span::zero())?;
+        }
+        Ok(UnitGraph {
+            units: self.units,
+            by_key: self.by_key,
+            topo_order: self.topo_order,
+            entry_uid,
+        })
+    }
+}
+
+pub fn parse_module(src: &str) -> Result<Module, InfimumDiagnostic> {
+    let source = MemorySource;
+    let mut loader = UnitLoader::new(&source);
+    let entry_uid = loader.load_unit(
+        "<memory>".to_string(),
+        "<memory>".to_string(),
+        src,
+        true,
+        false,
+        Span::zero(),
+    )?;
+    let graph = loader.finish(entry_uid)?;
+    resolve_and_lower(graph)
+}
+
+/// Load and parse a multi-file Infimum module starting at `entry_path`.
+///
+/// Resolves `[pub] use "..."` directives recursively relative to each file's directory,
+/// isolates every file as a Pascal-style unit (`pub` interface / private implementation),
+/// deduplicates diamond imports by canonical path, detects import cycles, and collects all
+/// declarations in deterministic topological order (dependencies before dependents).
+pub fn parse_module_from_path(entry_path: &Path) -> Result<Module, InfimumDiagnostic> {
+    let canon = fs::canonicalize(entry_path).map_err(|e| {
+        InfimumDiagnostic::new(
+            "E040_FILE_READ",
+            "parse",
+            format!("Failed to resolve '{}': {e}", entry_path.display()),
+            Span::zero(),
+            "Check that the entry .ifm file path exists",
+        )
+    })?;
+    let src = fs::read_to_string(&canon).map_err(|e| {
+        InfimumDiagnostic::new(
+            "E040_FILE_READ",
+            "parse",
+            format!("Failed to read '{}': {e}", canon.display()),
+            Span::zero(),
+            "Ensure the .ifm file is readable UTF-8 text",
+        )
+    })?;
+    let entry_dir = canon.parent().map(|d| d.to_path_buf());
+    let source = DiskSource { entry_dir };
+    let label = source.display_for(&canon);
+    let mut loader = UnitLoader::new(&source);
+    let entry_uid = loader.load_unit(
+        canon.to_string_lossy().to_string(),
+        label,
+        &src,
+        true,
+        false,
+        Span::zero(),
+    )?;
+    let graph = loader.finish(entry_uid)?;
+    resolve_and_lower(graph)
+}
+
 /// Load and parse a multi-file Infimum module from an in-memory virtual filesystem
 /// (used by Online Infimum Code / `wasm32`) while preserving per-file names and spans.
 pub fn parse_module_from_virtual_fs(
     entry_path: &str,
     files: &BTreeMap<String, String>,
 ) -> Result<Module, InfimumDiagnostic> {
-    let mut visiting: Vec<PathBuf> = Vec::new();
-    let mut visited: HashSet<PathBuf> = HashSet::new();
-    let mut all_items: Vec<RawItem> = Vec::new();
-    let mut all_formas: Vec<crate::forma::FormaDef<RawExpr>> = Vec::new();
-    let mut all_fns: Vec<RawFnDef> = Vec::new();
-
-    load_virtual_recursive(
-        entry_path,
-        Span::zero(),
-        files,
-        &mut visiting,
-        &mut visited,
-        &mut all_items,
-        &mut all_formas,
-        &mut all_fns,
-    )?;
-
-    resolve_and_lower(all_items, all_formas, all_fns)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn load_virtual_recursive(
-    cur_path: &str,
-    use_span: Span,
-    files: &BTreeMap<String, String>,
-    visiting: &mut Vec<PathBuf>,
-    visited: &mut HashSet<PathBuf>,
-    all_items: &mut Vec<RawItem>,
-    all_formas: &mut Vec<crate::forma::FormaDef<RawExpr>>,
-    all_fns: &mut Vec<RawFnDef>,
-) -> Result<(), InfimumDiagnostic> {
-    if cur_path.starts_with("std/") {
-        return load_std_recursive(
-            cur_path, use_span, visiting, visited, all_items, all_formas, all_fns,
-        );
-    }
-    let key = normalize_virtual_rel("", cur_path);
-    if !files.contains_key(&key) {
-        if let Some(std_tail) = key.split("std/").nth(1) {
-            let spec = format!("std/{std_tail}");
-            if resolve_embedded_std(&spec).is_some() {
-                return load_std_recursive(
-                    &spec, use_span, visiting, visited, all_items, all_formas, all_fns,
-                );
-            }
-        }
-    }
-    let Some(src) = files.get(&key) else {
+    let norm = normalize_virtual_rel("", entry_path);
+    let Some(src) = files.get(&norm) else {
         return Err(InfimumDiagnostic::new(
-            "E010_IMPORT_NOT_FOUND",
+            "E040_FILE_READ",
             "parse",
-            format!("Cannot resolve `use \"{cur_path}\"` in virtual project"),
-            use_span,
-            "Check that the imported .ifm file exists in the project or std/",
+            format!("Failed to resolve virtual entry file '{norm}'"),
+            Span::zero(),
+            "Check that the entry .ifm file exists in the project workspace",
         ));
     };
-
-    let canon = PathBuf::from(&key);
-    if let Some(cycle_start) = visiting.iter().position(|p| p == &canon) {
-        let mut chain: Vec<String> = visiting[cycle_start..]
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
-        chain.push(key.clone());
-        return Err(InfimumDiagnostic::new(
-            "E019_IMPORT_CYCLE",
-            "parse",
-            format!("Circular 'use' import detected: {}", chain.join(" -> ")),
-            use_span,
-            "Break the import cycle by moving shared declarations into a common leaf .ifm file",
-        ));
-    }
-    if visited.contains(&canon) {
-        return Ok(());
-    }
-
-    let mut raw = parse_raw_file(src).map_err(|d| diag_with_file(d, &key))?;
-    tag_raw_file_source(&mut raw, &key);
-    let base_dir = virtual_parent_dir(&key);
-
-    visiting.push(canon.clone());
-    for u in &raw.uses {
-        if u.path.starts_with("std/") {
-            load_std_recursive(
-                &u.path, u.span, visiting, visited, all_items, all_formas, all_fns,
-            )?;
-        } else if let Some(std_tail) = u.path.split("/std/").nth(1) {
-            let spec = format!("std/{std_tail}");
-            load_std_recursive(
-                &spec, u.span, visiting, visited, all_items, all_formas, all_fns,
-            )?;
-        } else {
-            let dep_key = normalize_virtual_rel(base_dir, &u.path);
-            load_virtual_recursive(
-                &dep_key, u.span, files, visiting, visited, all_items, all_formas, all_fns,
-            )?;
-        }
-    }
-    for mf in &raw.mod_files {
-        let dep_key = normalize_virtual_rel(base_dir, &mf.path);
-        let mut mod_items = Vec::new();
-        let mut mod_formas = Vec::new();
-        let mut mod_fns = Vec::new();
-        load_virtual_recursive(
-            &dep_key,
-            mf.span,
-            files,
-            visiting,
-            visited,
-            &mut mod_items,
-            &mut mod_formas,
-            &mut mod_fns,
-        )?;
-        all_items.push(RawItem::Mod(RawMod {
-            name: mf.name.clone(),
-            items: mod_items,
-            formas: mod_formas,
-            functions: mod_fns,
-        }));
-    }
-    visiting.pop();
-    visited.insert(canon);
-
-    all_items.extend(raw.items);
-    all_formas.extend(raw.formas);
-    all_fns.extend(raw.functions);
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn load_file_recursive(
-    path: &Path,
-    entry_dir: Option<&Path>,
-    use_span: Span,
-    visiting: &mut Vec<PathBuf>,
-    visited: &mut HashSet<PathBuf>,
-    all_items: &mut Vec<RawItem>,
-    all_formas: &mut Vec<crate::forma::FormaDef<RawExpr>>,
-    all_fns: &mut Vec<RawFnDef>,
-) -> Result<(), InfimumDiagnostic> {
-    let canon = fs::canonicalize(path).map_err(|e| {
-        InfimumDiagnostic::new(
-            "E040_FILE_READ",
-            "parse",
-            format!("Cannot resolve Infimum source file '{}': {e}", path.display()),
-            use_span,
-            "Provide a valid path to an .ifm source file",
-        )
-    })?;
-
-    if let Some(cycle_start) = visiting.iter().position(|p| p == &canon) {
-        let mut chain: Vec<String> = visiting[cycle_start..]
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
-        chain.push(canon.display().to_string());
-        return Err(InfimumDiagnostic::new(
-            "E019_IMPORT_CYCLE",
-            "parse",
-            format!("Circular 'use' import detected: {}", chain.join(" -> ")),
-            use_span,
-            "Break the import cycle by moving shared declarations into a common leaf .ifm file",
-        ));
-    }
-
-    if visited.contains(&canon) {
-        return Ok(());
-    }
-
-    let src = fs::read_to_string(&canon).map_err(|e| {
-        InfimumDiagnostic::new(
-            "E040_FILE_READ",
-            "parse",
-            format!("Cannot read '{}': {e}", canon.display()),
-            use_span,
-            "Check file permissions and ensure the .ifm file is valid UTF-8",
-        )
-    })?;
-
-    let display_label = entry_dir
-        .and_then(|d| canon.strip_prefix(d).ok())
-        .map(|p| p.display().to_string())
-        .or_else(|| path.file_name().map(|f| f.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| canon.display().to_string());
-
-    let mut raw = parse_raw_file(&src).map_err(|d| diag_with_file(d, &display_label))?;
-    tag_raw_file_source(&mut raw, &display_label);
-    let base_dir = canon.parent().unwrap_or_else(|| Path::new("."));
-
-    visiting.push(canon.clone());
-    for u in &raw.uses {
-        if u.path.starts_with("std/") {
-            load_std_recursive(
-                &u.path,
-                u.span,
-                visiting,
-                visited,
-                all_items,
-                all_formas,
-                all_fns,
-            )?;
-        } else {
-            let dep_path = base_dir.join(&u.path);
-            load_file_recursive(
-                &dep_path,
-                entry_dir,
-                u.span,
-                visiting,
-                visited,
-                all_items,
-                all_formas,
-                all_fns,
-            )?;
-        }
-    }
-    for mf in &raw.mod_files {
-        let dep_path = base_dir.join(&mf.path);
-        let mut mod_items = Vec::new();
-        let mut mod_formas = Vec::new();
-        let mut mod_fns = Vec::new();
-        load_file_recursive(
-            &dep_path,
-            entry_dir,
-            mf.span,
-            visiting,
-            visited,
-            &mut mod_items,
-            &mut mod_formas,
-            &mut mod_fns,
-        )?;
-        all_items.push(RawItem::Mod(RawMod {
-            name: mf.name.clone(),
-            items: mod_items,
-            formas: mod_formas,
-            functions: mod_fns,
-        }));
-    }
-    visiting.pop();
-    visited.insert(canon);
-
-    all_items.extend(raw.items);
-    all_formas.extend(raw.formas);
-    all_fns.extend(raw.functions);
-    Ok(())
+    let source = VirtualFsSource { files };
+    let mut loader = UnitLoader::new(&source);
+    let entry_uid = loader.load_unit(norm.clone(), norm, src, true, false, Span::zero())?;
+    let graph = loader.finish(entry_uid)?;
+    resolve_and_lower(graph)
 }
 
 fn parse_raw_file(src: &str) -> Result<RawFile, InfimumDiagnostic> {
     let tokens = tokenize(src)?;
     let mut parser = Parser { tokens, idx: 0 };
     let mut uses = Vec::new();
-    let mut mod_files = Vec::new();
     let mut items = Vec::new();
     let mut formas = Vec::new();
     let mut functions = Vec::new();
 
     while !parser.at_eof() {
-        let is_pub = if parser.peek_is_contextual_kw("pub") {
+        let mut is_pub = if parser.peek_is_contextual_kw("pub") {
             parser.advance();
             true
         } else {
             false
         };
+        let mut is_export = false;
+        if matches!(parser.peek().kind, TokenKind::Export) {
+            parser.advance();
+            is_export = true;
+            if !is_pub && parser.peek_is_contextual_kw("pub") {
+                parser.advance();
+                is_pub = true;
+            }
+        }
         match parser.peek().kind {
-            TokenKind::Use => uses.push(parser.parse_use()?),
-            TokenKind::Const => {
+            TokenKind::Use if !is_export => uses.push(parser.parse_use(is_pub)?),
+            TokenKind::Const if !is_export => {
                 let mut c = parser.parse_const()?;
                 c.is_pub = is_pub;
                 items.push(RawItem::Const(c));
             }
-            TokenKind::Enum => items.push(RawItem::Enum(parser.parse_enum()?)),
-            TokenKind::Layout => items.push(RawItem::Layout(parser.parse_layout()?)),
-            _ if parser.peek_is_contextual_kw("mod") => {
-                match parser.parse_mod()? {
-                    ParsedMod::Inline(rm) => items.push(RawItem::Mod(rm)),
-                    ParsedMod::File(mf) => mod_files.push(mf),
-                }
+            TokenKind::Enum if !is_export => {
+                let mut e = parser.parse_enum()?;
+                e.is_pub = is_pub;
+                items.push(RawItem::Enum(e));
             }
-            _ if parser.peek_is_contextual_kw("struct") => {
-                items.push(RawItem::Struct(parser.parse_struct()?))
+            TokenKind::Layout if !is_export => {
+                let mut l = parser.parse_layout()?;
+                l.is_pub = is_pub;
+                items.push(RawItem::Layout(l));
             }
-            _ if parser.peek_is_contextual_kw("test") => {
+            _ if !is_export && parser.peek_is_contextual_kw("mod") => {
+                let mut rm = parser.parse_mod()?;
+                rm.is_pub = is_pub;
+                items.push(RawItem::Mod(rm));
+            }
+            _ if !is_export && parser.peek_is_contextual_kw("struct") => {
+                let mut st = parser.parse_struct()?;
+                st.is_pub = is_pub;
+                items.push(RawItem::Struct(st));
+            }
+            _ if !is_export && parser.peek_is_contextual_kw("test") => {
                 functions.push(parser.parse_test_fn()?)
             }
-            TokenKind::Forma => {
-                formas.push(crate::forma::parser::parse_forma_def(&mut parser, false)?)
-            }
-            TokenKind::Export if matches!(parser.peek_next(), TokenKind::Forma) => {
-                parser.advance();
-                formas.push(crate::forma::parser::parse_forma_def(&mut parser, true)?)
-            }
+            TokenKind::Forma => formas.push(crate::forma::parser::parse_forma_def(
+                &mut parser,
+                is_export,
+                is_pub,
+            )?),
             _ => {
-                let mut f = parser.parse_fn()?;
+                let mut f = parser.parse_fn_with_export(is_export)?;
                 f.is_pub = is_pub;
                 functions.push(f);
             }
@@ -828,16 +907,10 @@ fn parse_raw_file(src: &str) -> Result<RawFile, InfimumDiagnostic> {
 
     Ok(RawFile {
         uses,
-        mod_files,
         items,
         formas,
         functions,
     })
-}
-
-enum ParsedMod {
-    Inline(RawMod),
-    File(RawModFile),
 }
 
 // ---------------------------------------------------------------------------
@@ -913,7 +986,7 @@ impl Parser {
         matches!(&self.peek().kind, TokenKind::Ident(s) if s == kw)
     }
 
-    fn parse_use(&mut self) -> Result<RawUse, InfimumDiagnostic> {
+    fn parse_use(&mut self, is_pub: bool) -> Result<RawUse, InfimumDiagnostic> {
         let tok = self.expect(&TokenKind::Use, "Expected 'use'")?;
         let path = match self.peek().kind.clone() {
             TokenKind::Str(s) => {
@@ -926,13 +999,49 @@ impl Parser {
                     "parse",
                     format!("Expected relative file path string after 'use', found {other:?}"),
                     self.peek().span,
-                    "Write import directives as: use \"relative/path.ifm\";",
+                    "Write import directives as: use \"relative/path.ifm\"; or use \"file.ifm\" as alias; or use \"file.ifm\" { a, b as c };",
                 ));
             }
         };
+        let kind = if self.peek_is_contextual_kw("as") {
+            self.advance();
+            let (alias, alias_span) = self.expect_ident("Expected namespace alias after 'as'")?;
+            RawUseKind::Alias(alias, alias_span)
+        } else if matches!(self.peek().kind, TokenKind::LBrace) {
+            self.advance();
+            let mut items = Vec::new();
+            while !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Eof) {
+                let (item_name, item_span) =
+                    self.expect_ident("Expected imported symbol name inside '{ ... }'")?;
+                let alias = if self.peek_is_contextual_kw("as") {
+                    self.advance();
+                    let (al, _) =
+                        self.expect_ident("Expected alias name after 'as' in selective import")?;
+                    Some(al)
+                } else {
+                    None
+                };
+                items.push(RawUseItem {
+                    name: item_name,
+                    alias,
+                    span: item_span,
+                });
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RBrace, "Expected '}' to close selective import list")?;
+            RawUseKind::Selective(items)
+        } else {
+            RawUseKind::All
+        };
         self.expect(&TokenKind::Semi, "Terminate 'use' directive with ';'")?;
         Ok(RawUse {
+            is_pub,
             path,
+            kind,
             span: tok.span,
         })
     }
@@ -963,69 +1072,87 @@ impl Parser {
         })
     }
 
-    fn parse_mod(&mut self) -> Result<ParsedMod, InfimumDiagnostic> {
+    fn parse_mod(&mut self) -> Result<RawMod, InfimumDiagnostic> {
         let (_, span) = self.expect_ident("Expected 'mod'")?;
         let (name, _) = self.expect_ident("Expected module name after 'mod'")?;
         if self.peek_is_contextual_kw("from") {
-            self.advance();
-            let tok = self.peek().clone();
-            let path = match tok.kind {
-                TokenKind::Str(s) => {
-                    self.advance();
-                    s
-                }
-                other => {
-                    return Err(InfimumDiagnostic::new(
-                        "E010_UNEXPECTED_TOKEN",
-                        "parse",
-                        format!("Expected module file path string after 'from', found {other:?}"),
-                        tok.span,
-                        "Write: mod ai from \"ai.ifm\";",
-                    ));
-                }
-            };
-            self.expect(&TokenKind::Semi, "Terminate 'mod ... from \"...\";' with ';'")?;
-            return Ok(ParsedMod::File(RawModFile { name, path, span }));
+            let from_span = self.peek().span;
+            return Err(InfimumDiagnostic::new(
+                "E010_UNEXPECTED_TOKEN",
+                "parse",
+                format!("'mod {name} from \"...\";' has been removed; use 'use \"file.ifm\" as {name};' instead"),
+                from_span,
+                format!("Replace with: use \"<file>.ifm\" as {name};"),
+            ));
         }
-        self.expect(&TokenKind::LBrace, "Expected '{' or 'from \"file.ifm\";' after module name")?;
+        self.expect(&TokenKind::LBrace, "Expected '{' after inline module name")?;
+        let mut uses = Vec::new();
         let mut items = Vec::new();
         let mut formas = Vec::new();
         let mut functions = Vec::new();
         while !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Eof) {
-            let is_pub = if self.peek_is_contextual_kw("pub") {
+            let mut is_pub = if self.peek_is_contextual_kw("pub") {
                 self.advance();
                 true
             } else {
                 false
             };
+            let mut is_export = false;
+            if matches!(self.peek().kind, TokenKind::Export) {
+                self.advance();
+                is_export = true;
+                if !is_pub && self.peek_is_contextual_kw("pub") {
+                    self.advance();
+                    is_pub = true;
+                }
+            }
             match self.peek().kind {
-                TokenKind::Const => {
+                TokenKind::Use if !is_export => uses.push(self.parse_use(is_pub)?),
+                TokenKind::Const if !is_export => {
                     let mut c = self.parse_const()?;
                     c.is_pub = is_pub;
                     items.push(RawItem::Const(c));
                 }
-                TokenKind::Enum => items.push(RawItem::Enum(self.parse_enum()?)),
-                TokenKind::Layout => items.push(RawItem::Layout(self.parse_layout()?)),
-                _ if self.peek_is_contextual_kw("struct") => {
-                    items.push(RawItem::Struct(self.parse_struct()?))
+                TokenKind::Enum if !is_export => {
+                    let mut e = self.parse_enum()?;
+                    e.is_pub = is_pub;
+                    items.push(RawItem::Enum(e));
+                }
+                TokenKind::Layout if !is_export => {
+                    let mut l = self.parse_layout()?;
+                    l.is_pub = is_pub;
+                    items.push(RawItem::Layout(l));
+                }
+                _ if !is_export && self.peek_is_contextual_kw("mod") => {
+                    let mut nested = self.parse_mod()?;
+                    nested.is_pub = is_pub;
+                    items.push(RawItem::Mod(nested));
+                }
+                _ if !is_export && self.peek_is_contextual_kw("struct") => {
+                    let mut st = self.parse_struct()?;
+                    st.is_pub = is_pub;
+                    items.push(RawItem::Struct(st));
                 }
                 TokenKind::Forma => {
-                    formas.push(crate::forma::parser::parse_forma_def(self, false)?)
+                    formas.push(crate::forma::parser::parse_forma_def(self, is_export, is_pub)?)
                 }
                 _ => {
-                    let mut f = self.parse_fn()?;
+                    let mut f = self.parse_fn_with_export(is_export)?;
                     f.is_pub = is_pub;
                     functions.push(f);
                 }
             }
         }
         self.expect(&TokenKind::RBrace, "Expected '}' to close module body")?;
-        Ok(ParsedMod::Inline(RawMod {
+        Ok(RawMod {
             name,
+            is_pub: false,
+            span,
+            uses,
             items,
             formas,
             functions,
-        }))
+        })
     }
 
     fn parse_enum(&mut self) -> Result<RawEnum, InfimumDiagnostic> {
@@ -1056,6 +1183,7 @@ impl Parser {
         self.expect(&TokenKind::RBrace, "Expected '}' to close enum body")?;
         Ok(RawEnum {
             name,
+            is_pub: false,
             variants,
             span: tok.span,
         })
@@ -1127,7 +1255,12 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RBrace, "Expected '}' to close struct body")?;
-        Ok(RawStruct { name, fields, span })
+        Ok(RawStruct {
+            name,
+            is_pub: false,
+            fields,
+            span,
+        })
     }
 
     fn parse_layout(&mut self) -> Result<RawLayout, InfimumDiagnostic> {
@@ -1147,38 +1280,59 @@ impl Parser {
             self.expect(&TokenKind::Colon, "Expected ':' after layout field name")?;
             let (kind_kw, _) =
                 self.expect_ident("Expected 'word', 'words[N]', 'fixed', 'fixed[N]', 'Struct', or 'Struct[N]'")?;
-            let (struct_type, is_array, is_fixed, len_expr) = match kind_kw.as_str() {
-                "word" => (None, false, false, None),
-                "words" => {
-                    self.expect(
-                        &TokenKind::LBracket,
-                        "Expected '[' after 'words' (e.g. words[8200])",
-                    )?;
-                    let len = self.parse_expr()?;
-                    self.expect(&TokenKind::RBracket, "Expected ']' after words length")?;
-                    (None, true, false, Some(len))
-                }
-                "fixed" => {
-                    if matches!(self.peek().kind, TokenKind::LBracket) {
-                        self.advance();
-                        let len = self.parse_expr()?;
-                        self.expect(&TokenKind::RBracket, "Expected ']' after fixed array length")?;
-                        (None, true, true, Some(len))
-                    } else {
-                        (None, false, true, None)
-                    }
-                }
-                other => {
+            let (struct_module, struct_type, is_array, is_fixed, len_expr) =
+                if matches!(self.peek().kind, TokenKind::ColonColon) {
+                    self.advance();
+                    let (sname, _) =
+                        self.expect_ident("Expected struct name after '::' in layout field")?;
                     if matches!(self.peek().kind, TokenKind::LBracket) {
                         self.advance();
                         let len = self.parse_expr()?;
                         self.expect(&TokenKind::RBracket, "Expected ']' after struct array length")?;
-                        (Some(other.to_string()), true, false, Some(len))
+                        (Some(kind_kw), Some(sname), true, false, Some(len))
                     } else {
-                        (Some(other.to_string()), false, false, None)
+                        (Some(kind_kw), Some(sname), false, false, None)
                     }
-                }
-            };
+                } else {
+                    match kind_kw.as_str() {
+                        "word" => (None, None, false, false, None),
+                        "words" => {
+                            self.expect(
+                                &TokenKind::LBracket,
+                                "Expected '[' after 'words' (e.g. words[8200])",
+                            )?;
+                            let len = self.parse_expr()?;
+                            self.expect(&TokenKind::RBracket, "Expected ']' after words length")?;
+                            (None, None, true, false, Some(len))
+                        }
+                        "fixed" => {
+                            if matches!(self.peek().kind, TokenKind::LBracket) {
+                                self.advance();
+                                let len = self.parse_expr()?;
+                                self.expect(
+                                    &TokenKind::RBracket,
+                                    "Expected ']' after fixed array length",
+                                )?;
+                                (None, None, true, true, Some(len))
+                            } else {
+                                (None, None, false, true, None)
+                            }
+                        }
+                        other => {
+                            if matches!(self.peek().kind, TokenKind::LBracket) {
+                                self.advance();
+                                let len = self.parse_expr()?;
+                                self.expect(
+                                    &TokenKind::RBracket,
+                                    "Expected ']' after struct array length",
+                                )?;
+                                (None, Some(other.to_string()), true, false, Some(len))
+                            } else {
+                                (None, Some(other.to_string()), false, false, None)
+                            }
+                        }
+                    }
+                };
             let mut at_expr = None;
             let mut inv = None;
             for _ in 0..2 {
@@ -1193,6 +1347,7 @@ impl Parser {
             }
             fields.push(RawLayoutField {
                 name: fname,
+                struct_module,
                 struct_type,
                 len_expr,
                 is_array,
@@ -1210,14 +1365,17 @@ impl Parser {
         self.expect(&TokenKind::RBrace, "Expected '}' to close layout body")?;
         Ok(RawLayout {
             name,
+            is_pub: false,
             base_expr,
             fields,
             span: tok.span,
         })
     }
 
-    fn parse_fn(&mut self) -> Result<RawFnDef, InfimumDiagnostic> {
-        let exported = if matches!(self.peek().kind, TokenKind::Export) {
+    fn parse_fn_with_export(&mut self, exported_already: bool) -> Result<RawFnDef, InfimumDiagnostic> {
+        let exported = if exported_already {
+            true
+        } else if matches!(self.peek().kind, TokenKind::Export) {
             self.advance();
             true
         } else {
@@ -1334,7 +1492,6 @@ impl Parser {
             name,
             exported,
             is_pub: false,
-            module: None,
             test_label: None,
             params,
             effects,
@@ -1384,7 +1541,6 @@ impl Parser {
             name: format!("__ifm_test_L{}_C{}", span.line, span.col),
             exported: false,
             is_pub: false,
-            module: None,
             test_label: Some(label),
             params: vec![],
             effects: vec![EffectCap {
@@ -1438,7 +1594,23 @@ impl Parser {
                 self.expect(&TokenKind::Gt, "Expected '>' to close Secret<T>")?;
                 Ok(RawType::Secret(Box::new(inner)))
             }
-            _ => Ok(RawType::Named(tname, span)),
+            _ => {
+                if matches!(self.peek().kind, TokenKind::ColonColon) {
+                    self.advance();
+                    let (sname, _) = self.expect_ident("Expected type name after '::'")?;
+                    Ok(RawType::Named {
+                        module: Some(tname),
+                        name: sname,
+                        span,
+                    })
+                } else {
+                    Ok(RawType::Named {
+                        module: None,
+                        name: tname,
+                        span,
+                    })
+                }
+            }
         }
     }
 
@@ -1515,12 +1687,24 @@ impl Parser {
                     value: val,
                 }));
             }
-            // Layout assignment: `Layout.field`, `Layout.field[i]`, `Layout.field.sub`, `Layout.field[i].sub`
-            if matches!(self.peek_at(1), TokenKind::Dot)
+            // Layout assignment: `[mod::]Layout.field`, `...field[i]`, `...field.sub`, `...field[i].sub`
+            let is_direct_layout = matches!(self.peek_at(1), TokenKind::Dot)
+                && matches!(self.peek_at(2), TokenKind::Ident(_));
+            let is_mod_layout = matches!(self.peek_at(1), TokenKind::ColonColon)
                 && matches!(self.peek_at(2), TokenKind::Ident(_))
-            {
+                && matches!(self.peek_at(3), TokenKind::Dot)
+                && matches!(self.peek_at(4), TokenKind::Ident(_));
+            if is_direct_layout || is_mod_layout {
                 let saved = self.idx;
-                let (layout, span) = self.expect_ident("Expected layout name")?;
+                let (module, layout, span) = if is_mod_layout {
+                    let (m, sp) = self.expect_ident("Expected module name")?;
+                    self.advance(); // '::'
+                    let (l, _) = self.expect_ident("Expected layout name")?;
+                    (Some(m), l, sp)
+                } else {
+                    let (l, sp) = self.expect_ident("Expected layout name")?;
+                    (None, l, sp)
+                };
                 self.advance(); // '.'
                 let (field, _) = self.expect_ident("Expected layout field name")?;
                 let index = if matches!(self.peek().kind, TokenKind::LBracket) {
@@ -1552,6 +1736,7 @@ impl Parser {
                         "Terminate layout field assignment with ';'",
                     )?;
                     return Ok(Some(RawStmt::LayoutStore {
+                        module,
                         layout,
                         field,
                         index,
@@ -1686,28 +1871,20 @@ impl Parser {
             TokenKind::Ident(name) => {
                 self.advance();
                 if matches!(self.peek().kind, TokenKind::ColonColon) {
-                    self.advance();
-                    let (member, _) =
-                        self.expect_ident("Expected member name after '::'")?;
-                    if matches!(self.peek().kind, TokenKind::ColonColon) {
+                    let mut segs = vec![name];
+                    while matches!(self.peek().kind, TokenKind::ColonColon) {
                         self.advance();
-                        let (prop, _) = self.expect_ident(
-                            "Expected layout field property ('len' or 'end') after '::'",
-                        )?;
-                        Ok(RawExpr::Path3 {
-                            head: name,
-                            member,
-                            prop,
-                            span: tok.span,
-                        })
-                    } else if matches!(self.peek().kind, TokenKind::LParen) {
+                        let (seg, _) = self.expect_ident("Expected identifier after '::'")?;
+                        segs.push(seg);
+                    }
+                    if segs.len() == 2 && matches!(self.peek().kind, TokenKind::LParen) {
                         let args = self.parse_arg_list()?;
-                        let mut expr = RawExpr::ModCall {
-                            module: name,
-                            func: member,
+                        let mut expr = RawExpr::ModCall(Box::new(RawModCall {
+                            module: segs.remove(0),
+                            func: segs.remove(0),
                             args,
                             span: tok.span,
-                        };
+                        }));
                         while matches!(self.peek().kind, TokenKind::Dot)
                             && matches!(self.peek_next(), TokenKind::Int(_) | TokenKind::Ident(_))
                         {
@@ -1731,9 +1908,8 @@ impl Parser {
                         }
                         Ok(expr)
                     } else {
-                        Ok(RawExpr::Path2 {
-                            head: name,
-                            member,
+                        Ok(RawExpr::Path {
+                            segs,
                             span: tok.span,
                         })
                     }
@@ -2186,17 +2362,13 @@ impl Parser {
                     return Ok(RawMatchPattern::Wildcard(tok.span));
                 }
                 if matches!(self.peek().kind, TokenKind::ColonColon) {
-                    self.advance();
-                    let (member, _) = self.expect_ident("Expected variant or field name after '::'")?;
-                    if matches!(self.peek().kind, TokenKind::ColonColon) {
+                    let mut segs = vec![name];
+                    while matches!(self.peek().kind, TokenKind::ColonColon) {
                         self.advance();
-                        let (prop, _) = self.expect_ident(
-                            "Expected layout field property ('len' or 'end') after '::'",
-                        )?;
-                        Ok(RawMatchPattern::Path3(name, member, prop, tok.span))
-                    } else {
-                        Ok(RawMatchPattern::Path2(name, member, tok.span))
+                        let (seg, _) = self.expect_ident("Expected variant or member name after '::'")?;
+                        segs.push(seg);
                     }
+                    Ok(RawMatchPattern::Path(segs, tok.span))
                 } else {
                     Ok(RawMatchPattern::ConstRef(name, tok.span))
                 }
@@ -2357,27 +2529,20 @@ impl Parser {
             TokenKind::Ident(name) => {
                 self.advance();
                 if matches!(self.peek().kind, TokenKind::ColonColon) {
-                    self.advance();
-                    let (member, _) = self.expect_ident("Expected member name after '::'")?;
-                    if matches!(self.peek().kind, TokenKind::ColonColon) {
+                    let mut segs = vec![name];
+                    while matches!(self.peek().kind, TokenKind::ColonColon) {
                         self.advance();
-                        let (prop, _) = self.expect_ident(
-                            "Expected layout field property ('len' or 'end') after '::'",
-                        )?;
-                        Ok(RawExpr::Path3 {
-                            head: name,
-                            member,
-                            prop,
-                            span: tok.span,
-                        })
-                    } else if matches!(self.peek().kind, TokenKind::LParen) {
+                        let (seg, _) = self.expect_ident("Expected member name after '::'")?;
+                        segs.push(seg);
+                    }
+                    if segs.len() == 2 && matches!(self.peek().kind, TokenKind::LParen) {
                         let args = self.parse_arg_list()?;
-                        let mut expr = RawExpr::ModCall {
-                            module: name,
-                            func: member,
+                        let mut expr = RawExpr::ModCall(Box::new(RawModCall {
+                            module: segs.remove(0),
+                            func: segs.remove(0),
                             args,
                             span: tok.span,
-                        };
+                        }));
                         while matches!(self.peek().kind, TokenKind::Dot)
                             && matches!(self.peek_next(), TokenKind::Int(_) | TokenKind::Ident(_))
                         {
@@ -2400,10 +2565,85 @@ impl Parser {
                             }
                         }
                         Ok(expr)
+                    } else if segs.len() == 2
+                        && matches!(self.peek().kind, TokenKind::LBrace)
+                        && matches!(self.peek_at(1), TokenKind::Ident(_))
+                        && matches!(self.peek_at(2), TokenKind::Colon)
+                    {
+                        self.advance(); // '{'
+                        let mut fields = Vec::new();
+                        while !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Eof) {
+                            let (fname, fspan) = self.expect_ident("Expected struct field name")?;
+                            self.expect(&TokenKind::Colon, "Expected ':' after struct field name")?;
+                            let fval = self.parse_expr()?;
+                            fields.push((fname, fval, fspan));
+                            if matches!(self.peek().kind, TokenKind::Comma) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        self.expect(&TokenKind::RBrace, "Expected '}' to close struct literal")?;
+                        let mut expr = RawExpr::StructLit(Box::new(RawStructLit {
+                            module: Some(segs.remove(0)),
+                            name: segs.remove(0),
+                            fields,
+                            span: tok.span,
+                        }));
+                        while matches!(self.peek().kind, TokenKind::Dot)
+                            && matches!(self.peek_next(), TokenKind::Int(_) | TokenKind::Ident(_))
+                        {
+                            let dot_span = self.advance().span;
+                            match self.advance().kind {
+                                TokenKind::Int(idx) => {
+                                    expr = RawExpr::TupleField {
+                                        expr: Box::new(expr),
+                                        index: idx.max(0) as usize,
+                                    };
+                                }
+                                TokenKind::Ident(field) => {
+                                    expr = RawExpr::FieldAccess {
+                                        expr: Box::new(expr),
+                                        field,
+                                        span: dot_span,
+                                    };
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(expr)
+                    } else if segs.len() == 2
+                        && matches!(self.peek().kind, TokenKind::Dot)
+                        && matches!(self.peek_next(), TokenKind::Ident(_))
+                    {
+                        self.advance(); // '.'
+                        let (field, _) = self.expect_ident("Expected layout field name after '.'")?;
+                        let index = if matches!(self.peek().kind, TokenKind::LBracket) {
+                            self.advance();
+                            let idx_expr = self.parse_expr()?;
+                            self.expect(&TokenKind::RBracket, "Expected ']' after layout index")?;
+                            Some(Box::new(idx_expr))
+                        } else {
+                            None
+                        };
+                        let subfield = if matches!(self.peek().kind, TokenKind::Dot) {
+                            self.advance();
+                            let (sf, _) = self.expect_ident("Expected struct field name after '.'")?;
+                            Some(sf)
+                        } else {
+                            None
+                        };
+                        Ok(RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
+                            module: Some(segs.remove(0)),
+                            layout: segs.remove(0),
+                            field,
+                            index,
+                            subfield,
+                            span: tok.span,
+                        })))
                     } else {
-                        Ok(RawExpr::Path2 {
-                            head: name,
-                            member,
+                        Ok(RawExpr::Path {
+                            segs,
                             span: tok.span,
                         })
                     }
@@ -2440,13 +2680,14 @@ impl Parser {
                     } else {
                         None
                     };
-                    Ok(RawExpr::LayoutLoad {
+                    Ok(RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
+                        module: None,
                         layout: name,
                         field,
                         index,
                         subfield,
                         span: tok.span,
-                    })
+                    })))
                 } else if matches!(self.peek().kind, TokenKind::LParen) {
                     let args = self.parse_arg_list()?;
                     let target = if name == "$self" {
@@ -2495,11 +2736,12 @@ impl Parser {
                         }
                     }
                     self.expect(&TokenKind::RBrace, "Expected '}' to close struct literal")?;
-                    let mut expr = RawExpr::StructLit {
+                    let mut expr = RawExpr::StructLit(Box::new(RawStructLit {
+                        module: None,
                         name,
                         fields,
                         span: tok.span,
-                    };
+                    }));
                     while matches!(self.peek().kind, TokenKind::Dot)
                         && matches!(self.peek_next(), TokenKind::Int(_) | TokenKind::Ident(_))
                     {
@@ -2561,53 +2803,534 @@ impl Parser {
 // Stage B: Compile-Time Evaluation, Static Layout Overlap Proof, & Desugaring
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, PartialEq, Eq)]
+struct SymRef {
+    owner: UnitId,
+    orig_name: String,
+    canonical_name: String,
+    decl_file: String,
+    decl_span: Span,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct NamespaceRef {
+    target_uid: UnitId,
+    decl_file: String,
+    decl_span: Span,
+}
+
+#[derive(Clone, Default)]
+struct SymbolTable {
+    fns: BTreeMap<String, SymRef>,
+    consts: BTreeMap<String, SymRef>,
+    enums: BTreeMap<String, SymRef>,
+    structs: BTreeMap<String, SymRef>,
+    layouts: BTreeMap<String, SymRef>,
+    formas: BTreeMap<String, SymRef>,
+    namespaces: BTreeMap<String, NamespaceRef>,
+    // Insertion order for deterministic ABI export
+    consts_order: Vec<String>,
+    enums_order: Vec<String>,
+    layouts_order: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+struct UnitTables {
+    exports: SymbolTable,
+    scope: SymbolTable,
+}
+
+fn unit_canonical_name(u: &RawUnit, name: &str, is_exported_fn: bool) -> String {
+    if u.is_entry || is_exported_fn || (u.is_forma_rt && name.starts_with("__forma_")) {
+        name.to_string()
+    } else {
+        format!("u{}__{name}", u.id)
+    }
+}
+
+fn insert_sym(
+    map: &mut BTreeMap<String, SymRef>,
+    order: Option<&mut Vec<String>>,
+    key: String,
+    sym: SymRef,
+    kind_label: &str,
+    use_span: Span,
+    is_explicit_alias: bool,
+) -> Result<(), InfimumDiagnostic> {
+    if let Some(existing) = map.get(&key) {
+        if existing.owner == sym.owner && existing.orig_name == sym.orig_name {
+            return Ok(());
+        }
+        let code = if is_explicit_alias {
+            "E069_DUPLICATE_ALIAS"
+        } else {
+            "E024_DUPLICATE_SYMBOL"
+        };
+        let err_span = if use_span.line > 0 { use_span } else { sym.decl_span };
+        return Err(InfimumDiagnostic::new(
+            code,
+            "resolve",
+            format!(
+                "Duplicate {kind_label} '{key}': defined at {}:{}:{} and {}:{}:{}",
+                existing.decl_file,
+                existing.decl_span.line,
+                existing.decl_span.col,
+                sym.decl_file,
+                sym.decl_span.line,
+                sym.decl_span.col
+            ),
+            err_span,
+            format!(
+                "Disambiguate '{key}' with a namespace import (use \"file.ifm\" as alias;) or selective alias (use \"file.ifm\" {{ {key} as other }};)"
+            ),
+        ));
+    }
+    if let Some(ord) = order {
+        ord.push(key.clone());
+    }
+    map.insert(key, sym);
+    Ok(())
+}
+
+fn insert_namespace(
+    map: &mut BTreeMap<String, NamespaceRef>,
+    alias: String,
+    ns: NamespaceRef,
+    use_span: Span,
+) -> Result<(), InfimumDiagnostic> {
+    if let Some(existing) = map.get(&alias) {
+        if existing.target_uid == ns.target_uid {
+            return Ok(());
+        }
+        return Err(InfimumDiagnostic::new(
+            "E069_DUPLICATE_ALIAS",
+            "resolve",
+            format!(
+                "Duplicate module alias '{alias}' (previously bound at {}:{}:{})",
+                existing.decl_file, existing.decl_span.line, existing.decl_span.col
+            ),
+            if use_span.line > 0 { use_span } else { ns.decl_span },
+            format!("Choose a distinct namespace alias instead of '{alias}'"),
+        ));
+    }
+    map.insert(alias, ns);
+    Ok(())
+}
+
+fn merge_table_all(
+    dst: &mut SymbolTable,
+    src: &SymbolTable,
+    use_span: Span,
+) -> Result<(), InfimumDiagnostic> {
+    for (k, v) in &src.fns {
+        insert_sym(&mut dst.fns, None, k.clone(), v.clone(), "function", use_span, false)?;
+    }
+    for k in &src.consts_order {
+        if let Some(v) = src.consts.get(k) {
+            insert_sym(
+                &mut dst.consts,
+                Some(&mut dst.consts_order),
+                k.clone(),
+                v.clone(),
+                "const",
+                use_span,
+                false,
+            )?;
+        }
+    }
+    for k in &src.enums_order {
+        if let Some(v) = src.enums.get(k) {
+            insert_sym(
+                &mut dst.enums,
+                Some(&mut dst.enums_order),
+                k.clone(),
+                v.clone(),
+                "enum",
+                use_span,
+                false,
+            )?;
+        }
+    }
+    for (k, v) in &src.structs {
+        insert_sym(&mut dst.structs, None, k.clone(), v.clone(), "struct", use_span, false)?;
+    }
+    for k in &src.layouts_order {
+        if let Some(v) = src.layouts.get(k) {
+            insert_sym(
+                &mut dst.layouts,
+                Some(&mut dst.layouts_order),
+                k.clone(),
+                v.clone(),
+                "layout",
+                use_span,
+                false,
+            )?;
+        }
+    }
+    for (k, v) in &src.formas {
+        insert_sym(&mut dst.formas, None, k.clone(), v.clone(), "forma", use_span, false)?;
+    }
+    for (k, v) in &src.namespaces {
+        insert_namespace(&mut dst.namespaces, k.clone(), v.clone(), use_span)?;
+    }
+    Ok(())
+}
+
+fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, InfimumDiagnostic> {
+    let mut tables = vec![UnitTables::default(); graph.units.len()];
+    let mut global_exports: BTreeMap<String, (String, Span)> = BTreeMap::new();
+
+    for &uid in &graph.topo_order {
+        let u = &graph.units[uid];
+
+        // Inline `mod` inherits parent unit's visible scope before adding its own uses/decls
+        if let Some(parent_uid) = u.parent {
+            tables[uid].scope = tables[parent_uid].scope.clone();
+        }
+
+        // 1. Register own declarations
+        {
+            let ut = &mut tables[uid];
+            for item in &u.items {
+                match item {
+                    RawItem::Const(rc) => {
+                        let sym = SymRef {
+                            owner: uid,
+                            orig_name: rc.name.clone(),
+                            canonical_name: unit_canonical_name(u, &rc.name, false),
+                            decl_file: u.display_label.clone(),
+                            decl_span: rc.span,
+                        };
+                        if u.parent.is_some() {
+                            ut.scope.consts.insert(rc.name.clone(), sym.clone());
+                        } else {
+                            insert_sym(
+                                &mut ut.scope.consts,
+                                Some(&mut ut.scope.consts_order),
+                                rc.name.clone(),
+                                sym.clone(),
+                                "const",
+                                rc.span,
+                                false,
+                            )?;
+                        }
+                        if rc.is_pub {
+                            insert_sym(
+                                &mut ut.exports.consts,
+                                Some(&mut ut.exports.consts_order),
+                                rc.name.clone(),
+                                sym,
+                                "const",
+                                rc.span,
+                                false,
+                            )?;
+                        }
+                    }
+                    RawItem::Enum(re) => {
+                        let sym = SymRef {
+                            owner: uid,
+                            orig_name: re.name.clone(),
+                            canonical_name: unit_canonical_name(u, &re.name, false),
+                            decl_file: u.display_label.clone(),
+                            decl_span: re.span,
+                        };
+                        if u.parent.is_some() {
+                            ut.scope.enums.insert(re.name.clone(), sym.clone());
+                        } else {
+                            insert_sym(
+                                &mut ut.scope.enums,
+                                Some(&mut ut.scope.enums_order),
+                                re.name.clone(),
+                                sym.clone(),
+                                "enum",
+                                re.span,
+                                false,
+                            )?;
+                        }
+                        if re.is_pub {
+                            insert_sym(
+                                &mut ut.exports.enums,
+                                Some(&mut ut.exports.enums_order),
+                                re.name.clone(),
+                                sym,
+                                "enum",
+                                re.span,
+                                false,
+                            )?;
+                        }
+                    }
+                    RawItem::Struct(rs) => {
+                        let sym = SymRef {
+                            owner: uid,
+                            orig_name: rs.name.clone(),
+                            canonical_name: unit_canonical_name(u, &rs.name, false),
+                            decl_file: u.display_label.clone(),
+                            decl_span: rs.span,
+                        };
+                        if u.parent.is_some() {
+                            ut.scope.structs.insert(rs.name.clone(), sym.clone());
+                        } else {
+                            insert_sym(
+                                &mut ut.scope.structs,
+                                None,
+                                rs.name.clone(),
+                                sym.clone(),
+                                "struct",
+                                rs.span,
+                                false,
+                            )?;
+                        }
+                        if rs.is_pub {
+                            insert_sym(
+                                &mut ut.exports.structs,
+                                None,
+                                rs.name.clone(),
+                                sym,
+                                "struct",
+                                rs.span,
+                                false,
+                            )?;
+                        }
+                    }
+                    RawItem::Layout(rl) => {
+                        let sym = SymRef {
+                            owner: uid,
+                            orig_name: rl.name.clone(),
+                            canonical_name: unit_canonical_name(u, &rl.name, false),
+                            decl_file: u.display_label.clone(),
+                            decl_span: rl.span,
+                        };
+                        if u.parent.is_some() {
+                            ut.scope.layouts.insert(rl.name.clone(), sym.clone());
+                        } else {
+                            insert_sym(
+                                &mut ut.scope.layouts,
+                                Some(&mut ut.scope.layouts_order),
+                                rl.name.clone(),
+                                sym.clone(),
+                                "layout",
+                                rl.span,
+                                false,
+                            )?;
+                        }
+                        if rl.is_pub {
+                            insert_sym(
+                                &mut ut.exports.layouts,
+                                Some(&mut ut.exports.layouts_order),
+                                rl.name.clone(),
+                                sym,
+                                "layout",
+                                rl.span,
+                                false,
+                            )?;
+                        }
+                    }
+                    RawItem::Mod(_) => {}
+                }
+            }
+
+            for rf in &u.formas {
+                let sym = SymRef {
+                    owner: uid,
+                    orig_name: rf.name.clone(),
+                    canonical_name: unit_canonical_name(u, &rf.name, rf.exported),
+                    decl_file: u.display_label.clone(),
+                    decl_span: rf.span,
+                };
+                if u.parent.is_some() {
+                    ut.scope.formas.insert(rf.name.clone(), sym.clone());
+                    ut.scope.fns.insert(rf.name.clone(), sym.clone());
+                } else {
+                    insert_sym(&mut ut.scope.formas, None, rf.name.clone(), sym.clone(), "forma", rf.span, false)?;
+                    insert_sym(&mut ut.scope.fns, None, rf.name.clone(), sym.clone(), "function", rf.span, false)?;
+                }
+                if rf.is_pub {
+                    insert_sym(&mut ut.exports.formas, None, rf.name.clone(), sym.clone(), "forma", rf.span, false)?;
+                    insert_sym(&mut ut.exports.fns, None, rf.name.clone(), sym, "function", rf.span, false)?;
+                }
+            }
+
+            for rf in &u.functions {
+                if rf.exported {
+                    if let Some((prev_file, prev_span)) = global_exports.get(&rf.name) {
+                        return Err(InfimumDiagnostic::new(
+                            "E024_DUPLICATE_SYMBOL",
+                            "resolve",
+                            format!(
+                                "Duplicate Wasm export function '{}': defined at {}:{}:{} and {}:{}:{}",
+                                rf.name, prev_file, prev_span.line, prev_span.col, u.display_label, rf.span.line, rf.span.col
+                            ),
+                            rf.span,
+                            "Wasm 'export fn' names must be globally unique across the capsule",
+                        ));
+                    }
+                    global_exports.insert(rf.name.clone(), (u.display_label.clone(), rf.span));
+                }
+                let sym = SymRef {
+                    owner: uid,
+                    orig_name: rf.name.clone(),
+                    canonical_name: unit_canonical_name(u, &rf.name, rf.exported),
+                    decl_file: u.display_label.clone(),
+                    decl_span: rf.span,
+                };
+                if u.parent.is_some() {
+                    ut.scope.fns.insert(rf.name.clone(), sym.clone());
+                } else {
+                    insert_sym(&mut ut.scope.fns, None, rf.name.clone(), sym.clone(), "function", rf.span, false)?;
+                }
+                if rf.is_pub {
+                    insert_sym(&mut ut.exports.fns, None, rf.name.clone(), sym, "function", rf.span, false)?;
+                }
+            }
+        }
+
+        // 2. Process all `use` / `pub use` directives (targets already built in topo_order)
+        for (raw_use, dep_uid) in &u.uses {
+            let dep_exports = tables[*dep_uid].exports.clone();
+            let dep_scope = tables[*dep_uid].scope.clone();
+            let dep_label = graph.units[*dep_uid].display_label.clone();
+            let ut = &mut tables[uid];
+            match &raw_use.kind {
+                RawUseKind::All => {
+                    merge_table_all(&mut ut.scope, &dep_exports, raw_use.span)?;
+                    if raw_use.is_pub {
+                        merge_table_all(&mut ut.exports, &dep_exports, raw_use.span)?;
+                    }
+                }
+                RawUseKind::Alias(alias, alias_span) => {
+                    let ns = NamespaceRef {
+                        target_uid: *dep_uid,
+                        decl_file: u.display_label.clone(),
+                        decl_span: *alias_span,
+                    };
+                    insert_namespace(&mut ut.scope.namespaces, alias.clone(), ns.clone(), *alias_span)?;
+                    if raw_use.is_pub {
+                        insert_namespace(&mut ut.exports.namespaces, alias.clone(), ns, *alias_span)?;
+                    }
+                }
+                RawUseKind::Selective(items) => {
+                    for item in items {
+                        let local_name = item.alias.as_deref().unwrap_or(&item.name).to_string();
+                        let is_al = item.alias.is_some();
+                        let mut matched_any = false;
+
+                        if let Some(s) = dep_exports.fns.get(&item.name) {
+                            insert_sym(&mut ut.scope.fns, None, local_name.clone(), s.clone(), "function", item.span, is_al)?;
+                            if raw_use.is_pub {
+                                insert_sym(&mut ut.exports.fns, None, local_name.clone(), s.clone(), "function", item.span, is_al)?;
+                            }
+                            matched_any = true;
+                        }
+                        if let Some(s) = dep_exports.consts.get(&item.name) {
+                            insert_sym(&mut ut.scope.consts, Some(&mut ut.scope.consts_order), local_name.clone(), s.clone(), "const", item.span, is_al)?;
+                            if raw_use.is_pub {
+                                insert_sym(&mut ut.exports.consts, Some(&mut ut.exports.consts_order), local_name.clone(), s.clone(), "const", item.span, is_al)?;
+                            }
+                            matched_any = true;
+                        }
+                        if let Some(s) = dep_exports.enums.get(&item.name) {
+                            insert_sym(&mut ut.scope.enums, Some(&mut ut.scope.enums_order), local_name.clone(), s.clone(), "enum", item.span, is_al)?;
+                            if raw_use.is_pub {
+                                insert_sym(&mut ut.exports.enums, Some(&mut ut.exports.enums_order), local_name.clone(), s.clone(), "enum", item.span, is_al)?;
+                            }
+                            matched_any = true;
+                        }
+                        if let Some(s) = dep_exports.structs.get(&item.name) {
+                            insert_sym(&mut ut.scope.structs, None, local_name.clone(), s.clone(), "struct", item.span, is_al)?;
+                            if raw_use.is_pub {
+                                insert_sym(&mut ut.exports.structs, None, local_name.clone(), s.clone(), "struct", item.span, is_al)?;
+                            }
+                            matched_any = true;
+                        }
+                        if let Some(s) = dep_exports.layouts.get(&item.name) {
+                            insert_sym(&mut ut.scope.layouts, Some(&mut ut.scope.layouts_order), local_name.clone(), s.clone(), "layout", item.span, is_al)?;
+                            if raw_use.is_pub {
+                                insert_sym(&mut ut.exports.layouts, Some(&mut ut.exports.layouts_order), local_name.clone(), s.clone(), "layout", item.span, is_al)?;
+                            }
+                            matched_any = true;
+                        }
+                        if let Some(s) = dep_exports.formas.get(&item.name) {
+                            insert_sym(&mut ut.scope.formas, None, local_name.clone(), s.clone(), "forma", item.span, is_al)?;
+                            if raw_use.is_pub {
+                                insert_sym(&mut ut.exports.formas, None, local_name.clone(), s.clone(), "forma", item.span, is_al)?;
+                            }
+                            matched_any = true;
+                        }
+                        if let Some(ns) = dep_exports.namespaces.get(&item.name) {
+                            insert_namespace(&mut ut.scope.namespaces, local_name.clone(), ns.clone(), item.span)?;
+                            if raw_use.is_pub {
+                                insert_namespace(&mut ut.exports.namespaces, local_name.clone(), ns.clone(), item.span)?;
+                            }
+                            matched_any = true;
+                        }
+
+                        if !matched_any {
+                            let is_private_in_dep = dep_scope.fns.contains_key(&item.name)
+                                || dep_scope.consts.contains_key(&item.name)
+                                || dep_scope.enums.contains_key(&item.name)
+                                || dep_scope.structs.contains_key(&item.name)
+                                || dep_scope.layouts.contains_key(&item.name)
+                                || dep_scope.formas.contains_key(&item.name)
+                                || dep_scope.namespaces.contains_key(&item.name);
+                            if is_private_in_dep {
+                                return Err(InfimumDiagnostic::new(
+                                    "E068_PRIVATE_ITEM",
+                                    "resolve",
+                                    format!("Symbol '{}' in '{}' is private; mark it 'pub' to export", item.name, dep_label),
+                                    item.span,
+                                    format!("Add 'pub' to '{}' in '{}'", item.name, dep_label),
+                                ));
+                            } else {
+                                return Err(InfimumDiagnostic::new(
+                                    "E067_UNKNOWN_IMPORT",
+                                    "resolve",
+                                    format!("Symbol '{}' not found in '{}'", item.name, dep_label),
+                                    item.span,
+                                    format!("Check the exported 'pub' declarations in '{}'", dep_label),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. If this is an inline `mod`, bind its namespace into parent's scope (and exports if `pub mod`)
+        if let (Some(parent_uid), Some((mname, is_pub, mspan))) = (u.parent, &u.inline_mod) {
+            let ns = NamespaceRef {
+                target_uid: uid,
+                decl_file: u.display_label.clone(),
+                decl_span: *mspan,
+            };
+            insert_namespace(&mut tables[parent_uid].scope.namespaces, mname.clone(), ns.clone(), *mspan)?;
+            if *is_pub {
+                insert_namespace(&mut tables[parent_uid].exports.namespaces, mname.clone(), ns, *mspan)?;
+            }
+        }
+    }
+
+    Ok(tables)
+}
+
 struct ModuleResolver {
+    tables: Vec<UnitTables>,
+    unit_labels: Vec<String>,
+    cur_uid: UnitId,
+    has_std_gfx: bool,
+    std_text_uid: Option<UnitId>,
     consts: BTreeMap<String, ConstDef>,
     enums: BTreeMap<String, EnumDef>,
     structs: BTreeMap<String, StructDef>,
     layouts: BTreeMap<String, LayoutDef>,
     layout_field_meta: BTreeMap<(String, String), LayoutFieldMeta>,
-    consts_order: Vec<ConstDef>,
-    enums_order: Vec<EnumDef>,
-    layouts_order: Vec<LayoutDef>,
     layout_spans: Vec<(i64, i64, String, Span)>,
     auto_layout_cursor: i64,
-    mod_consts: BTreeMap<(String, String), (ConstValue, bool)>,
-    mod_fns: BTreeMap<(String, String), (String, bool)>,
-    mod_extra_fns: Vec<RawFnDef>,
-    mod_extra_formas: Vec<crate::forma::FormaDef<RawExpr>>,
-    current_mod: Option<String>,
     match_counter: usize,
     addr_counter: usize,
     loop_counter: usize,
     loop_stack: Vec<LoopCtrlCtx>,
     struct_vars: Vec<BTreeMap<String, String>>,
     fn_ret_struct: BTreeMap<String, String>,
-}
-
-fn rewrite_forma_mod_slots<E>(
-    node: &mut crate::forma::FormaNode<E>,
-    mname: &str,
-    mod_fns: &BTreeMap<(String, String), (String, bool)>,
-) {
-    if let Some(ref mut rfn) = node.props.render {
-        if let Some((mangled, _)) = mod_fns.get(&(mname.to_string(), rfn.clone())) {
-            *rfn = mangled.clone();
-        }
-    }
-    if let Some(ref mut wfn) = node.props.on_wheel {
-        if let Some((mangled, _)) = mod_fns.get(&(mname.to_string(), wfn.clone())) {
-            *wfn = mangled.clone();
-        }
-    }
-    for ch in &mut node.children {
-        rewrite_forma_mod_slots(ch, mname, mod_fns);
-    }
-    if let Some((_, ref mut else_nodes)) = node.forma_if {
-        for ch in else_nodes {
-            rewrite_forma_mod_slots(ch, mname, mod_fns);
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -2673,23 +3396,26 @@ fn stmts_have_loop_ctrl(stmts: &[RawStmt]) -> (bool, bool) {
 }
 
 impl ModuleResolver {
-    fn new() -> Self {
+    fn new(
+        tables: Vec<UnitTables>,
+        unit_labels: Vec<String>,
+        entry_uid: UnitId,
+        has_std_gfx: bool,
+        std_text_uid: Option<UnitId>,
+    ) -> Self {
         Self {
+            tables,
+            unit_labels,
+            cur_uid: entry_uid,
+            has_std_gfx,
+            std_text_uid,
             consts: BTreeMap::new(),
             enums: BTreeMap::new(),
             structs: BTreeMap::new(),
             layouts: BTreeMap::new(),
             layout_field_meta: BTreeMap::new(),
-            consts_order: Vec::new(),
-            enums_order: Vec::new(),
-            layouts_order: Vec::new(),
             layout_spans: Vec::new(),
             auto_layout_cursor: 705_536,
-            mod_consts: BTreeMap::new(),
-            mod_fns: BTreeMap::new(),
-            mod_extra_fns: Vec::new(),
-            mod_extra_formas: Vec::new(),
-            current_mod: None,
             match_counter: 0,
             addr_counter: 0,
             loop_counter: 0,
@@ -2697,6 +3423,171 @@ impl ModuleResolver {
             struct_vars: Vec::new(),
             fn_ret_struct: BTreeMap::new(),
         }
+    }
+
+    fn lookup_namespace(&self, alias: &str) -> Option<UnitId> {
+        self.tables[self.cur_uid]
+            .scope
+            .namespaces
+            .get(alias)
+            .map(|n| n.target_uid)
+    }
+
+    fn private_err(&self, target_uid: UnitId, name: &str, span: Span) -> InfimumDiagnostic {
+        let lbl = &self.unit_labels[target_uid];
+        InfimumDiagnostic::new(
+            "E068_PRIVATE_ITEM",
+            "resolve",
+            format!("Symbol '{name}' in '{lbl}' is private; mark it 'pub' to export"),
+            span,
+            format!("Add 'pub' to '{name}' in '{lbl}'"),
+        )
+    }
+
+    fn lookup_const_sym(&self, module: Option<&str>, name: &str, span: Span) -> Result<Option<&SymRef>, InfimumDiagnostic> {
+        if let Some(m) = module {
+            let Some(tid) = self.lookup_namespace(m) else {
+                return Ok(None);
+            };
+            if let Some(sym) = self.tables[tid].exports.consts.get(name) {
+                return Ok(Some(sym));
+            }
+            if self.tables[tid].scope.consts.contains_key(name) {
+                return Err(self.private_err(tid, name, span));
+            }
+            Ok(None)
+        } else {
+            Ok(self.tables[self.cur_uid].scope.consts.get(name))
+        }
+    }
+
+    fn lookup_enum_sym(&self, module: Option<&str>, name: &str, span: Span) -> Result<Option<&SymRef>, InfimumDiagnostic> {
+        if let Some(m) = module {
+            let Some(tid) = self.lookup_namespace(m) else {
+                return Ok(None);
+            };
+            if let Some(sym) = self.tables[tid].exports.enums.get(name) {
+                return Ok(Some(sym));
+            }
+            if self.tables[tid].scope.enums.contains_key(name) {
+                return Err(self.private_err(tid, name, span));
+            }
+            Ok(None)
+        } else {
+            Ok(self.tables[self.cur_uid].scope.enums.get(name))
+        }
+    }
+
+    fn lookup_struct_sym(&self, module: Option<&str>, name: &str, span: Span) -> Result<Option<&SymRef>, InfimumDiagnostic> {
+        if let Some(m) = module {
+            let Some(tid) = self.lookup_namespace(m) else {
+                return Ok(None);
+            };
+            if let Some(sym) = self.tables[tid].exports.structs.get(name) {
+                return Ok(Some(sym));
+            }
+            if self.tables[tid].scope.structs.contains_key(name) {
+                return Err(self.private_err(tid, name, span));
+            }
+            Ok(None)
+        } else {
+            Ok(self.tables[self.cur_uid].scope.structs.get(name))
+        }
+    }
+
+    fn lookup_layout_sym(&self, module: Option<&str>, name: &str, span: Span) -> Result<Option<&SymRef>, InfimumDiagnostic> {
+        if let Some(m) = module {
+            let Some(tid) = self.lookup_namespace(m) else {
+                return Ok(None);
+            };
+            if let Some(sym) = self.tables[tid].exports.layouts.get(name) {
+                return Ok(Some(sym));
+            }
+            if self.tables[tid].scope.layouts.contains_key(name) {
+                return Err(self.private_err(tid, name, span));
+            }
+            Ok(None)
+        } else {
+            Ok(self.tables[self.cur_uid].scope.layouts.get(name))
+        }
+    }
+
+    fn lookup_fn_sym(&self, module: Option<&str>, name: &str, span: Span) -> Result<Option<&SymRef>, InfimumDiagnostic> {
+        if let Some(m) = module {
+            let Some(tid) = self.lookup_namespace(m) else {
+                return Ok(None);
+            };
+            if let Some(sym) = self.tables[tid].exports.fns.get(name) {
+                return Ok(Some(sym));
+            }
+            if self.tables[tid].scope.fns.contains_key(name) {
+                return Err(self.private_err(tid, name, span));
+            }
+            Ok(None)
+        } else {
+            Ok(self.tables[self.cur_uid].scope.fns.get(name))
+        }
+    }
+
+    fn lookup_forma_sym(&self, module: Option<&str>, name: &str, span: Span) -> Result<Option<&SymRef>, InfimumDiagnostic> {
+        if let Some(m) = module {
+            let Some(tid) = self.lookup_namespace(m) else {
+                return Ok(None);
+            };
+            if let Some(sym) = self.tables[tid].exports.formas.get(name) {
+                return Ok(Some(sym));
+            }
+            if self.tables[tid].scope.formas.contains_key(name) {
+                return Err(self.private_err(tid, name, span));
+            }
+            Ok(None)
+        } else {
+            Ok(self.tables[self.cur_uid].scope.formas.get(name))
+        }
+    }
+
+    fn resolve_layout_canon(
+        &self,
+        module: Option<&str>,
+        layout: &str,
+        span: Span,
+    ) -> Result<String, InfimumDiagnostic> {
+        if let Some(sym) = self.lookup_layout_sym(module, layout, span)? {
+            return Ok(sym.canonical_name.clone());
+        }
+        let disp = match module {
+            Some(m) => format!("{m}::{layout}"),
+            None => layout.to_string(),
+        };
+        Err(InfimumDiagnostic::new(
+            "E061_UNKNOWN_LAYOUT_FIELD",
+            "resolve",
+            format!("Unknown layout '{disp}'"),
+            span,
+            format!("Declare 'layout {layout}' (or import it with 'use') before accessing it"),
+        ))
+    }
+
+    fn resolve_struct_canon(
+        &self,
+        module: Option<&str>,
+        name: &str,
+        span: Span,
+    ) -> Result<String, InfimumDiagnostic> {
+        if let Some(sym) = self.lookup_struct_sym(module, name, span)? {
+            return Ok(sym.canonical_name.clone());
+        }
+        let disp = match module {
+            Some(m) => format!("{m}::{name}"),
+            None => name.to_string(),
+        };
+        Err(InfimumDiagnostic::new(
+            "E014_UNKNOWN_TYPE",
+            "resolve",
+            format!("Unknown struct type '{disp}'"),
+            span,
+            format!("Declare 'pub struct {name} {{ ... }}' or import it with 'use'"),
+        ))
     }
 
     fn struct_tuple_type(&self, sdef: &StructDef) -> Type {
@@ -2725,18 +3616,23 @@ impl ModuleResolver {
                 }
                 Ok(Type::Tuple(out))
             }
-            RawType::Named(name, span) => {
-                if let Some(sdef) = self.structs.get(name) {
-                    Ok(self.struct_tuple_type(sdef))
-                } else {
-                    Err(InfimumDiagnostic::new(
-                        "E014_UNKNOWN_TYPE",
-                        "parse",
-                        format!("Unknown type '{name}'"),
-                        *span,
-                        "Use a built-in type (i64, fixed, bool, str, unit, Secret<T>, (T1, T2)) or a declared 'struct' name",
-                    ))
+            RawType::Named { module, name, span } => {
+                if let Some(sym) = self.lookup_struct_sym(module.as_deref(), name, *span)? {
+                    if let Some(sdef) = self.structs.get(&sym.canonical_name) {
+                        return Ok(self.struct_tuple_type(sdef));
+                    }
                 }
+                let disp = match module {
+                    Some(m) => format!("{m}::{name}"),
+                    None => name.clone(),
+                };
+                Err(InfimumDiagnostic::new(
+                    "E014_UNKNOWN_TYPE",
+                    "parse",
+                    format!("Unknown type '{disp}'"),
+                    *span,
+                    "Use a built-in type (i64, fixed, bool, str, unit, Secret<T>, (T1, T2)) or a visible 'struct' name",
+                ))
             }
         }
     }
@@ -2752,33 +3648,39 @@ impl ModuleResolver {
 
     fn infer_raw_expr_struct(&self, expr: &RawExpr) -> Option<String> {
         match expr {
-            RawExpr::StructLit { name, .. } => Some(name.clone()),
+            RawExpr::StructLit(sl) => self
+                .lookup_struct_sym(sl.module.as_deref(), &sl.name, sl.span)
+                .ok()
+                .flatten()
+                .map(|s| s.canonical_name.clone()),
             RawExpr::Var(v) => self.lookup_struct_var(v),
             RawExpr::Call {
                 target: TargetRef::Named(fname),
                 ..
             } => {
-                if let Some(ref cur_m) = self.current_mod {
-                    let mangled = format!("{cur_m}__{fname}");
-                    if let Some(s) = self.fn_ret_struct.get(&mangled) {
-                        return Some(s.clone());
-                    }
-                }
-                self.fn_ret_struct.get(fname).cloned()
+                let canon = self
+                    .lookup_fn_sym(None, fname, Span::zero())
+                    .ok()
+                    .flatten()
+                    .map(|s| s.canonical_name.as_str())
+                    .unwrap_or(fname.as_str());
+                self.fn_ret_struct.get(canon).cloned()
             }
-            RawExpr::ModCall { module, func, .. } => {
-                let mangled = format!("{module}__{func}");
-                self.fn_ret_struct.get(&mangled).cloned()
+            RawExpr::ModCall(mc) => {
+                let sym = self
+                    .lookup_fn_sym(Some(&mc.module), &mc.func, mc.span)
+                    .ok()
+                    .flatten()?;
+                self.fn_ret_struct.get(&sym.canonical_name).cloned()
             }
-            RawExpr::LayoutLoad {
-                layout,
-                field,
-                subfield: None,
-                ..
-            } => {
-                let meta = self
-                    .layout_field_meta
-                    .get(&(layout.clone(), field.clone()))?;
+            RawExpr::LayoutLoad(ll) if ll.subfield.is_none() => {
+                let lcanon = self
+                    .lookup_layout_sym(ll.module.as_deref(), &ll.layout, ll.span)
+                    .ok()
+                    .flatten()?
+                    .canonical_name
+                    .clone();
+                let meta = self.layout_field_meta.get(&(lcanon, ll.field.clone()))?;
                 meta.struct_type.clone()
             }
             RawExpr::If {
@@ -2799,34 +3701,20 @@ impl ModuleResolver {
             RawExpr::FixedLit(v) => Ok(ConstValue::Fixed(*v)),
             RawExpr::BoolLit(b) => Ok(ConstValue::Bool(*b)),
             RawExpr::Var(name) => {
-                if let Some(ref cur_m) = self.current_mod {
-                    if let Some((val, _)) = self.mod_consts.get(&(cur_m.clone(), name.clone())) {
-                        return Ok(*val);
+                if let Some(sym) = self.lookup_const_sym(None, name, span)? {
+                    if let Some(c) = self.consts.get(&sym.canonical_name) {
+                        return Ok(c.value);
                     }
                 }
-                self.consts.get(name).map(|c| c.value).ok_or_else(|| {
-                    InfimumDiagnostic::new(
-                        "E064_CONST_EVAL",
-                        "const-eval",
-                        format!("Unknown constant '{name}' in constant expression"),
-                        span,
-                        "Declare the constant with 'const NAME: i64 = ...;' before referencing it",
-                    )
-                })
+                Err(InfimumDiagnostic::new(
+                    "E064_CONST_EVAL",
+                    "const-eval",
+                    format!("Unknown constant '{name}' in constant expression"),
+                    span,
+                    "Declare the constant with 'const NAME: i64 = ...;' (or import a 'pub const' with 'use') before referencing it",
+                ))
             }
-            RawExpr::Path2 {
-                head,
-                member,
-                span: pspan,
-            } => Ok(ConstValue::Int(self.resolve_path2(head, member, *pspan)?)),
-            RawExpr::Path3 {
-                head,
-                member,
-                prop,
-                span: pspan,
-            } => Ok(ConstValue::Int(
-                self.resolve_path3(head, member, prop, *pspan)?,
-            )),
+            RawExpr::Path { segs, span: pspan } => self.resolve_path_const(segs, *pspan),
             RawExpr::Unary { op, expr: inner } => {
                 let v = self.eval_const(inner, span)?;
                 match (op, v) {
@@ -3027,87 +3915,21 @@ impl ModuleResolver {
         }
     }
 
-    fn resolve_path2(&self, head: &str, member: &str, span: Span) -> Result<i64, InfimumDiagnostic> {
-        if let Some((val, is_pub)) = self.mod_consts.get(&(head.to_string(), member.to_string())) {
-            if !*is_pub && self.current_mod.as_deref() != Some(head) {
-                return Err(InfimumDiagnostic::new(
-                    "E068_PRIVATE_SYMBOL",
-                    "resolve",
-                    format!("Constant '{head}::{member}' is private to module '{head}'"),
-                    span,
-                    format!("Mark it 'pub const {member}' inside 'mod {head}' to access it externally"),
-                ));
-            }
-            return match val {
-                ConstValue::Int(v) | ConstValue::Fixed(v) => Ok(*v),
-                ConstValue::Bool(b) => Ok(if *b { 1 } else { 0 }),
-            };
-        }
-        if let Some(edef) = self.enums.get(head) {
-            if let Some(v) = edef.variants.iter().find(|v| v.name == member) {
-                return Ok(v.value);
-            }
-            return Err(InfimumDiagnostic::new(
-                "E061_UNKNOWN_ENUM_VARIANT",
-                "resolve",
-                format!("Enum '{head}' has no variant '{member}'"),
-                span,
-                format!("Check the variants declared in 'enum {head}'"),
-            ));
-        }
-        if let Some(ldef) = self.layouts.get(head) {
-            if let Some(f) = ldef.fields.iter().find(|f| f.name == member) {
-                return Ok(f.offset);
-            }
-            return Err(InfimumDiagnostic::new(
-                "E061_UNKNOWN_LAYOUT_FIELD",
-                "resolve",
-                format!("Layout '{head}' has no field '{member}'"),
-                span,
-                format!("Check the fields declared in 'layout {head}'"),
-            ));
-        }
-        if let Some(sdef) = self.structs.get(head) {
-            if member == "SIZE" || member == "size" {
-                return Ok(sdef.size);
-            }
-            if let Some(&off) = sdef.fields.get(member) {
-                return Ok(off);
-            }
-            return Err(InfimumDiagnostic::new(
-                "E061_UNKNOWN_LAYOUT_FIELD",
-                "resolve",
-                format!("Struct '{head}' has no field '{member}'"),
-                span,
-                format!(
-                    "Available fields in 'struct {head}': {} (plus '::SIZE')",
-                    sdef.field_names.join(", ")
-                ),
-            ));
-        }
-        Err(InfimumDiagnostic::new(
-            "E061_UNKNOWN_ENUM_VARIANT",
-            "resolve",
-            format!("Unknown enum, struct, or layout '{head}' in '{head}::{member}'"),
-            span,
-            format!("Declare 'enum {head}', 'struct {head}', or 'layout {head}' (or import it with 'use')"),
-        ))
-    }
-
-    fn resolve_path3(
+    fn resolve_layout_prop_by_canon(
         &self,
-        head: &str,
+        lcanon: &str,
+        disp_layout: &str,
         member: &str,
         prop: &str,
         span: Span,
     ) -> Result<i64, InfimumDiagnostic> {
-        let ldef = self.layouts.get(head).ok_or_else(|| {
+        let ldef = self.layouts.get(lcanon).ok_or_else(|| {
             InfimumDiagnostic::new(
                 "E061_UNKNOWN_LAYOUT_FIELD",
                 "resolve",
-                format!("Unknown layout '{head}' in '{head}::{member}::{prop}'"),
+                format!("Unknown layout '{disp_layout}' in '{disp_layout}::{member}::{prop}'"),
                 span,
-                format!("Declare 'layout {head}' before referencing its field properties"),
+                format!("Declare 'layout {disp_layout}' before referencing its field properties"),
             )
         })?;
         let field = ldef
@@ -3118,14 +3940,14 @@ impl ModuleResolver {
                 InfimumDiagnostic::new(
                     "E061_UNKNOWN_LAYOUT_FIELD",
                     "resolve",
-                    format!("Layout '{head}' has no field '{member}'"),
+                    format!("Layout '{disp_layout}' has no field '{member}'"),
                     span,
-                    format!("Check the fields declared in 'layout {head}'"),
+                    format!("Check the fields declared in 'layout {disp_layout}'"),
                 )
             })?;
         let meta = self
             .layout_field_meta
-            .get(&(head.to_string(), member.to_string()));
+            .get(&(lcanon.to_string(), member.to_string()));
         match prop {
             "len" => Ok(field.len),
             "end" => Ok(field.offset + field.len),
@@ -3134,9 +3956,130 @@ impl ModuleResolver {
             other => Err(InfimumDiagnostic::new(
                 "E061_UNKNOWN_LAYOUT_FIELD",
                 "resolve",
-                format!("Unknown layout field property '{other}' on '{head}::{member}'"),
+                format!("Unknown layout field property '{other}' on '{disp_layout}::{member}'"),
                 span,
                 "Supported layout field properties are '::len', '::end', '::stride', and '::count'",
+            )),
+        }
+    }
+
+    fn resolve_member_in_scope(
+        &self,
+        module: Option<&str>,
+        head: &str,
+        member: &str,
+        span: Span,
+    ) -> Result<Option<ConstValue>, InfimumDiagnostic> {
+        let disp = match module {
+            Some(m) => format!("{m}::{head}"),
+            None => head.to_string(),
+        };
+        if let Some(sym) = self.lookup_enum_sym(module, head, span)? {
+            if let Some(edef) = self.enums.get(&sym.canonical_name) {
+                if let Some(v) = edef.variants.iter().find(|v| v.name == member) {
+                    return Ok(Some(ConstValue::Int(v.value)));
+                }
+                return Err(InfimumDiagnostic::new(
+                    "E061_UNKNOWN_ENUM_VARIANT",
+                    "resolve",
+                    format!("Enum '{disp}' has no variant '{member}'"),
+                    span,
+                    format!("Check the variants declared in 'enum {head}'"),
+                ));
+            }
+        }
+        if let Some(sym) = self.lookup_layout_sym(module, head, span)? {
+            if let Some(ldef) = self.layouts.get(&sym.canonical_name) {
+                if let Some(f) = ldef.fields.iter().find(|f| f.name == member) {
+                    return Ok(Some(ConstValue::Int(f.offset)));
+                }
+                return Err(InfimumDiagnostic::new(
+                    "E061_UNKNOWN_LAYOUT_FIELD",
+                    "resolve",
+                    format!("Layout '{disp}' has no field '{member}'"),
+                    span,
+                    format!("Check the fields declared in 'layout {head}'"),
+                ));
+            }
+        }
+        if let Some(sym) = self.lookup_struct_sym(module, head, span)? {
+            if let Some(sdef) = self.structs.get(&sym.canonical_name) {
+                if member == "SIZE" || member == "size" {
+                    return Ok(Some(ConstValue::Int(sdef.size)));
+                }
+                if let Some(&off) = sdef.fields.get(member) {
+                    return Ok(Some(ConstValue::Int(off)));
+                }
+                return Err(InfimumDiagnostic::new(
+                    "E061_UNKNOWN_LAYOUT_FIELD",
+                    "resolve",
+                    format!("Struct '{disp}' has no field '{member}'"),
+                    span,
+                    format!(
+                        "Available fields in 'struct {head}': {} (plus '::SIZE')",
+                        sdef.field_names.join(", ")
+                    ),
+                ));
+            }
+        }
+        Ok(None)
+    }
+
+    fn resolve_path_const(&self, segs: &[String], span: Span) -> Result<ConstValue, InfimumDiagnostic> {
+        let full = segs.join("::");
+        match segs {
+            [head, member] => {
+                // 1. Module constant: `m::CONST`
+                if let Some(sym) = self.lookup_const_sym(Some(head), member, span)? {
+                    if let Some(c) = self.consts.get(&sym.canonical_name) {
+                        return Ok(c.value);
+                    }
+                }
+                // 2. Local/imported Enum::Variant, Layout::field, Struct::SIZE/field
+                if let Some(val) = self.resolve_member_in_scope(None, head, member, span)? {
+                    return Ok(val);
+                }
+                Err(InfimumDiagnostic::new(
+                    "E061_UNKNOWN_ENUM_VARIANT",
+                    "resolve",
+                    format!("Unknown module, enum, struct, or layout '{head}' in '{full}'"),
+                    span,
+                    format!("Check that '{head}' is declared or imported with 'use' and '{member}' is marked 'pub'"),
+                ))
+            }
+            [a, b, c] => {
+                // 1. Qualified module member: `m::Enum::Variant`, `m::Layout::field`, `m::Struct::SIZE`
+                if self.lookup_namespace(a).is_some() {
+                    if let Some(val) = self.resolve_member_in_scope(Some(a), b, c, span)? {
+                        return Ok(val);
+                    }
+                    return Err(InfimumDiagnostic::new(
+                        "E061_UNKNOWN_ENUM_VARIANT",
+                        "resolve",
+                        format!("Unknown exported enum, struct, or layout '{b}' in module '{a}' for '{full}'"),
+                        span,
+                        format!("Ensure '{b}' is marked 'pub' in module '{a}'"),
+                    ));
+                }
+                // 2. Local/imported layout field property: `Layout::field::len/end/stride/count`
+                let lcanon = self.resolve_layout_canon(None, a, span)?;
+                Ok(ConstValue::Int(
+                    self.resolve_layout_prop_by_canon(&lcanon, a, b, c, span)?,
+                ))
+            }
+            [m, layout, field, prop] => {
+                let lcanon = self.resolve_layout_canon(Some(m), layout, span)?;
+                let disp = format!("{m}::{layout}");
+                Ok(ConstValue::Int(
+                    self.resolve_layout_prop_by_canon(&lcanon, &disp, field, prop, span)?,
+                ))
+            }
+            _ => Err(InfimumDiagnostic::new(
+                "E061_UNKNOWN_ENUM_VARIANT",
+                "resolve",
+                format!("Unsupported path '{full}'"),
+                span,
+                "Use up to 4 path segments (e.g. m::CONST, m::Enum::Var, m::Layout::field::count)",
             )),
         }
     }
@@ -3295,21 +4238,40 @@ impl ModuleResolver {
         }
     }
 
-    fn register_item(&mut self, item: RawItem) -> Result<(), InfimumDiagnostic> {
+    fn resolve_std_text_fn(&self, name: &str, span: Span) -> Result<String, InfimumDiagnostic> {
+        if let Some(tid) = self.std_text_uid {
+            if let Some(sym) = self.tables[tid].exports.fns.get(name) {
+                return Ok(sym.canonical_name.clone());
+            }
+        }
+        if let Some(sym) = self.lookup_fn_sym(None, name, span)? {
+            return Ok(sym.canonical_name.clone());
+        }
+        Err(InfimumDiagnostic::new(
+            "E064_CONST_EVAL",
+            "resolve",
+            format!("ui_fmt requires '{name}' from std/text.ifm"),
+            span,
+            "Import 'use \"std/text.ifm\";' or 'use \"std/prelude.ifm\";'",
+        ))
+    }
+
+    fn resolve_clamp_i64_name(&self) -> String {
+        if let Some(sym) = self.tables[self.cur_uid].scope.fns.get("clamp_i64") {
+            return sym.canonical_name.clone();
+        }
+        for t in &self.tables {
+            if let Some(sym) = t.exports.fns.get("clamp_i64") {
+                return sym.canonical_name.clone();
+            }
+        }
+        "clamp_i64".to_string()
+    }
+
+    fn register_item(&mut self, item: RawItem, owner_u: &RawUnit) -> Result<(), InfimumDiagnostic> {
         match item {
             RawItem::Const(rc) => {
-                if self.consts.contains_key(&rc.name)
-                    || self.enums.contains_key(&rc.name)
-                    || self.layouts.contains_key(&rc.name)
-                {
-                    return Err(InfimumDiagnostic::new(
-                        "E065_DUPLICATE_DECL",
-                        "resolve",
-                        format!("Duplicate top-level declaration '{}'", rc.name),
-                        rc.span,
-                        "Rename the constant so every top-level const/enum/layout name is unique",
-                    ));
-                }
+                let cname = unit_canonical_name(owner_u, &rc.name, false);
                 let val = self.eval_const(&rc.expr, rc.span)?;
                 let matches_ty = matches!(
                     (&rc.ty, val),
@@ -3334,22 +4296,10 @@ impl ModuleResolver {
                     ty: rc.ty,
                     value: val,
                 };
-                self.consts.insert(rc.name, def.clone());
-                self.consts_order.push(def);
+                self.consts.insert(cname, def);
             }
             RawItem::Enum(re) => {
-                if self.consts.contains_key(&re.name)
-                    || self.enums.contains_key(&re.name)
-                    || self.layouts.contains_key(&re.name)
-                {
-                    return Err(InfimumDiagnostic::new(
-                        "E065_DUPLICATE_DECL",
-                        "resolve",
-                        format!("Duplicate top-level declaration '{}'", re.name),
-                        re.span,
-                        "Rename the enum so every top-level const/enum/layout name is unique",
-                    ));
-                }
+                let cname = unit_canonical_name(owner_u, &re.name, false);
                 let mut next_val: i64 = 0;
                 let mut seen_variants = BTreeSet::new();
                 let mut variants = Vec::with_capacity(re.variants.len());
@@ -3381,23 +4331,10 @@ impl ModuleResolver {
                     name: re.name.clone(),
                     variants,
                 };
-                self.enums.insert(re.name, def.clone());
-                self.enums_order.push(def);
+                self.enums.insert(cname, def);
             }
             RawItem::Struct(rs) => {
-                if self.consts.contains_key(&rs.name)
-                    || self.enums.contains_key(&rs.name)
-                    || self.structs.contains_key(&rs.name)
-                    || self.layouts.contains_key(&rs.name)
-                {
-                    return Err(InfimumDiagnostic::new(
-                        "E065_DUPLICATE_DECL",
-                        "resolve",
-                        format!("Duplicate top-level declaration '{}'", rs.name),
-                        rs.span,
-                        "Rename the struct so every top-level const/enum/struct/layout name is unique",
-                    ));
-                }
+                let cname = unit_canonical_name(owner_u, &rs.name, false);
                 if rs.fields.is_empty() {
                     return Err(InfimumDiagnostic::new(
                         "E064_CONST_EVAL",
@@ -3443,7 +4380,7 @@ impl ModuleResolver {
                 }
                 let size = field_names.len() as i64;
                 self.structs.insert(
-                    rs.name,
+                    cname,
                     StructDef {
                         fields,
                         field_invs,
@@ -3454,19 +4391,7 @@ impl ModuleResolver {
                 );
             }
             RawItem::Layout(rl) => {
-                if self.consts.contains_key(&rl.name)
-                    || self.enums.contains_key(&rl.name)
-                    || self.structs.contains_key(&rl.name)
-                    || self.layouts.contains_key(&rl.name)
-                {
-                    return Err(InfimumDiagnostic::new(
-                        "E065_DUPLICATE_DECL",
-                        "resolve",
-                        format!("Duplicate top-level declaration '{}'", rl.name),
-                        rl.span,
-                        "Rename the layout so every top-level const/enum/struct/layout name is unique",
-                    ));
-                }
+                let cname = unit_canonical_name(owner_u, &rl.name, false);
                 let auto_placed = rl.base_expr.is_none();
                 let base = match rl.base_expr {
                     Some(ref expr) => {
@@ -3496,9 +4421,14 @@ impl ModuleResolver {
                             "Ensure all field names within a layout are unique",
                         ));
                     }
-                    let stride = match &rf.struct_type {
+                    let (resolved_struct_type, stride) = match &rf.struct_type {
                         Some(sname) => {
-                            let sdef = self.structs.get(sname).ok_or_else(|| {
+                            let scanon = self.resolve_struct_canon(
+                                rf.struct_module.as_deref(),
+                                sname,
+                                rf.span,
+                            )?;
+                            let sdef = self.structs.get(&scanon).ok_or_else(|| {
                                 InfimumDiagnostic::new(
                                     "E061_UNKNOWN_LAYOUT_FIELD",
                                     "layout",
@@ -3510,9 +4440,9 @@ impl ModuleResolver {
                                     "Use 'word', 'words[N]', or declare 'struct TypeName { ... }' before this layout",
                                 )
                             })?;
-                            sdef.size
+                            (Some(scanon), sdef.size)
                         }
-                        None => 1,
+                        None => (None, 1),
                     };
                     let count = match rf.len_expr {
                         Some(ref expr) => {
@@ -3592,12 +4522,12 @@ impl ModuleResolver {
                         None => None,
                     };
                     self.layout_field_meta.insert(
-                        (rl.name.clone(), rf.name.clone()),
+                        (cname.clone(), rf.name.clone()),
                         LayoutFieldMeta {
                             offset,
                             is_array: rf.is_array,
                             is_fixed: rf.is_fixed,
-                            struct_type: rf.struct_type,
+                            struct_type: resolved_struct_type,
                             stride,
                             count,
                             inv: field_inv,
@@ -3618,44 +4548,16 @@ impl ModuleResolver {
                     base,
                     fields,
                 };
-                self.layouts.insert(rl.name, def.clone());
-                self.layouts_order.push(def);
+                self.layouts.insert(cname, def);
             }
-            RawItem::Mod(rm) => {
-                let mname = rm.name.clone();
-                let prev_mod = self.current_mod.replace(mname.clone());
-                for sub_item in rm.items {
-                    match sub_item {
-                        RawItem::Const(rc) => {
-                            let val = self.eval_const(&rc.expr, rc.span)?;
-                            self.mod_consts
-                                .insert((mname.clone(), rc.name), (val, rc.is_pub));
-                        }
-                        other => self.register_item(other)?,
-                    }
-                }
-                for mut rf in rm.functions {
-                    let orig_name = rf.name.clone();
-                    let mangled = format!("{mname}__{orig_name}");
-                    self.mod_fns
-                        .insert((mname.clone(), orig_name), (mangled.clone(), rf.is_pub));
-                    rf.name = mangled;
-                    rf.module = Some(mname.clone());
-                    self.mod_extra_fns.push(rf);
-                }
-                for mut f in rm.formas {
-                    rewrite_forma_mod_slots(&mut f.root, &mname, &self.mod_fns);
-                    self.mod_extra_formas.push(f);
-                }
-                self.current_mod = prev_mod;
-            }
+            RawItem::Mod(_) => {}
         }
         Ok(())
     }
 
     fn verify_no_layout_overlaps(&self) -> Result<(), InfimumDiagnostic> {
         // Protect std/gfx reserved runtime words (11 = cursor_kind, 12 = prim_count) in GPU apps
-        if self.consts.contains_key("GPU_CMD_BYTE_OFFSET") {
+        if self.has_std_gfx {
             for (start, end, label, span) in &self.layout_spans {
                 let field_name = label.rsplit("::").next().unwrap_or("");
                 if *start <= 11 && 11 < *end && field_name != "cursor_kind" {
@@ -3732,15 +4634,13 @@ impl ModuleResolver {
     }
 
     fn lower_fn(&mut self, raw: RawFnDef) -> Result<FnDef, InfimumDiagnostic> {
-        let prev_mod = self.current_mod.clone();
-        self.current_mod = raw.module.clone();
-
         let mut params = Vec::with_capacity(raw.params.len());
         let mut init_struct_vars = BTreeMap::new();
         for (pname, raw_ty) in &raw.params {
             let resolved_ty = self.resolve_raw_type(raw_ty)?;
-            if let RawType::Named(sname, _) = raw_ty {
-                init_struct_vars.insert(pname.clone(), sname.clone());
+            if let RawType::Named { module, name, span } = raw_ty {
+                let scanon = self.resolve_struct_canon(module.as_deref(), name, *span)?;
+                init_struct_vars.insert(pname.clone(), scanon);
             }
             params.push(Param {
                 name: pname.clone(),
@@ -3748,8 +4648,9 @@ impl ModuleResolver {
             });
         }
         let ret_type = self.resolve_raw_type(&raw.ret_type)?;
-        if let RawType::Named(sname, _) = &raw.ret_type {
-            init_struct_vars.insert("result".to_string(), sname.clone());
+        if let RawType::Named { module, name, span } = &raw.ret_type {
+            let scanon = self.resolve_struct_canon(module.as_deref(), name, *span)?;
+            init_struct_vars.insert("result".to_string(), scanon);
         }
         self.struct_vars.push(init_struct_vars);
 
@@ -3765,7 +4666,6 @@ impl ModuleResolver {
         }
         let body = self.lower_expr(&raw.body, &mut locals)?;
         self.struct_vars.pop();
-        self.current_mod = prev_mod;
 
         Ok(FnDef {
             name: raw.name,
@@ -3972,7 +4872,7 @@ impl ModuleResolver {
             };
             let call = match seg {
                 Seg::Lit(s) => Expr::Call {
-                    target: TargetRef::Named("ui_text".to_string()),
+                    target: TargetRef::Named(self.resolve_std_text_fn("ui_text", Span::zero())?),
                     args: vec![
                         cur_x,
                         Expr::Var(vy.clone()),
@@ -3984,7 +4884,7 @@ impl ModuleResolver {
                     ],
                 },
                 Seg::Expr(e, Some(prec)) => Expr::Call {
-                    target: TargetRef::Named("ui_fixed".to_string()),
+                    target: TargetRef::Named(self.resolve_std_text_fn("ui_fixed", Span::zero())?),
                     args: vec![
                         cur_x,
                         Expr::Var(vy.clone()),
@@ -3997,7 +4897,7 @@ impl ModuleResolver {
                     ],
                 },
                 Seg::Expr(e, None) => Expr::Call {
-                    target: TargetRef::Named("ui_int".to_string()),
+                    target: TargetRef::Named(self.resolve_std_text_fn("ui_int", Span::zero())?),
                     args: vec![
                         cur_x,
                         Expr::Var(vy.clone()),
@@ -4133,11 +5033,11 @@ impl ModuleResolver {
         for seg in segs {
             let add_call = match seg {
                 Seg::Lit(s) => Expr::Call {
-                    target: TargetRef::Named("ui_text_width".to_string()),
+                    target: TargetRef::Named(self.resolve_std_text_fn("ui_text_width", Span::zero())?),
                     args: vec![Expr::StrLit(s), Expr::Var(vsz.clone()), Expr::Var(vst.clone())],
                 },
                 Seg::Expr(e, Some(prec)) => Expr::Call {
-                    target: TargetRef::Named("ui_fixed_width".to_string()),
+                    target: TargetRef::Named(self.resolve_std_text_fn("ui_fixed_width", Span::zero())?),
                     args: vec![
                         self.lower_expr(&e, locals)?,
                         Expr::IntLit(prec),
@@ -4146,7 +5046,7 @@ impl ModuleResolver {
                     ],
                 },
                 Seg::Expr(e, None) => Expr::Call {
-                    target: TargetRef::Named("ui_int_width".to_string()),
+                    target: TargetRef::Named(self.resolve_std_text_fn("ui_int_width", Span::zero())?),
                     args: vec![
                         self.lower_expr(&e, locals)?,
                         Expr::Var(vsz.clone()),
@@ -4275,7 +5175,9 @@ impl ModuleResolver {
                         None => None,
                     };
                     let inferred_struct = match ty {
-                        Some(RawType::Named(sname, _)) => Some(sname.clone()),
+                        Some(RawType::Named { module, name, span }) => {
+                            Some(self.resolve_struct_canon(module.as_deref(), name, *span)?)
+                        }
                         _ => self.infer_raw_expr_struct(value),
                     };
                     let v = self.lower_expr(value, locals)?;
@@ -4322,6 +5224,7 @@ impl ModuleResolver {
                     });
                 }
                 RawStmt::LayoutStore {
+                    module,
                     layout,
                     field,
                     index,
@@ -4331,7 +5234,7 @@ impl ModuleResolver {
                     span,
                 } => {
                     // Case A: Local value-struct field mutation (`v.x = e;` / `v.x += e;`)
-                    if index.is_none() && subfield.is_none() {
+                    if module.is_none() && index.is_none() && subfield.is_none() {
                         if let Some(sname) = self.lookup_struct_var(layout) {
                             let sdef = self.structs.get(&sname).cloned().ok_or_else(|| {
                                 InfimumDiagnostic::new(
@@ -4382,11 +5285,12 @@ impl ModuleResolver {
                             continue;
                         }
                     }
+                    let lcanon = self.resolve_layout_canon(module.as_deref(), layout, *span)?;
                     // Case B: Whole-struct store into layout (`World.hero = v;` or `World.flock[i] = s;`)
                     if subfield.is_none() && op.is_none() {
                         if let Some(meta) = self
                             .layout_field_meta
-                            .get(&(layout.clone(), field.clone()))
+                            .get(&(lcanon.clone(), field.clone()))
                             .cloned()
                         {
                             if let Some(sname) = meta.struct_type {
@@ -4411,7 +5315,7 @@ impl ModuleResolver {
                                 let base_addr_var = if let Some(idx_raw) = index {
                                     let idx_e = self.lower_expr(idx_raw, locals)?;
                                     let clamped = Expr::Call {
-                                        target: TargetRef::Named("clamp_i64".to_string()),
+                                        target: TargetRef::Named(self.resolve_clamp_i64_name()),
                                         args: vec![
                                             idx_e,
                                             Expr::IntLit(0),
@@ -4469,15 +5373,15 @@ impl ModuleResolver {
                         }
                     }
                     let addr_expr = self.lower_layout_addr_expr(
-                        layout,
+                        &lcanon,
                         field,
                         index.as_ref(),
                         subfield.as_deref(),
                         locals,
                         *span,
                     )?;
-                    let field_inv = self.lookup_layout_inv(layout, field, subfield.as_deref());
-                    let field_fixed = self.lookup_layout_fixed(layout, field, subfield.as_deref());
+                    let field_inv = self.lookup_layout_inv(&lcanon, field, subfield.as_deref());
+                    let field_fixed = self.lookup_layout_fixed(&lcanon, field, subfield.as_deref());
                     let rhs = self.lower_expr(value, locals)?;
                     match op {
                         None => {
@@ -4846,47 +5750,37 @@ impl ModuleResolver {
             RawExpr::UnitLit => Ok(Expr::UnitLit),
             RawExpr::Var(name) => {
                 if !Self::is_shadowed(locals, name) {
-                    if let Some(ref cur_m) = self.current_mod {
-                        if let Some((val, _)) = self.mod_consts.get(&(cur_m.clone(), name.clone())) {
-                            return Ok(match val {
-                                ConstValue::Int(v) => Expr::IntLit(*v),
-                                ConstValue::Fixed(v) => Expr::FixedLit(*v),
-                                ConstValue::Bool(b) => Expr::BoolLit(*b),
+                    if let Some(sym) = self.lookup_const_sym(None, name, Span::zero())? {
+                        if let Some(cdef) = self.consts.get(&sym.canonical_name) {
+                            return Ok(match cdef.value {
+                                ConstValue::Int(v) => Expr::IntLit(v),
+                                ConstValue::Fixed(v) => Expr::FixedLit(v),
+                                ConstValue::Bool(b) => Expr::BoolLit(b),
                             });
                         }
-                    }
-                    if let Some(cdef) = self.consts.get(name) {
-                        return Ok(match cdef.value {
-                            ConstValue::Int(v) => Expr::IntLit(v),
-                            ConstValue::Fixed(v) => Expr::FixedLit(v),
-                            ConstValue::Bool(b) => Expr::BoolLit(b),
-                        });
                     }
                 }
                 Ok(Expr::Var(name.clone()))
             }
-            RawExpr::Path2 { head, member, span } => {
-                let val = self.resolve_path2(head, member, *span)?;
-                Ok(Expr::IntLit(val))
+            RawExpr::Path { segs, span } => {
+                let v = self.resolve_path_const(segs, *span)?;
+                Ok(match v {
+                    ConstValue::Int(n) => Expr::IntLit(n),
+                    ConstValue::Fixed(n) => Expr::FixedLit(n),
+                    ConstValue::Bool(b) => Expr::BoolLit(b),
+                })
             }
-            RawExpr::Path3 {
-                head,
-                member,
-                prop,
-                span,
-            } => {
-                let val = self.resolve_path3(head, member, prop, *span)?;
-                Ok(Expr::IntLit(val))
-            }
-            RawExpr::LayoutLoad {
-                layout,
-                field,
-                index,
-                subfield,
-                span,
-            } => {
+            RawExpr::LayoutLoad(ll) => {
+                let RawLayoutLoad {
+                    module,
+                    layout,
+                    field,
+                    index,
+                    subfield,
+                    span,
+                } = ll.as_ref();
                 // Case A: Local value-struct field read (`v.x`)
-                if index.is_none() && subfield.is_none() {
+                if module.is_none() && index.is_none() && subfield.is_none() {
                     if let Some(sname) = self.lookup_struct_var(layout) {
                         let sdef = self.structs.get(&sname).ok_or_else(|| {
                             InfimumDiagnostic::new(
@@ -4915,11 +5809,12 @@ impl ModuleResolver {
                         });
                     }
                 }
+                let lcanon = self.resolve_layout_canon(module.as_deref(), layout, *span)?;
                 // Case B: Whole-struct load from layout (`let h = World.hero;` or `let s = World.flock[i];`)
                 if subfield.is_none() {
                     if let Some(meta) = self
                         .layout_field_meta
-                        .get(&(layout.clone(), field.clone()))
+                        .get(&(lcanon.clone(), field.clone()))
                         .cloned()
                     {
                         if let Some(sname) = meta.struct_type {
@@ -4935,7 +5830,7 @@ impl ModuleResolver {
                             if let Some(idx_raw) = index {
                                 let idx_e = self.lower_expr(idx_raw, locals)?;
                                 let clamped = Expr::Call {
-                                    target: TargetRef::Named("clamp_i64".to_string()),
+                                    target: TargetRef::Named(self.resolve_clamp_i64_name()),
                                     args: vec![
                                         idx_e,
                                         Expr::IntLit(0),
@@ -4994,15 +5889,15 @@ impl ModuleResolver {
                     }
                 }
                 let addr_expr = self.lower_layout_addr_expr(
-                    layout,
+                    &lcanon,
                     field,
                     index.as_deref(),
                     subfield.as_deref(),
                     locals,
                     *span,
                 )?;
-                let field_inv = self.lookup_layout_inv(layout, field, subfield.as_deref());
-                let field_fixed = self.lookup_layout_fixed(layout, field, subfield.as_deref());
+                let field_inv = self.lookup_layout_inv(&lcanon, field, subfield.as_deref());
+                let field_fixed = self.lookup_layout_fixed(&lcanon, field, subfield.as_deref());
                 Ok(Expr::MemLoad {
                     index: Box::new(addr_expr),
                     inv: field_inv,
@@ -5022,11 +5917,39 @@ impl ModuleResolver {
                 cond,
                 then_branch,
                 else_branch,
-            } => Ok(Expr::If {
-                cond: Box::new(self.lower_expr(cond, locals)?),
-                then_branch: Box::new(self.lower_expr(then_branch, locals)?),
-                else_branch: Box::new(self.lower_expr(else_branch, locals)?),
-            }),
+            } => {
+                // Flatten `if ... else if ... else ...` iteratively so long chains never overflow the stack
+                let mut branches: Vec<(Expr, Expr)> = Vec::new();
+                let mut cur_cond = cond.as_ref();
+                let mut cur_then = then_branch.as_ref();
+                let mut cur_else = else_branch.as_ref();
+                loop {
+                    let lc = self.lower_expr(cur_cond, locals)?;
+                    let lt = self.lower_expr(cur_then, locals)?;
+                    branches.push((lc, lt));
+                    if let RawExpr::If {
+                        cond: nc,
+                        then_branch: nt,
+                        else_branch: ne,
+                    } = cur_else
+                    {
+                        cur_cond = nc.as_ref();
+                        cur_then = nt.as_ref();
+                        cur_else = ne.as_ref();
+                    } else {
+                        break;
+                    }
+                }
+                let mut acc = self.lower_expr(cur_else, locals)?;
+                for (lc, lt) in branches.into_iter().rev() {
+                    acc = Expr::If {
+                        cond: Box::new(lc),
+                        then_branch: Box::new(lt),
+                        else_branch: Box::new(acc),
+                    };
+                }
+                Ok(acc)
+            }
             RawExpr::Match {
                 scrutinee,
                 arms,
@@ -5096,14 +6019,8 @@ impl ModuleResolver {
                 }
                 let resolved_target = match target {
                     TargetRef::Named(fname) => {
-                        if let Some(ref cur_m) = self.current_mod {
-                            if let Some((mangled, _)) =
-                                self.mod_fns.get(&(cur_m.clone(), fname.clone()))
-                            {
-                                TargetRef::Named(mangled.clone())
-                            } else {
-                                TargetRef::Named(fname.clone())
-                            }
+                        if let Some(sym) = self.lookup_fn_sym(None, fname, Span::zero())? {
+                            TargetRef::Named(sym.canonical_name.clone())
                         } else {
                             TargetRef::Named(fname.clone())
                         }
@@ -5115,40 +6032,38 @@ impl ModuleResolver {
                     args: largs,
                 })
             }
-            RawExpr::ModCall {
-                module,
-                func,
-                args,
-                span,
-            } => {
-                let Some((mangled, is_pub)) = self
-                    .mod_fns
-                    .get(&(module.clone(), func.clone()))
-                    .cloned()
-                else {
+            RawExpr::ModCall(mc) => {
+                let RawModCall {
+                    module,
+                    func,
+                    args,
+                    span,
+                } = mc.as_ref();
+                let Some(sym) = self.lookup_fn_sym(Some(module), func, *span)? else {
+                    if self.lookup_namespace(module).is_none() {
+                        return Err(InfimumDiagnostic::new(
+                            "E065_UNKNOWN_MOD_FN",
+                            "resolve",
+                            format!("Unknown module namespace '{module}' in '{module}::{func}'"),
+                            *span,
+                            format!("Import the module with 'use \"file.ifm\" as {module};'"),
+                        ));
+                    }
                     return Err(InfimumDiagnostic::new(
-                        "E069_UNKNOWN_MOD_SYMBOL",
+                        "E065_UNKNOWN_MOD_FN",
                         "resolve",
                         format!("Unknown function '{module}::{func}'"),
                         *span,
-                        format!("Declare 'pub fn {func}(...)' inside 'mod {module}'"),
+                        format!("Declare 'pub fn {func}(...)' in module '{module}'"),
                     ));
                 };
-                if !is_pub && self.current_mod.as_deref() != Some(module.as_str()) {
-                    return Err(InfimumDiagnostic::new(
-                        "E068_PRIVATE_SYMBOL",
-                        "resolve",
-                        format!("Function '{module}::{func}' is private to module '{module}'"),
-                        *span,
-                        format!("Mark it 'pub fn {func}' inside 'mod {module}' to call it externally"),
-                    ));
-                }
+                let target_name = sym.canonical_name.clone();
                 let mut largs = Vec::with_capacity(args.len());
                 for a in args {
                     largs.push(self.lower_expr(a, locals)?);
                 }
                 Ok(Expr::Call {
-                    target: TargetRef::Named(mangled),
+                    target: TargetRef::Named(target_name),
                     args: largs,
                 })
             }
@@ -5208,8 +6123,15 @@ impl ModuleResolver {
                 expr: Box::new(self.lower_expr(expr, locals)?),
                 index: *index,
             }),
-            RawExpr::StructLit { name, fields, span } => {
-                let sdef = self.structs.get(name).cloned().ok_or_else(|| {
+            RawExpr::StructLit(sl) => {
+                let RawStructLit {
+                    module,
+                    name,
+                    fields,
+                    span,
+                } = sl.as_ref();
+                let scanon = self.resolve_struct_canon(module.as_deref(), name, *span)?;
+                let sdef = self.structs.get(&scanon).cloned().ok_or_else(|| {
                     InfimumDiagnostic::new(
                         "E061_UNKNOWN_STRUCT",
                         "parse",
@@ -5361,7 +6283,8 @@ impl ModuleResolver {
                     RawMatchPattern::Int(v) => ResolvedPat::Int(*v),
                     RawMatchPattern::Bool(b) => ResolvedPat::Bool(*b),
                     RawMatchPattern::ConstRef(name, pspan) => {
-                        let cdef = self.consts.get(name).ok_or_else(|| {
+                        let sym = self.lookup_const_sym(None, name, *pspan)?;
+                        let cdef = sym.and_then(|s| self.consts.get(&s.canonical_name)).ok_or_else(|| {
                             InfimumDiagnostic::new(
                                 "E064_CONST_EVAL",
                                 "resolve",
@@ -5375,34 +6298,58 @@ impl ModuleResolver {
                             ConstValue::Bool(b) => ResolvedPat::Bool(b),
                         }
                     }
-                    RawMatchPattern::Path2(head, member, pspan) => {
-                        if let Some(edef) = self.enums.get(head) {
-                            let v = edef
-                                .variants
-                                .iter()
-                                .find(|v| v.name == *member)
-                                .ok_or_else(|| {
-                                    InfimumDiagnostic::new(
-                                        "E061_UNKNOWN_ENUM_VARIANT",
-                                        "resolve",
-                                        format!("Enum '{head}' has no variant '{member}'"),
-                                        *pspan,
-                                        format!("Check the variants declared in 'enum {head}'"),
-                                    )
-                                })?;
-                            ResolvedPat::Enum {
-                                enum_name: head.clone(),
-                                variant: member.clone(),
-                                value: v.value,
+                    RawMatchPattern::Path(segs, pspan) => {
+                        let enum_hit: Option<(String, String, i64)> = match segs.as_slice() {
+                            [head, member] => {
+                                if let Some(sym) = self.lookup_enum_sym(None, head, *pspan)? {
+                                    if let Some(edef) = self.enums.get(&sym.canonical_name) {
+                                        let v = edef.variants.iter().find(|v| v.name == *member).ok_or_else(|| {
+                                            InfimumDiagnostic::new(
+                                                "E061_UNKNOWN_ENUM_VARIANT",
+                                                "resolve",
+                                                format!("Enum '{head}' has no variant '{member}'"),
+                                                *pspan,
+                                                format!("Check the variants declared in 'enum {head}'"),
+                                            )
+                                        })?;
+                                        Some((sym.canonical_name.clone(), member.clone(), v.value))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
                             }
+                            [m, ename, member] if self.lookup_namespace(m).is_some() => {
+                                if let Some(sym) = self.lookup_enum_sym(Some(m), ename, *pspan)? {
+                                    if let Some(edef) = self.enums.get(&sym.canonical_name) {
+                                        let v = edef.variants.iter().find(|v| v.name == *member).ok_or_else(|| {
+                                            InfimumDiagnostic::new(
+                                                "E061_UNKNOWN_ENUM_VARIANT",
+                                                "resolve",
+                                                format!("Enum '{m}::{ename}' has no variant '{member}'"),
+                                                *pspan,
+                                                format!("Check the variants declared in 'enum {ename}'"),
+                                            )
+                                        })?;
+                                        Some((sym.canonical_name.clone(), member.clone(), v.value))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some((enum_name, variant, value)) = enum_hit {
+                            ResolvedPat::Enum { enum_name, variant, value }
                         } else {
-                            let v = self.resolve_path2(head, member, *pspan)?;
-                            ResolvedPat::Int(v)
+                            match self.resolve_path_const(segs, *pspan)? {
+                                ConstValue::Int(v) | ConstValue::Fixed(v) => ResolvedPat::Int(v),
+                                ConstValue::Bool(b) => ResolvedPat::Bool(b),
+                            }
                         }
-                    }
-                    RawMatchPattern::Path3(head, member, prop, pspan) => {
-                        let v = self.resolve_path3(head, member, prop, *pspan)?;
-                        ResolvedPat::Int(v)
                     }
                 };
                 rpats.push(rp);
@@ -5673,34 +6620,90 @@ impl crate::forma::parser::FormaHostParser for Parser {
     }
 }
 
-fn resolve_and_lower(
-    items: Vec<RawItem>,
-    mut raw_formas: Vec<crate::forma::FormaDef<RawExpr>>,
-    mut raw_fns: Vec<RawFnDef>,
-) -> Result<Module, InfimumDiagnostic> {
-    let mut resolver = ModuleResolver::new();
-    for item in items {
-        resolver.register_item(item)?;
+fn rewrite_forma_slot_callbacks<E>(
+    node: &mut crate::forma::FormaNode<E>,
+    resolver: &ModuleResolver,
+) -> Result<(), InfimumDiagnostic> {
+    let resolve_cb = |raw: &str, span: Span| -> Result<String, InfimumDiagnostic> {
+        if let Some((m, f)) = raw.split_once("::") {
+            let Some(sym) = resolver.lookup_fn_sym(Some(m), f, span)? else {
+                return Err(InfimumDiagnostic::new(
+                    "E065_UNKNOWN_MOD_FN",
+                    "resolve",
+                    format!("Unknown callback function '{raw}' in Forma Slot"),
+                    span,
+                    format!("Ensure module '{m}' declares 'pub fn {f}'"),
+                ));
+            };
+            Ok(sym.canonical_name.clone())
+        } else if let Some(sym) = resolver.lookup_fn_sym(None, raw, span)? {
+            Ok(sym.canonical_name.clone())
+        } else {
+            Ok(raw.to_string())
+        }
+    };
+    if let Some(ref mut rfn) = node.props.render {
+        *rfn = resolve_cb(rfn, node.span)?;
     }
-    raw_formas.extend(std::mem::take(&mut resolver.mod_extra_formas));
-    raw_fns.extend(std::mem::take(&mut resolver.mod_extra_fns));
+    if let Some(ref mut wfn) = node.props.on_wheel {
+        *wfn = resolve_cb(wfn, node.span)?;
+    }
+    for ch in &mut node.children {
+        rewrite_forma_slot_callbacks(ch, resolver)?;
+    }
+    if let Some((_, ref mut else_nodes)) = node.forma_if {
+        for ch in else_nodes {
+            rewrite_forma_slot_callbacks(ch, resolver)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> {
+    let tables = build_unit_tables(&graph)?;
+    let unit_labels: Vec<String> = graph.units.iter().map(|u| u.display_label.clone()).collect();
+    let entry_uid = graph.entry_uid;
+    let has_std_gfx = graph.find_unit("__std__/gfx.ifm").is_some()
+        || tables[entry_uid].scope.consts.contains_key("GPU_CMD_BYTE_OFFSET");
+    let std_text_uid = graph.find_unit("__std__/text.ifm");
+    let std_mesh3d_uid = graph.find_unit("__std__/mesh3d.ifm");
+
+    let mut resolver = ModuleResolver::new(tables, unit_labels, entry_uid, has_std_gfx, std_text_uid);
+
+    // 1. Register all consts, enums, structs, and layouts in topological order
+    let topo = graph.topo_order.clone();
+    for &uid in &topo {
+        resolver.cur_uid = uid;
+        let items = std::mem::take(&mut graph.units[uid].items);
+        let owner_u = &graph.units[uid];
+        for item in items {
+            resolver.register_item(item, owner_u)?;
+        }
+    }
     resolver.verify_no_layout_overlaps()?;
 
-    let forma_defs_by_name: BTreeMap<String, crate::forma::FormaDef<RawExpr>> = raw_formas
-        .iter()
-        .map(|f| (f.name.clone(), f.clone()))
-        .collect();
+    // 2. Collect all forma definitions keyed by canonical name (paired with their owning UnitId)
+    let mut all_raw_formas: Vec<(UnitId, String, crate::forma::FormaDef<RawExpr>)> = Vec::new();
+    let mut forma_defs_by_canon: BTreeMap<String, (UnitId, crate::forma::FormaDef<RawExpr>)> =
+        BTreeMap::new();
+    for &uid in &topo {
+        let u = &mut graph.units[uid];
+        let formas_u = std::mem::take(&mut u.formas);
+        for mut rf in formas_u {
+            let cname = unit_canonical_name(u, &rf.name, rf.exported);
+            rf.name = cname.clone();
+            forma_defs_by_canon.insert(cname.clone(), (uid, rf.clone()));
+            all_raw_formas.push((uid, cname, rf));
+        }
+    }
 
-    let mut formas = Vec::with_capacity(raw_formas.len());
-    for mut rf in raw_formas {
-        let mut visiting = Vec::new();
-        visiting.push(rf.name.clone());
-        let expanded_roots = expand_forma_node(
-            rf.root,
-            &forma_defs_by_name,
-            &resolver,
-            &mut visiting,
-        )?;
+    // 3. Expand and lower all forma definitions in their own UnitId scope
+    let mut formas = Vec::with_capacity(all_raw_formas.len());
+    for (uid, cname, mut rf) in all_raw_formas {
+        resolver.cur_uid = uid;
+        let mut visiting = vec![cname];
+        let expanded_roots =
+            expand_forma_node(rf.root, &forma_defs_by_canon, &mut resolver, &mut visiting)?;
         rf.root = if expanded_roots.len() == 1 {
             expanded_roots.into_iter().next().unwrap()
         } else {
@@ -5714,30 +6717,55 @@ fn resolve_and_lower(
                 forma_if: None,
             }
         };
+        resolver.cur_uid = uid;
+        rewrite_forma_slot_callbacks(&mut rf.root, &resolver)?;
         let param_set: BTreeSet<String> = rf.params.iter().map(|p| p.name.clone()).collect();
         let mut param_locals = vec![param_set];
         let resolved = rf.try_map(&mut |e| resolver.lower_expr(&e, &mut param_locals))?;
         formas.push(resolved);
     }
 
+    // 4. Pre-register function return structs by canonical name
+    let mut all_raw_fns: Vec<(UnitId, RawFnDef)> = Vec::new();
+    for &uid in &topo {
+        let u = &mut graph.units[uid];
+        let fns_u = std::mem::take(&mut u.functions);
+        resolver.cur_uid = uid;
+        for mut rf in fns_u {
+            let cname = unit_canonical_name(u, &rf.name, rf.exported);
+            rf.name = cname.clone();
+            if let RawType::Named { module, name, span } = &rf.ret_type {
+                let scanon = resolver.resolve_struct_canon(module.as_deref(), name, *span)?;
+                resolver.fn_ret_struct.insert(cname, scanon);
+            }
+            all_raw_fns.push((uid, rf));
+        }
+    }
+
     let mut functions = Vec::with_capacity(
-        raw_fns.len() + formas.len() + if formas.is_empty() { 0 } else { 3 },
+        all_raw_fns.len() + formas.len() + if formas.is_empty() { 0 } else { 5 },
     );
     if !formas.is_empty() {
-        let user_fn_names: HashSet<&str> = raw_fns.iter().map(|rf| rf.name.as_str()).collect();
-        for h in crate::forma::forma_runtime_helpers() {
-            if !user_fn_names.contains(h.name.as_str()) {
+        let cp_atlas_fn = std_text_uid
+            .and_then(|tid| resolver.tables[tid].exports.fns.get("codepoint_to_atlas"))
+            .map(|s| s.canonical_name.clone())
+            .unwrap_or_else(|| "codepoint_to_atlas".to_string());
+        let glyph_px_fn = std_text_uid
+            .and_then(|tid| resolver.tables[tid].exports.fns.get("glyph_px"))
+            .map(|s| s.canonical_name.clone())
+            .unwrap_or_else(|| "glyph_px".to_string());
+        let existing_names: HashSet<&str> =
+            all_raw_fns.iter().map(|(_, rf)| rf.name.as_str()).collect();
+        for h in crate::forma::forma_runtime_helpers_with_text(&cp_atlas_fn, &glyph_px_fn) {
+            if !existing_names.contains(h.name.as_str()) {
                 functions.push(h);
             }
         }
     }
-    for rf in &raw_fns {
-        if let RawType::Named(sname, _) = &rf.ret_type {
-            resolver.fn_ret_struct.insert(rf.name.clone(), sname.clone());
-        }
-    }
+
     let mut tests = Vec::new();
-    for rf in raw_fns {
+    for (uid, rf) in all_raw_fns {
+        resolver.cur_uid = uid;
         if let Some(label) = rf.test_label.clone() {
             tests.push((rf.name.clone(), label));
         }
@@ -5747,10 +6775,8 @@ fn resolve_and_lower(
         functions.push(crate::forma::lower_forma_def(forma));
     }
 
-    // Auto-generate standard .ifw GPU runtime exports when std/gfx is imported and step_ui is exported
-    if resolver.consts.contains_key("GPU_CMD_BYTE_OFFSET")
-        && functions.iter().any(|f| f.exported && f.name == "step_ui")
-    {
+    // 5. Auto-generate standard .ifw GPU runtime exports when std/gfx is loaded and step_ui is exported
+    if has_std_gfx && functions.iter().any(|f| f.exported && f.name == "step_ui") {
         let existing: HashSet<String> = functions.iter().map(|f| f.name.clone()).collect();
         let mem_eff = vec![EffectCap {
             name: "Mem".to_string(),
@@ -5843,7 +6869,10 @@ fn resolve_and_lower(
             });
         }
         if !existing.contains("get_mesh3d_byte_offset") {
-            if let Some(m3d) = resolver.layouts.get("Mesh3dMem") {
+            let m3d_canon = std_mesh3d_uid
+                .and_then(|uid| resolver.tables[uid].exports.layouts.get("Mesh3dMem"))
+                .map(|s| s.canonical_name.as_str());
+            if let Some(m3d) = m3d_canon.and_then(|c| resolver.layouts.get(c)) {
                 let byte_off = m3d.base * 4;
                 functions.push(FnDef {
                     name: "get_mesh3d_byte_offset".to_string(),
@@ -5903,16 +6932,51 @@ fn resolve_and_lower(
 
     resolve_fixed_ops_in_fns(&mut functions);
 
+    // 6. Export clean ABI surface from entry unit's public interface (or entry scope if no `pub` items)
+    let entry_exports = &resolver.tables[entry_uid].exports;
+    let entry_scope = &resolver.tables[entry_uid].scope;
+    let use_exports = !entry_exports.consts_order.is_empty()
+        || !entry_exports.enums_order.is_empty()
+        || !entry_exports.layouts_order.is_empty();
+    let abi_src = if use_exports { entry_exports } else { entry_scope };
+
+    let mut consts = Vec::new();
+    for k in &abi_src.consts_order {
+        if let Some(sym) = abi_src.consts.get(k) {
+            if let Some(mut cdef) = resolver.consts.get(&sym.canonical_name).cloned() {
+                cdef.name = k.clone();
+                consts.push(cdef);
+            }
+        }
+    }
+    let mut enums = Vec::new();
+    for k in &abi_src.enums_order {
+        if let Some(sym) = abi_src.enums.get(k) {
+            if let Some(mut edef) = resolver.enums.get(&sym.canonical_name).cloned() {
+                edef.name = k.clone();
+                enums.push(edef);
+            }
+        }
+    }
+    let mut layouts = Vec::new();
+    for k in &abi_src.layouts_order {
+        if let Some(sym) = abi_src.layouts.get(k) {
+            if let Some(mut ldef) = resolver.layouts.get(&sym.canonical_name).cloned() {
+                ldef.name = k.clone();
+                layouts.push(ldef);
+            }
+        }
+    }
+
     Ok(Module {
-        consts: resolver.consts_order,
-        enums: resolver.enums_order,
-        layouts: resolver.layouts_order,
+        consts,
+        enums,
+        layouts,
         formas,
         functions,
         tests,
     })
 }
-
 fn infer_and_rewrite_fixed_expr(
     expr: &mut Expr,
     env: &mut BTreeMap<String, Type>,
@@ -5981,18 +7045,22 @@ fn infer_and_rewrite_fixed_expr(
             for a in args.iter_mut() {
                 arg_types.push(infer_and_rewrite_fixed_expr(a, env, fn_rets));
             }
-            if matches!(target, TargetRef::Named(n) if n == "ui_int")
-                && args.len() == 7
-                && arg_types.get(2) == Some(&Type::Fixed)
-            {
-                *target = TargetRef::Named("ui_fixed".to_string());
-                args.insert(3, Expr::IntLit(2));
-            } else if matches!(target, TargetRef::Named(n) if n == "ui_int_width")
-                && args.len() == 3
-                && arg_types.first() == Some(&Type::Fixed)
-            {
-                *target = TargetRef::Named("ui_fixed_width".to_string());
-                args.insert(1, Expr::IntLit(2));
+            if let TargetRef::Named(n) = target {
+                if (n == "ui_int" || n.ends_with("__ui_int"))
+                    && args.len() == 7
+                    && arg_types.get(2) == Some(&Type::Fixed)
+                {
+                    let rewritten = format!("{}ui_fixed", &n[..n.len() - "ui_int".len()]);
+                    *target = TargetRef::Named(rewritten);
+                    args.insert(3, Expr::IntLit(2));
+                } else if (n == "ui_int_width" || n.ends_with("__ui_int_width"))
+                    && args.len() == 3
+                    && arg_types.first() == Some(&Type::Fixed)
+                {
+                    let rewritten = format!("{}ui_fixed_width", &n[..n.len() - "ui_int_width".len()]);
+                    *target = TargetRef::Named(rewritten);
+                    args.insert(1, Expr::IntLit(2));
+                }
             }
             match target {
                 TargetRef::Named(n) => fn_rets.get(n).cloned().unwrap_or(Type::I64),
@@ -6119,19 +7187,20 @@ fn subst_raw_expr(expr: RawExpr, env: &BTreeMap<String, RawExpr>) -> RawExpr {
             target,
             args: args.into_iter().map(|a| subst_raw_expr(a, env)).collect(),
         },
-        RawExpr::LayoutLoad {
-            layout,
-            field,
-            index,
-            subfield,
-            span,
-        } => RawExpr::LayoutLoad {
-            layout,
-            field,
-            index: index.map(|i| Box::new(subst_raw_expr(*i, env))),
-            subfield,
-            span,
-        },
+        RawExpr::ModCall(mc) => RawExpr::ModCall(Box::new(RawModCall {
+            module: mc.module,
+            func: mc.func,
+            args: mc.args.into_iter().map(|a| subst_raw_expr(a, env)).collect(),
+            span: mc.span,
+        })),
+        RawExpr::LayoutLoad(ll) => RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
+            module: ll.module,
+            layout: ll.layout,
+            field: ll.field,
+            index: ll.index.map(|i| Box::new(subst_raw_expr(*i, env))),
+            subfield: ll.subfield,
+            span: ll.span,
+        })),
         RawExpr::MemLoad { index } => RawExpr::MemLoad {
             index: Box::new(subst_raw_expr(*index, env)),
         },
@@ -6142,14 +7211,16 @@ fn subst_raw_expr(expr: RawExpr, env: &BTreeMap<String, RawExpr>) -> RawExpr {
             expr: Box::new(subst_raw_expr(*inner, env)),
             index,
         },
-        RawExpr::StructLit { name, fields, span } => RawExpr::StructLit {
-            name,
-            fields: fields
+        RawExpr::StructLit(sl) => RawExpr::StructLit(Box::new(RawStructLit {
+            module: sl.module,
+            name: sl.name,
+            fields: sl
+                .fields
                 .into_iter()
                 .map(|(k, v, sp)| (k, subst_raw_expr(v, env), sp))
                 .collect(),
-            span,
-        },
+            span: sl.span,
+        })),
         RawExpr::FieldAccess { expr: inner, field, span } => RawExpr::FieldAccess {
             expr: Box::new(subst_raw_expr(*inner, env)),
             field,
@@ -6184,8 +7255,8 @@ fn attach_forma_visible(
 
 fn expand_forma_node(
     mut node: crate::forma::FormaNode<RawExpr>,
-    defs: &BTreeMap<String, crate::forma::FormaDef<RawExpr>>,
-    resolver: &ModuleResolver,
+    defs: &BTreeMap<String, (UnitId, crate::forma::FormaDef<RawExpr>)>,
+    resolver: &mut ModuleResolver,
     visiting: &mut Vec<String>,
 ) -> Result<Vec<crate::forma::FormaNode<RawExpr>>, InfimumDiagnostic> {
     // 1. Conditional UI: `if cond { then... } [else { else... }]`
@@ -6237,9 +7308,16 @@ fn expand_forma_node(
         return Ok(out);
     }
 
-    // 3. Nested custom `forma` component call: `ScoreCard("Вы", score)`
+    // 3. Nested custom `forma` component call: `ScoreCard("Вы", score)` or `m::ScoreCard(...)`
     if let Some((comp_name, args)) = node.component_call.take() {
-        let Some(target_def) = defs.get(&comp_name) else {
+        let resolved_sym = if let Some((m, fname)) = comp_name.split_once("::") {
+            resolver.lookup_forma_sym(Some(m), fname, node.span)?
+        } else {
+            resolver.lookup_forma_sym(None, &comp_name, node.span)?
+        };
+        let target_entry = resolved_sym
+            .and_then(|s| defs.get(&s.canonical_name).map(|e| (s.canonical_name.clone(), e)));
+        let Some((target_canon, (target_uid, target_def))) = target_entry else {
             return Err(InfimumDiagnostic::new(
                 "E091_FORMA_SYNTAX",
                 "forma-expand",
@@ -6248,7 +7326,7 @@ fn expand_forma_node(
                 "Use a built-in node (Box, Col, Row, Stack, Scroll, Overlay, Button, Dropdown, Spacer, Divider, Rect, Slot, Text) or declare 'forma Name(...)'",
             ));
         };
-        if visiting.iter().any(|v| v == &comp_name) {
+        if visiting.iter().any(|v| v == &target_canon) {
             return Err(InfimumDiagnostic::new(
                 "E095_FORMA_COMPONENT_CYCLE",
                 "forma-expand",
@@ -6274,10 +7352,13 @@ fn expand_forma_node(
         for (param, arg) in target_def.params.iter().zip(args) {
             env.insert(param.name.clone(), arg);
         }
-        visiting.push(comp_name);
         let instantiated = subst_forma_node(target_def.root.clone(), &env);
+        let prev_uid = resolver.cur_uid;
+        resolver.cur_uid = *target_uid;
+        visiting.push(target_canon);
         let expanded = expand_forma_node(instantiated, defs, resolver, visiting)?;
         visiting.pop();
+        resolver.cur_uid = prev_uid;
         return Ok(expanded);
     }
 
@@ -6757,7 +7838,7 @@ test "two modules with identical private helpers do not collide" {
             .expect("mod/pub Wasm compile should pass");
         assert!(!wasm.is_empty());
 
-        // Calling private function externally must fail with E068_PRIVATE_SYMBOL
+        // Calling private function externally must fail with E068_PRIVATE_ITEM
         let bad_fn = r#"
 mod m {
   fn hidden_fn() -> i64 { 42 }
@@ -6765,9 +7846,9 @@ mod m {
 fn main() -> i64 { m::hidden_fn() }
 "#;
         let err = parse_module(bad_fn).expect_err("calling private mod fn must fail");
-        assert_eq!(err.code, "E068_PRIVATE_SYMBOL");
+        assert_eq!(err.code, "E068_PRIVATE_ITEM");
 
-        // Reading private constant externally must fail with E068_PRIVATE_SYMBOL
+        // Reading private constant externally must fail with E068_PRIVATE_ITEM
         let bad_const = r#"
 mod m {
   const SECRET: i64 = 42;
@@ -6775,9 +7856,9 @@ mod m {
 fn main() -> i64 { m::SECRET }
 "#;
         let err2 = parse_module(bad_const).expect_err("reading private mod const must fail");
-        assert_eq!(err2.code, "E068_PRIVATE_SYMBOL");
+        assert_eq!(err2.code, "E068_PRIVATE_ITEM");
 
-        // File-based `mod ai from "ai.ifm";` in-memory (Online Studio)
+        // File-based `use "ai.ifm" as ai;` in-memory (Online Studio)
         let mut proj = BTreeMap::new();
         proj.insert(
             "ai.ifm".to_string(),
@@ -6785,10 +7866,10 @@ fn main() -> i64 { m::SECRET }
         );
         proj.insert(
             "main.ifm".to_string(),
-            "mod ai from \"ai.ifm\";\nexport fn play(x: i64) -> i64 { ai::pick(x) }\n".to_string(),
+            "use \"ai.ifm\" as ai;\nexport fn play(x: i64) -> i64 { ai::pick(x) }\n".to_string(),
         );
         let (wasm2, _) = crate::wasm_api::compile_project_in_memory("main.ifm", &proj)
-            .expect("file-based mod ... from should compile in memory");
+            .expect("file-based use ... as should compile in memory");
         assert!(!wasm2.is_empty());
     }
 

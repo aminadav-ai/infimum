@@ -9,12 +9,12 @@ use "std/math.ifm";
 use "std/sys_mem.ifm";
 use "std/gfx.ifm";
 
-const STD_FONT_METRICS_FLAG_WORD: i64 = SYS_FONT_METRICS_FLAG_WORD;
-const STD_FONT_METRICS_TABLE_WORD: i64 = SYS_FONT_METRICS_TABLE_WORD;
-const STD_FONT_ATLAS_SLOTS: i64 = 176;
-const STD_STR_SCRATCH_WORD: i64 = SYS_STR_SCRATCH_WORD;
+pub const STD_FONT_METRICS_FLAG_WORD: i64 = SYS_FONT_METRICS_FLAG_WORD;
+pub const STD_FONT_METRICS_TABLE_WORD: i64 = SYS_FONT_METRICS_TABLE_WORD;
+pub const STD_FONT_ATLAS_SLOTS: i64 = 176;
+pub const STD_STR_SCRATCH_WORD: i64 = SYS_STR_SCRATCH_WORD;
 
-fn codepoint_to_atlas(cp: i64) -> i64 {
+pub fn codepoint_to_atlas(cp: i64) -> i64 {
   if cp >= ' ' && cp <= '~' { cp - ' ' }
   else if cp >= 1040 && cp <= 1071 { 96 + (cp - 1040) }
   else if cp >= 1072 && cp <= 1103 { 128 + (cp - 1072) }
@@ -32,7 +32,7 @@ fn codepoint_to_atlas(cp: i64) -> i64 {
   else { -1 }
 }
 
-fn glyph_px(cp: i64, size: i64, style: i64) -[Mem]-> i64 {
+pub fn glyph_px(cp: i64, size: i64, style: i64) -[Mem]-> i64 {
   let g_idx = codepoint_to_atlas(cp);
   if mem_load(STD_FONT_METRICS_FLAG_WORD) == 1 && g_idx >= 0 && g_idx < STD_FONT_ATLAS_SLOTS {
     let st = clamp_i64(style, 0, 2);
@@ -43,7 +43,7 @@ fn glyph_px(cp: i64, size: i64, style: i64) -[Mem]-> i64 {
   }
 }
 
-fn ui_glyph(x: i64, y: i64, cp: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn ui_glyph(x: i64, y: i64, cp: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   let adv = glyph_px(cp, size, style);
   let g_idx = codepoint_to_atlas(cp);
   if g_idx > 0 {
@@ -53,7 +53,7 @@ fn ui_glyph(x: i64, y: i64, cp: i64, size: i64, style: i64, rgba: i64, clip: i64
   adv
 }
 
-fn ui_text_width(s: str, size: i64, style: i64) -[Mem]-> i64 {
+pub fn ui_text_width(s: str, size: i64, style: i64) -[Mem]-> i64 {
   do Mem.store_str(STD_STR_SCRATCH_WORD, s);
   let ptr = mem_load(STD_STR_SCRATCH_WORD);
   let n = clamp_i64(mem_load(ptr), 0, 256);
@@ -64,7 +64,7 @@ fn ui_text_width(s: str, size: i64, style: i64) -[Mem]-> i64 {
   w
 }
 
-fn ui_text(x: i64, y: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn ui_text(x: i64, y: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   do Mem.store_str(STD_STR_SCRATCH_WORD, s);
   let ptr = mem_load(STD_STR_SCRATCH_WORD);
   let n = clamp_i64(mem_load(ptr), 0, 256);
@@ -75,12 +75,12 @@ fn ui_text(x: i64, y: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) 
   cx - x
 }
 
-fn ui_text_centered(cx: i64, y: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn ui_text_centered(cx: i64, y: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   let w = ui_text_width(s, size, style);
   ui_text(cx - w / 2, y, s, size, style, rgba, clip)
 }
 
-fn ui_int(x: i64, y: i64, val: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn ui_int(x: i64, y: i64, val: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   let mut v = val;
   let mut cx = x;
   if v < 0 {
@@ -101,7 +101,7 @@ fn ui_int(x: i64, y: i64, val: i64, size: i64, style: i64, rgba: i64, clip: i64)
   cx - x
 }
 
-fn ui_int_width(val: i64, size: i64, style: i64) -[Mem]-> i64 {
+pub fn ui_int_width(val: i64, size: i64, style: i64) -[Mem]-> i64 {
   let mut v = val;
   let mut w = 0;
   if v < 0 {
@@ -122,13 +122,13 @@ fn ui_int_width(val: i64, size: i64, style: i64) -[Mem]-> i64 {
   w
 }
 
-fn ui_int_centered(cx: i64, y: i64, val: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn ui_int_centered(cx: i64, y: i64, val: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   let w = ui_int_width(val, size, style);
   ui_int(cx - w / 2, y, val, size, style, rgba, clip)
 }
 
 // Render deterministic Q16.16 `fixed` value with `decimals` (0..4) fractional digits (zero heap).
-fn ui_fixed(x: i64, y: i64, val: fixed, decimals: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
+pub fn ui_fixed(x: i64, y: i64, val: fixed, decimals: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
   let raw0 = fixed_raw(val);
   let mut cx = x;
   let raw = if raw0 < 0 {
@@ -168,7 +168,7 @@ fn ui_fixed(x: i64, y: i64, val: fixed, decimals: i64, size: i64, style: i64, rg
   cx - x
 }
 
-fn ui_fixed_width(val: fixed, decimals: i64, size: i64, style: i64) -[Mem]-> i64 {
+pub fn ui_fixed_width(val: fixed, decimals: i64, size: i64, style: i64) -[Mem]-> i64 {
   let raw0 = fixed_raw(val);
   let mut w = 0;
   let raw = if raw0 < 0 {

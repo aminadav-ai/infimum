@@ -7,11 +7,11 @@
 use "std/math.ifm";
 use "std/buf.ifm";
 
-fn json_is_ws(cp: i64) -> bool {
+pub fn json_is_ws(cp: i64) -> bool {
   cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r'
 }
 
-fn json_skip_ws(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+pub fn json_skip_ws(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   let mut i = clamp_i64(pos, 0, max_i64(n, 0));
   while i < n max 16384 {
     if json_is_ws(mem_load(buf_ptr + 1 + i)) {
@@ -24,7 +24,7 @@ fn json_skip_ws(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
 }
 
 // Given `pos` pointing to opening `"`, return index immediately after closing `"`.
-fn json_skip_string(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+pub fn json_skip_string(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   if pos < 0 || pos >= n || mem_load(buf_ptr + 1 + pos) != '"' {
     pos
   } else {
@@ -45,7 +45,7 @@ fn json_skip_string(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
 }
 
 // Skip any JSON value (string, number, bool, null, object, array) starting at `pos`.
-fn json_skip_value(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+pub fn json_skip_value(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   let s = json_skip_ws(buf_ptr, pos, n);
   if s >= n {
     n
@@ -86,7 +86,7 @@ fn json_skip_value(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
 }
 
 // Parse a signed integer starting at `pos`.
-fn json_parse_int(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+pub fn json_parse_int(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   let mut i = json_skip_ws(buf_ptr, pos, n);
   let mut neg = false;
   if i < n && mem_load(buf_ptr + 1 + i) == '-' {
@@ -106,7 +106,7 @@ fn json_parse_int(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   if neg { -acc } else { acc }
 }
 
-fn json_hex_val(c: i64) -> i64 {
+pub fn json_hex_val(c: i64) -> i64 {
   if c >= '0' && c <= '9' { c - '0' }
   else if c >= 'a' && c <= 'f' { 10 + (c - 'a') }
   else if c >= 'A' && c <= 'F' { 10 + (c - 'A') }
@@ -114,7 +114,7 @@ fn json_hex_val(c: i64) -> i64 {
 }
 
 // Decode a JSON string starting at `pos` (pointing to `"`) into `dst_ptr`. Returns decoded length.
-fn json_decode_string(src_ptr: i64, pos: i64, n: i64, dst_ptr: i64, dst_max: i64) -[Mem]-> i64 {
+pub fn json_decode_string(src_ptr: i64, pos: i64, n: i64, dst_ptr: i64, dst_max: i64) -[Mem]-> i64 {
   buf_clear(dst_ptr);
   let s = json_skip_ws(src_ptr, pos, n);
   if s >= n || mem_load(src_ptr + 1 + s) != '"' {
@@ -165,7 +165,7 @@ fn json_decode_string(src_ptr: i64, pos: i64, n: i64, dst_ptr: i64, dst_max: i64
 // Find a top-level key inside a JSON object starting at `obj_pos` (pointing to `{`).
 // `key_ptr` is a length-prefixed UTF-32 buffer containing the raw key name.
 // Returns the start index of the value, or -1 if not found.
-fn json_find_key(src_ptr: i64, obj_pos: i64, n: i64, key_ptr: i64, key_max: i64) -[Mem]-> i64 {
+pub fn json_find_key(src_ptr: i64, obj_pos: i64, n: i64, key_ptr: i64, key_max: i64) -[Mem]-> i64 {
   let s = json_skip_ws(src_ptr, obj_pos, n);
   let klen = buf_len(key_ptr, key_max);
   if s >= n || mem_load(src_ptr + 1 + s) != '{' {

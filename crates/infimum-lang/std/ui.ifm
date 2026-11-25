@@ -13,18 +13,18 @@ use "std/fmt.ifm";
 use "std/theme.ifm";
 use "std/icons.ifm";
 
-fn ui_card(x: i64, y: i64, w: i64, h: i64, th: i64, radius: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_card(x: i64, y: i64, w: i64, h: i64, th: i64, radius: i64, clip: i64) -[Mem]-> unit {
   ui_rect(x, y, w, h, radius, 1, 0, theme_surf(th), theme_border(th), clip);
 }
 
-fn ui_divider(x: i64, y: i64, w: i64, th: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_divider(x: i64, y: i64, w: i64, th: i64, clip: i64) -[Mem]-> unit {
   if w > 0 {
     ui_line(x, y, x + w, y, 1, theme_border(th), clip);
   }
 }
 
 // Auto-sizing pill badge (fit-content): renders rounded pill + label and returns total width.
-fn ui_badge(x: i64, y: i64, s: str, size: i64, bg: i64, fg: i64, clip: i64) -[Mem]-> i64 {
+pub fn ui_badge(x: i64, y: i64, s: str, size: i64, bg: i64, fg: i64, clip: i64) -[Mem]-> i64 {
   let sz = clamp_i64(size, 10, 32);
   let pad_x = clamp_i64(sz / 2, 6, 14);
   let h = sz + 8;
@@ -36,7 +36,7 @@ fn ui_badge(x: i64, y: i64, s: str, size: i64, bg: i64, fg: i64, clip: i64) -[Me
 }
 
 // Interactive themed button with centered ellipsis-safe label; returns true when clicked.
-fn ui_button(
+pub fn ui_button(
   x: i64, y: i64, w: i64, h: i64, s: str, size: i64, th: i64, primary: bool,
   mx: i64, my: i64, m_clicked: i64, clip: i64
 ) -[Mem]-> bool {
@@ -59,7 +59,7 @@ fn ui_button(
 }
 
 // Z3-safe clamped progress bar.
-fn ui_progress_bar(x: i64, y: i64, w: i64, h: i64, val: i64, max_val: i64, bg: i64, fill: i64, clip: i64) -[Mem]-> unit {
+pub fn ui_progress_bar(x: i64, y: i64, w: i64, h: i64, val: i64, max_val: i64, bg: i64, fill: i64, clip: i64) -[Mem]-> unit {
   if w > 0 && h > 0 {
     let r = clamp_i64(h / 2, 2, 16);
     ui_rect(x, y, w, h, r, 0, 0, bg, 0, clip);
@@ -73,7 +73,7 @@ fn ui_progress_bar(x: i64, y: i64, w: i64, h: i64, val: i64, max_val: i64, bg: i
 }
 
 // Vertical scrollbar track + thumb.
-fn ui_scrollbar_v(
+pub fn ui_scrollbar_v(
   x: i64, y: i64, h: i64, scroll_y: i64, max_scroll: i64, view_h: i64,
   th: i64, active: bool, clip: i64
 ) -[Mem]-> unit {

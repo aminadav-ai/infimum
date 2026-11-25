@@ -10,22 +10,22 @@ use "std/math.ifm";
 use "std/color.ifm";
 use "std/gfx.ifm";
 
-const MESH3D_MAGIC: i64 = 1028866894;
-const MESH3D_MAX_VERTS: i64 = 120000;
-const MESH3D_MAX_VM_VERTS: i64 = 6000;
-const MESH3D_MAX_LIGHTS: i64 = 24;
+pub const MESH3D_MAGIC: i64 = 1028866894;
+pub const MESH3D_MAX_VERTS: i64 = 120000;
+pub const MESH3D_MAX_VM_VERTS: i64 = 6000;
+pub const MESH3D_MAX_LIGHTS: i64 = 24;
 
 // Auto-placed non-overlapping 3D Mesh + Lights + VBO layout (zero collisions with user layouts;
 // 2D/UI capsules that don't import `std/mesh3d.ifm` pay 0 bytes; compiler auto-exports
 // `get_mesh3d_byte_offset()` for `infimum-web` and Online Studio).
-layout Mesh3dMem {
+pub layout Mesh3dMem {
   hdr: words[100],      // +0
   lights: words[900],   // +100   (24 lights * 8 words)
   vbo: words[960000],   // +1000  (120,000 world verts * 8 words)
   vm_vbo: words[48000], // +961000 (6,000 viewmodel verts * 8 words)
 }
 
-fn mesh3d_begin(
+pub fn mesh3d_begin(
   cam_x: i64, cam_y: i64, cam_z: i64,
   yaw: i64, pitch: i64, fov_deg: i64,
   sky_mode: i64, fog_mode: i64
@@ -44,7 +44,7 @@ fn mesh3d_begin(
   mem_store(Mesh3dMem::hdr + 11, 0);
 }
 
-fn mesh3d_add_light(x: i64, y: i64, z: i64, rad: i64, r: i64, g: i64, b: i64, inten: i64) -[Mem]-> unit {
+pub fn mesh3d_add_light(x: i64, y: i64, z: i64, rad: i64, r: i64, g: i64, b: i64, inten: i64) -[Mem]-> unit {
   let n = mem_load(Mesh3dMem::hdr + 10);
   if n >= 0 && n < MESH3D_MAX_LIGHTS {
     let base = Mesh3dMem::lights + n * 8;
@@ -60,7 +60,7 @@ fn mesh3d_add_light(x: i64, y: i64, z: i64, rad: i64, r: i64, g: i64, b: i64, in
   }
 }
 
-fn mesh3d_pack_nm(nx: i64, ny: i64, nz: i64, mat: i64) -> i64 {
+pub fn mesh3d_pack_nm(nx: i64, ny: i64, nz: i64, mat: i64) -> i64 {
   let bx = clamp_i64(nx + 128, 0, 255);
   let by = clamp_i64(ny + 128, 0, 255);
   let bz = clamp_i64(nz + 128, 0, 255);
@@ -68,7 +68,7 @@ fn mesh3d_pack_nm(nx: i64, ny: i64, nz: i64, mat: i64) -> i64 {
   bx | (by << 8) | (bz << 16) | (bm << 24)
 }
 
-fn mesh3d_push_vert(
+pub fn mesh3d_push_vert(
   is_vm: i64, x: i64, y: i64, z: i64, nm: i64, u: i64, v: i64, rgba: i64, flags_ao: i64
 ) -[Mem]-> unit {
   let cnt_word = if is_vm == 1 { Mesh3dMem::hdr + 11 } else { Mesh3dMem::hdr + 9 };
@@ -89,7 +89,7 @@ fn mesh3d_push_vert(
   }
 }
 
-fn mesh3d_quad(
+pub fn mesh3d_quad(
   is_vm: i64,
   x0: i64, y0: i64, z0: i64, u0: i64, v0: i64,
   x1: i64, y1: i64, z1: i64, u1: i64, v1: i64,
@@ -108,7 +108,7 @@ fn mesh3d_quad(
 }
 
 // Axis-aligned 3D box (6 faces, exact outward normals, automatic world-scale UVs)
-fn mesh3d_box(
+pub fn mesh3d_box(
   is_vm: i64,
   x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64,
   mat: i64, rgba: i64, ao: i64, emissive: i64, uv_scale: i64
@@ -132,7 +132,7 @@ fn mesh3d_box(
 }
 
 // Y-rotated 3D limb box (for articulated 3D monsters, arms, legs, heads, horns, rotating pickups!)
-fn mesh3d_limb(
+pub fn mesh3d_limb(
   cx: i64, cy: i64, cz: i64, yaw: i64,
   lx0: i64, ly0: i64, lz0: i64, lx1: i64, ly1: i64, lz1: i64,
   mat: i64, rgba: i64, ao: i64, emissive: i64
@@ -172,7 +172,7 @@ fn mesh3d_limb(
 }
 
 // Sloped architectural roof rafter / diagonal beam spanning (x0,y0) -> (x1,y1) at z=[z0..z1]
-fn mesh3d_rafter_x(
+pub fn mesh3d_rafter_x(
   x0: i64, y0: i64, x1: i64, y1: i64, z0: i64, z1: i64, thick_y: i64,
   mat: i64, rgba: i64, ao: i64
 ) -[Mem]-> unit {

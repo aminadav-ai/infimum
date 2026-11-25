@@ -19,22 +19,22 @@ use "std/gfx.ifm";
 use "std/text.ifm";
 use "std/theme.ifm";
 
-const MD_MAX_TBL_COLS: i64 = 12;
+pub const MD_MAX_TBL_COLS: i64 = 12;
 
-struct MdStep {
+pub struct MdStep {
   cy: i64,
   hit_found: i64,
   hit_idx: i64,
 }
 
-struct MdTableStep {
+pub struct MdTableStep {
   cy: i64,
   end_i: i64,
   hit_found: i64,
   hit_idx: i64,
 }
 
-fn md_find_backtick(ptr: i64, start: i64, le: i64) -[Mem]-> i64 {
+pub fn md_find_backtick(ptr: i64, start: i64, le: i64) -[Mem]-> i64 {
   let mut res = -1;
   for k in start..le max 512 {
     if mem_load(ptr + 1 + k) == '`' {
@@ -45,7 +45,7 @@ fn md_find_backtick(ptr: i64, start: i64, le: i64) -[Mem]-> i64 {
   res
 }
 
-fn md_has_closing_bold(ptr: i64, start: i64, le: i64) -[Mem]-> bool {
+pub fn md_has_closing_bold(ptr: i64, start: i64, le: i64) -[Mem]-> bool {
   let mut ok = false;
   for k in start..(le - 1) max 512 {
     if mem_load(ptr + 1 + k) == '*' && mem_load(ptr + 1 + k + 1) == '*' {
@@ -56,7 +56,7 @@ fn md_has_closing_bold(ptr: i64, start: i64, le: i64) -[Mem]-> bool {
   ok
 }
 
-fn md_measure_word(ptr: i64, start: i64, le: i64, sz: i64, style: i64) -[Mem]-> i64 {
+pub fn md_measure_word(ptr: i64, start: i64, le: i64, sz: i64, style: i64) -[Mem]-> i64 {
   let mut w = 0;
   for k in start..le max 96 {
     let ch = mem_load(ptr + 1 + k);
@@ -67,14 +67,14 @@ fn md_measure_word(ptr: i64, start: i64, le: i64, sz: i64, style: i64) -[Mem]-> 
   w
 }
 
-fn md_draw_quote_strip(mode: i64, is_quote: bool, q_x: i64, cy: i64, q_w: i64, lh: i64, th: i64, clip: i64, vis_y0: i64, vis_y1: i64) -[Mem]-> unit {
+pub fn md_draw_quote_strip(mode: i64, is_quote: bool, q_x: i64, cy: i64, q_w: i64, lh: i64, th: i64, clip: i64, vis_y0: i64, vis_y1: i64) -[Mem]-> unit {
   if mode == 2 && is_quote && cy + lh >= vis_y0 && cy <= vis_y1 {
     ui_rect(q_x, cy - 2, q_w, lh + 2, 2, 0, 0, theme_surf(th), 0, clip);
     ui_rect(q_x, cy - 2, 3, lh + 2, 1, 0, 0, theme_accent(), 0, clip);
   }
 }
 
-fn md_inline_line(
+pub fn md_inline_line(
   mode: i64, mx: i64, my: i64,
   bx: i64, by: i64, bw: i64,
   ptr: i64, start: i64, le: i64,
@@ -248,7 +248,7 @@ fn md_inline_line(
 
 // --- GFM Pipe Table Layout, Hit-Test & Render Engine ---
 
-fn md_find_line_end(ptr: i64, start: i64, n: i64) -[Mem]-> i64 {
+pub fn md_find_line_end(ptr: i64, start: i64, n: i64) -[Mem]-> i64 {
   let mut k = start;
   while k < n && mem_load(ptr + 1 + k) != '\n' max 4096 {
     k += 1;
@@ -256,7 +256,7 @@ fn md_find_line_end(ptr: i64, start: i64, n: i64) -[Mem]-> i64 {
   k
 }
 
-fn md_line_has_pipe(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
+pub fn md_line_has_pipe(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
   let mut found = false;
   for k in ls..le max 1024 {
     if mem_load(ptr + 1 + k) == '|' {
@@ -267,7 +267,7 @@ fn md_line_has_pipe(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
   found
 }
 
-fn md_is_table_sep(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
+pub fn md_is_table_sep(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
   let mut s = ls;
   while s < le && (mem_load(ptr + 1 + s) == ' ' || mem_load(ptr + 1 + s) == '\t' || mem_load(ptr + 1 + s) == '\r') max 64 {
     s += 1;
@@ -316,7 +316,7 @@ fn md_is_table_sep(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
   }
 }
 
-fn md_is_table_body_line(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
+pub fn md_is_table_body_line(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
   let mut p = ls;
   while p < le && (mem_load(ptr + 1 + p) == ' ' || mem_load(ptr + 1 + p) == '\t' || mem_load(ptr + 1 + p) == '\r') max 64 {
     p += 1;
@@ -330,7 +330,7 @@ fn md_is_table_body_line(ptr: i64, ls: i64, le: i64) -[Mem]-> bool {
   }
 }
 
-fn md_store_trimmed_cell(scratch: i64, ptr: i64, c: i64, raw_s: i64, raw_e: i64) -[Mem]-> unit {
+pub fn md_store_trimmed_cell(scratch: i64, ptr: i64, c: i64, raw_s: i64, raw_e: i64) -[Mem]-> unit {
   let mut cs = raw_s;
   while cs < raw_e && (mem_load(ptr + 1 + cs) == ' ' || mem_load(ptr + 1 + cs) == '\t' || mem_load(ptr + 1 + cs) == '\r') max 64 {
     cs += 1;
@@ -343,7 +343,7 @@ fn md_store_trimmed_cell(scratch: i64, ptr: i64, c: i64, raw_s: i64, raw_e: i64)
   mem_store(scratch + 80 + c, ce);
 }
 
-fn md_parse_table_row(scratch: i64, ptr: i64, ls: i64, le: i64) -[Mem]-> i64 {
+pub fn md_parse_table_row(scratch: i64, ptr: i64, ls: i64, le: i64) -[Mem]-> i64 {
   let mut s = ls;
   while s < le && (mem_load(ptr + 1 + s) == ' ' || mem_load(ptr + 1 + s) == '\t' || mem_load(ptr + 1 + s) == '\r') max 64 {
     s += 1;
@@ -390,7 +390,7 @@ fn md_parse_table_row(scratch: i64, ptr: i64, ls: i64, le: i64) -[Mem]-> i64 {
   clamp_i64(c, 1, MD_MAX_TBL_COLS)
 }
 
-fn md_measure_inline_span(ptr: i64, cs: i64, ce: i64, sz: i64, base_style: i64) -[Mem]-> i64 {
+pub fn md_measure_inline_span(ptr: i64, cs: i64, ce: i64, sz: i64, base_style: i64) -[Mem]-> i64 {
   let code_sz = clamp_i64(sz - 1, 10, 38);
   let mut w = 0;
   let mut k = cs;
@@ -420,7 +420,7 @@ fn md_measure_inline_span(ptr: i64, cs: i64, ce: i64, sz: i64, base_style: i64) 
   w
 }
 
-fn md_render_table_row(
+pub fn md_render_table_row(
   scratch: i64,
   mode: i64, mx: i64, my: i64,
   x: i64, cy: i64, tbl_w: i64, tbl_cols: i64,
@@ -525,7 +525,7 @@ fn md_render_table_row(
   MdStep { cy: cy + row_h, hit_found: hit_found, hit_idx: hit_idx }
 }
 
-fn md_layout_table(
+pub fn md_layout_table(
   mode: i64, mx: i64, my: i64,
   x: i64, y_start: i64, cur_y: i64, max_w: i64,
   ptr: i64, n: i64, hdr_ls: i64, hdr_le: i64, sep_next_i: i64,
@@ -645,7 +645,7 @@ fn md_layout_table(
   MdTableStep { cy: cy + 8, end_i: tbl_end_i, hit_found: hit_found, hit_idx: hit_idx }
 }
 
-fn md_layout(
+pub fn md_layout(
   mode: i64, mx: i64, my: i64,
   x: i64, y: i64, max_w: i64,
   ptr: i64, max_cap: i64, body_sz: i64, line_h: i64,
@@ -880,25 +880,25 @@ fn md_layout(
   }
 }
 
-fn md_measure_h(buf_ptr: i64, max_cap: i64, max_w: i64, body_sz: i64, line_h: i64, th: i64) -[Mem]-> i64 {
+pub fn md_measure_h(buf_ptr: i64, max_cap: i64, max_w: i64, body_sz: i64, line_h: i64, th: i64) -[Mem]-> i64 {
   md_layout(0, 0, 0, 0, 0, max_w, buf_ptr, max_cap, body_sz, line_h, th, 0, 0, 0, 0, 0)
 }
 
-fn md_hit(
+pub fn md_hit(
   buf_ptr: i64, max_cap: i64, mx: i64, my: i64, x: i64, y: i64, max_w: i64,
   body_sz: i64, line_h: i64, th: i64
 ) -[Mem]-> i64 {
   md_layout(1, mx, my, x, y, max_w, buf_ptr, max_cap, body_sz, line_h, th, 0, 0, 0, 0, 0)
 }
 
-fn md_draw(
+pub fn md_draw(
   buf_ptr: i64, max_cap: i64, x: i64, y: i64, max_w: i64,
   body_sz: i64, line_h: i64, th: i64, clip: i64, vis_y0: i64, vis_y1: i64
 ) -[Mem]-> i64 {
   md_layout(2, 0, 0, x, y, max_w, buf_ptr, max_cap, body_sz, line_h, th, clip, vis_y0, vis_y1, 0, 0)
 }
 
-fn md_draw_sel(
+pub fn md_draw_sel(
   buf_ptr: i64, max_cap: i64, x: i64, y: i64, max_w: i64,
   body_sz: i64, line_h: i64, th: i64, clip: i64, vis_y0: i64, vis_y1: i64,
   sel_lo_i: i64, sel_hi_i: i64

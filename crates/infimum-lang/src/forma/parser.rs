@@ -41,10 +41,11 @@ fn expect_tok<P: FormaHostParser>(
     }
 }
 
-/// Parse a top-level `[export] forma Name(...) [req/ens]* [-[Eff]-> Ret] [req/ens]* { <FormaNode> }`.
+/// Parse a top-level `[pub] [export] forma Name(...) [req/ens]* [-[Eff]-> Ret] [req/ens]* { <FormaNode> }`.
 pub(crate) fn parse_forma_def<P: FormaHostParser>(
     p: &mut P,
     exported: bool,
+    is_pub: bool,
 ) -> Result<FormaDef<P::Expr>, InfimumDiagnostic> {
     let forma_span = expect_tok(p, &TokenKind::Forma, "'forma'")?;
     let name = p.expect_ident("forma component name")?;
@@ -77,6 +78,7 @@ pub(crate) fn parse_forma_def<P: FormaHostParser>(
     Ok(FormaDef {
         name,
         exported,
+        is_pub,
         params,
         effects,
         ret_type,
@@ -193,7 +195,12 @@ fn parse_forma_node<P: FormaHostParser>(p: &mut P) -> Result<FormaNode<P::Expr>,
         });
     }
 
-    let kind_name = p.expect_ident("Forma node kind (Box, Col, Row, ..., or custom forma component)")?;
+    let mut kind_name = p.expect_ident("Forma node kind (Box, Col, Row, ..., or custom forma component)")?;
+    if p.peek().kind == TokenKind::ColonColon {
+        p.advance();
+        let sub = p.expect_ident("Forma component name after '::'")?;
+        kind_name = format!("{kind_name}::{sub}");
+    }
     let Some(kind) = FormaNodeKind::from_ident(&kind_name) else {
         // Custom nested `forma` component call: `ScoreCard("Вы", score)`
         let mut args = Vec::new();
@@ -361,11 +368,21 @@ fn parse_forma_props<P: FormaHostParser>(
             "on_click" => props.on_click = Some(p.parse_expr()?),
             "visible" => props.visible = Some(p.parse_expr()?),
             "render" => {
-                let fn_name = p.expect_ident("Slot render function name")?;
+                let mut fn_name = p.expect_ident("Slot render function name")?;
+                if p.peek().kind == TokenKind::ColonColon {
+                    p.advance();
+                    let sub = p.expect_ident("Slot render function name after '::'")?;
+                    fn_name = format!("{fn_name}::{sub}");
+                }
                 props.render = Some(fn_name);
             }
             "on_wheel" => {
-                let fn_name = p.expect_ident("Slot on_wheel function name")?;
+                let mut fn_name = p.expect_ident("Slot on_wheel function name")?;
+                if p.peek().kind == TokenKind::ColonColon {
+                    p.advance();
+                    let sub = p.expect_ident("Slot on_wheel function name after '::'")?;
+                    fn_name = format!("{fn_name}::{sub}");
+                }
                 props.on_wheel = Some(fn_name);
             }
             "text" => props.text = Some(p.parse_expr()?),

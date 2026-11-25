@@ -7,60 +7,60 @@
 use "std/math.ifm";
 use "std/color.ifm";
 
-const THEME_DARK: i64 = 0;
-const THEME_LIGHT: i64 = 1;
+pub const THEME_DARK: i64 = 0;
+pub const THEME_LIGHT: i64 = 1;
 
-fn theme_scale(px: i64, scale_pct: i64) -> i64 {
+pub fn theme_scale(px: i64, scale_pct: i64) -> i64 {
   let sc = clamp_i64(scale_pct, 80, 160);
   (px * sc + 50) / 100
 }
 
-fn theme_bg(th: i64) -> i64 {
+pub fn theme_bg(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(244, 246, 251, 255) } else { pack_rgba(14, 17, 24, 255) }
 }
 
-fn theme_side(th: i64) -> i64 {
+pub fn theme_side(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(235, 239, 247, 255) } else { pack_rgba(19, 23, 33, 255) }
 }
 
-fn theme_surf(th: i64) -> i64 {
+pub fn theme_surf(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(255, 255, 255, 255) } else { pack_rgba(26, 31, 44, 255) }
 }
 
-fn theme_surf2(th: i64) -> i64 {
+pub fn theme_surf2(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(226, 232, 242, 255) } else { pack_rgba(36, 43, 60, 255) }
 }
 
-fn theme_border(th: i64) -> i64 {
+pub fn theme_border(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(203, 213, 225, 255) } else { pack_rgba(49, 58, 79, 255) }
 }
 
-fn theme_text(th: i64) -> i64 {
+pub fn theme_text(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(15, 23, 42, 255) } else { pack_rgba(236, 241, 249, 255) }
 }
 
-fn theme_muted(th: i64) -> i64 {
+pub fn theme_muted(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(100, 116, 139, 255) } else { pack_rgba(148, 163, 184, 255) }
 }
 
-fn theme_code_bg(th: i64) -> i64 {
+pub fn theme_code_bg(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(241, 245, 249, 255) } else { pack_rgba(12, 15, 22, 255) }
 }
 
-fn theme_heading(th: i64) -> i64 {
+pub fn theme_heading(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(12, 18, 32, 255) } else { pack_rgba(248, 250, 255, 255) }
 }
 
-fn theme_code_pill(th: i64) -> i64 {
+pub fn theme_code_pill(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(224, 232, 244, 255) } else { pack_rgba(33, 39, 52, 255) }
 }
 
-fn theme_code_text(th: i64) -> i64 {
+pub fn theme_code_text(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(28, 66, 130, 255) } else { pack_rgba(196, 218, 255, 255) }
 }
 
-fn theme_accent() -> i64 { pack_rgba(91, 155, 255, 255) }
-fn theme_accent_hover() -> i64 { pack_rgba(118, 173, 255, 255) }
-fn theme_success() -> i64 { pack_rgba(52, 211, 153, 255) }
-fn theme_warn() -> i64 { pack_rgba(251, 191, 36, 255) }
-fn theme_danger() -> i64 { pack_rgba(248, 113, 113, 255) }
+pub fn theme_accent() -> i64 { pack_rgba(91, 155, 255, 255) }
+pub fn theme_accent_hover() -> i64 { pack_rgba(118, 173, 255, 255) }
+pub fn theme_success() -> i64 { pack_rgba(52, 211, 153, 255) }
+pub fn theme_warn() -> i64 { pack_rgba(251, 191, 36, 255) }
+pub fn theme_danger() -> i64 { pack_rgba(248, 113, 113, 255) }
