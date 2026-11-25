@@ -5,31 +5,31 @@
 // 3D Drone AI, Central Reactor Core & Self-Destruct Escape Sequence
 
 use "abi.ifm";
-use "maze.ifm";
+use "maze.ifm" as maze;
 
 // --- Pure Telos-Verified Kernels ---
 
-fn clamp_pitch(p: i64) -> i64
+pub fn clamp_pitch(p: i64) -> i64
   ens result >= -240 && result <= 240
 {
   if p < -240 { -240 } else if p > 240 { 240 } else { p }
 }
 
-fn clamp_stat(v: i64, hi: i64) -> i64
+pub fn clamp_stat(v: i64, hi: i64) -> i64
   req hi >= 0
   ens result >= 0 && result <= hi
 {
   if v < 0 { 0 } else if v > hi { hi } else { v }
 }
 
-fn compute_ceres_score(kills: i64, reactor_dead: i64, shield_left: i64, escape_secs: i64) -> i64
+pub fn compute_ceres_score(kills: i64, reactor_dead: i64, shield_left: i64, escape_secs: i64) -> i64
   req kills >= 0 && kills <= 18 && reactor_dead >= 0 && reactor_dead <= 1 && shield_left >= 0 && shield_left <= 100 && escape_secs >= 0 && escape_secs <= 60
   ens result >= 0
 {
   kills * 250 + reactor_dead * 1500 + shield_left * 10 + escape_secs * 50
 }
 
-fn ship_forward_vec(yaw: i64, pitch: i64) -> Vec3 {
+pub fn ship_forward_vec(yaw: i64, pitch: i64) -> Vec3 {
   let p_ang = (pitch * 2 + 4096) & 4095;
   let cp = fixed_cos(p_ang);
   let sp = fixed_sin(p_ang);
@@ -40,12 +40,12 @@ fn ship_forward_vec(yaw: i64, pitch: i64) -> Vec3 {
   }
 }
 
-fn reactor_center_xyz() -[Mem]-> (i64, i64, i64) {
-  room_center_xyz(ROOM_REACTOR)
+pub fn reactor_center_xyz() -[Mem]-> (i64, i64, i64) {
+  maze::room_center_xyz(ROOM_REACTOR)
 }
 
-fn exit_center_xyz() -[Mem]-> (i64, i64, i64) {
-  room_center_xyz(ROOM_START)
+pub fn exit_center_xyz() -[Mem]-> (i64, i64, i64) {
+  maze::room_center_xyz(ROOM_START)
 }
 
 // --- 3D Particles ---
@@ -56,9 +56,9 @@ fn spawn_explosion(wx: i64, wy: i64, wz: i64, count: i64, kind: i64) -[Mem]-> un
   for i in 0..48 {
     if spawned >= lim { break; }
     if GameMem.particles[i].life <= 0 {
-      let r1 = next_rand();
-      let r2 = next_rand();
-      let r3 = next_rand();
+      let r1 = maze::next_rand();
+      let r2 = maze::next_rand();
+      let r3 = maze::next_rand();
       GameMem.particles[i].x = wx;
       GameMem.particles[i].y = wy;
       GameMem.particles[i].z = wz;
@@ -136,8 +136,8 @@ fn drop_pickup_if_free(wx: i64, wy: i64, wz: i64, kind: i64) -[Mem]-> unit {
   }
 }
 
-fn reset_ceres() -[Mem]-> unit {
-  build_ceres_mine();
+pub fn reset_ceres() -[Mem]-> unit {
+  maze::build_ceres_mine();
   GameMem.rng_state = 19950317;
 
   GameMem.tick = 0;
@@ -260,7 +260,7 @@ fn damage_ship(dmg: i64) -[Mem, Gpu]-> unit {
   }
 }
 
-fn damage_reactor(dmg: i64) -[Mem, Gpu]-> unit {
+pub fn damage_reactor(dmg: i64) -[Mem, Gpu]-> unit {
   if GameMem.reactor_hp > 0 && GameMem.phase == GamePhase::Playing {
     let (rx, ry, rz) = reactor_center_xyz();
     let nhp = clamp_stat(GameMem.reactor_hp - dmg, 300);
@@ -299,7 +299,7 @@ fn damage_drone(idx: i64, dmg: i64) -[Mem, Gpu]-> unit {
       let kind = GameMem.drones[i].kind;
       let pit = if kind == DroneKind::Guardian { 68 } else if kind == DroneKind::Vulcan { 86 } else { 115 };
       sfx_play(SFX_MONSTER_DIE, pit, 90);
-      let drop_k = 1 + (next_rand() % 3);
+      let drop_k = 1 + (maze::next_rand() % 3);
       drop_pickup_if_free(dx, dy, dz, drop_k);
     } else {
       GameMem.drones[i].hp = nhp;
@@ -338,7 +338,7 @@ fn find_aim_target() -[Mem]-> (i64, i64, i64, i64, i64) {
         let pz = ez - (sz + fixed_to_int(fwd.z * t_proj));
         let perp = abs_i64(px) + abs_i64(py) + abs_i64(pz);
         let cone = 560 + t_proj / 6;
-        if perp < cone && has_los_3d(sx, sy, sz, ex, ey, ez) {
+        if perp < cone && maze::has_los_3d(sx, sy, sz, ex, ey, ez) {
           best_found = 1;
           best_dist = t_proj;
           best_tx = ex;
@@ -361,7 +361,7 @@ fn find_aim_target() -[Mem]-> (i64, i64, i64, i64, i64) {
       let pz = ez - (sz + fixed_to_int(fwd.z * t_proj));
       let perp = abs_i64(px) + abs_i64(py) + abs_i64(pz);
       let cone = 900 + t_proj / 5;
-      if perp < cone && has_los_3d(sx, sy, sz, ex, ey, ez) {
+      if perp < cone && maze::has_los_3d(sx, sy, sz, ex, ey, ez) {
         best_found = 1;
         best_dist = t_proj;
         best_tx = ex;
@@ -543,7 +543,7 @@ fn step_bolts() -[Mem, Gpu]-> unit {
     GameMem.bolts[i].z = nz;
     GameMem.bolts[i].life = lf - 1;
 
-    if hits_maze_3d(nx, ny, nz, 85) {
+    if maze::hits_maze_3d(nx, ny, nz, 85) {
       GameMem.bolts[i].life = 0;
       if kind == BoltKind::PlayerMissile {
         detonate_missile(nx, ny, nz);
@@ -642,7 +642,7 @@ fn step_drones_and_pickups() -[Mem, Gpu]-> unit {
     let dz = sz - ez;
     let dist = abs_i64(dx) + abs_i64(dy) + abs_i64(dz);
 
-    if dist < 13500 && has_los_3d(ex, ey, ez, sx, sy, sz) {
+    if dist < 13500 && maze::has_los_3d(ex, ey, ez, sx, sy, sz) {
       let ax = abs_i64(dx);
       let az = abs_i64(dz);
       let target_yaw = if az >= ax {
@@ -670,13 +670,13 @@ fn step_drones_and_pickups() -[Mem, Gpu]-> unit {
       mvy += (cos_1024(tick * 32 + i * 310) * 20) / 1024;
 
       let nx = ex + mvx;
-      if !hits_maze_3d(nx, ey, ez, 480) { GameMem.drones[i].x = nx; }
+      if !maze::hits_maze_3d(nx, ey, ez, 480) { GameMem.drones[i].x = nx; }
       let cur_x = GameMem.drones[i].x;
       let ny = ey + mvy;
-      if !hits_maze_3d(cur_x, ny, ez, 480) { GameMem.drones[i].y = ny; }
+      if !maze::hits_maze_3d(cur_x, ny, ez, 480) { GameMem.drones[i].y = ny; }
       let cur_y = GameMem.drones[i].y;
       let nz = ez + mvz;
-      if !hits_maze_3d(cur_x, cur_y, nz, 480) { GameMem.drones[i].z = nz; }
+      if !maze::hits_maze_3d(cur_x, cur_y, nz, 480) { GameMem.drones[i].z = nz; }
 
       let cd = GameMem.drones[i].cd - 1;
       if cd <= 0 {
@@ -692,7 +692,7 @@ fn step_drones_and_pickups() -[Mem, Gpu]-> unit {
       }
     } else {
       let hy = GameMem.drones[i].home_y + (sin_1024(tick * 18 + i * 300) * 160) / 1024;
-      if !hits_maze_3d(ex, hy, ez, 480) {
+      if !maze::hits_maze_3d(ex, hy, ez, 480) {
         GameMem.drones[i].y = hy;
       }
       GameMem.drones[i].yaw = (GameMem.drones[i].yaw + 14) & 4095;
@@ -702,7 +702,7 @@ fn step_drones_and_pickups() -[Mem, Gpu]-> unit {
   if GameMem.reactor_hp > 0 && (tick % 64) == 0 {
     let (rx, ry, rz) = reactor_center_xyz();
     let rdist = abs_i64(sx - rx) + abs_i64(sy - ry) + abs_i64(sz - rz);
-    if rdist < 7200 && has_los_3d(rx, ry, rz, sx, sy, sz) {
+    if rdist < 7200 && maze::has_los_3d(rx, ry, rz, sx, sy, sz) {
       let bvx = ((sx - rx) * 245) / (rdist + 1);
       let bvy = ((sy - ry) * 245) / (rdist + 1);
       let bvz = ((sz - rz) * 245) / (rdist + 1);
@@ -714,7 +714,7 @@ fn step_drones_and_pickups() -[Mem, Gpu]-> unit {
 
 // --- Main 6-DOF Simulation Tick ---
 
-fn step_ceres_sim(
+pub fn step_ceres_sim(
   fwd_in: i64, strafe_in: i64, vert_in: i64,
   turn_yaw: i64, turn_pitch: i64,
   fire_laser: i64, fire_missile: i64
@@ -767,21 +767,21 @@ fn step_ceres_sim(
 
     // Independent X, Y, Z 3D wall-sliding collision through chambers & octagonal tubes
     let nx = px + fixed_to_int(fvx);
-    if !hits_maze_3d(nx, py, pz, 420) {
+    if !maze::hits_maze_3d(nx, py, pz, 420) {
       px = nx;
     } else {
       fvx = -fvx * 0.15;
     }
 
     let ny = py + fixed_to_int(fvy);
-    if !hits_maze_3d(px, ny, pz, 420) {
+    if !maze::hits_maze_3d(px, ny, pz, 420) {
       py = ny;
     } else {
       fvy = -fvy * 0.15;
     }
 
     let nz = pz + fixed_to_int(fvz);
-    if !hits_maze_3d(px, py, nz, 420) {
+    if !maze::hits_maze_3d(px, py, nz, 420) {
       pz = nz;
     } else {
       fvz = -fvz * 0.15;
@@ -835,7 +835,7 @@ fn step_ceres_sim(
           let spx = px + (nx * overlap * ship_share) / 100000;
           let spy = py + (ny * overlap * ship_share) / 100000;
           let spz = pz + (nz * overlap * ship_share) / 100000;
-          if !hits_maze_3d(spx, spy, spz, 420) {
+          if !maze::hits_maze_3d(spx, spy, spz, 420) {
             px = spx;
             py = spy;
             pz = spz;
@@ -844,7 +844,7 @@ fn step_ceres_sim(
           let dpx = ex - (nx * (overlap + 140) * drone_share) / 100000;
           let dpy = ey - (ny * (overlap + 140) * drone_share) / 100000;
           let dpz = ez - (nz * (overlap + 140) * drone_share) / 100000;
-          if !hits_maze_3d(dpx, dpy, dpz, 480) {
+          if !maze::hits_maze_3d(dpx, dpy, dpz, 480) {
             GameMem.drones[d].x = dpx;
             GameMem.drones[d].y = dpy;
             GameMem.drones[d].z = dpz;

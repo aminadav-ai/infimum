@@ -8,20 +8,20 @@ use "abi.ifm";
 
 // --- Layer 1: Z3-Verified Pure Telos Kernels ---
 
-fn valid_coord(c: i64) -> bool
+pub fn valid_coord(c: i64) -> bool
   ens result == (c >= 0 && c < 9)
 {
   c >= 0 && c < 9
 }
 
-fn cell_index(row: i64, col: i64) -> i64
+pub fn cell_index(row: i64, col: i64) -> i64
   req row >= 0 && row < 9 && col >= 0 && col < 9
   ens result >= 0 && result < 81
 {
   row * 9 + col
 }
 
-fn compute_line_points(cleared: i64) -> i64
+pub fn compute_line_points(cleared: i64) -> i64
   req cleared >= 5 && cleared <= 81
   ens result >= 10 && result <= 15000
 {
@@ -31,7 +31,7 @@ fn compute_line_points(cleared: i64) -> i64
 
 // --- Deterministic PRNG & Board Helpers ---
 
-fn next_rand() -[Mem]-> i64 {
+pub fn next_rand() -[Mem]-> i64 {
   let s = GameMem.rng_state;
   let nxt = (s * 1103515245 + 12345) & 2147483647;
   let safe = if nxt == 0 { 1357911 } else { nxt };
@@ -39,20 +39,20 @@ fn next_rand() -[Mem]-> i64 {
   safe
 }
 
-fn rand_color() -[Mem]-> i64
+pub fn rand_color() -[Mem]-> i64
   ens result >= 1 && result <= 7
 {
   let r = next_rand();
   clamp_i64(1 + (r - (r / 7) * 7), 1, 7)
 }
 
-fn roll_next_preview() -[Mem]-> unit {
+pub fn roll_next_preview() -[Mem]-> unit {
   GameMem.next_colors[0] = rand_color();
   GameMem.next_colors[1] = rand_color();
   GameMem.next_colors[2] = rand_color();
 }
 
-fn count_balls() -[Mem]-> i64 {
+pub fn count_balls() -[Mem]-> i64 {
   let mut cnt = 0;
   for i in 0..81 {
     if GameMem.cells[i].color > 0 { cnt += 1; }
@@ -62,7 +62,7 @@ fn count_balls() -[Mem]-> i64 {
   safe_cnt
 }
 
-fn save_turn_snapshot(slot: i64) -[Mem]-> unit {
+pub fn save_turn_snapshot(slot: i64) -[Mem]-> unit {
   let s = clamp_i64(slot, 0, 127);
   GameMem.snap_meta[s].score = GameMem.score;
   GameMem.snap_meta[s].turn_num = GameMem.turn_num;
@@ -80,7 +80,7 @@ fn save_turn_snapshot(slot: i64) -[Mem]-> unit {
   }
 }
 
-fn rewind_to_turn(turn_idx: i64) -[Mem, Gpu]-> unit {
+pub fn rewind_to_turn(turn_idx: i64) -[Mem, Gpu]-> unit {
   let max_t = clamp_i64(GameMem.max_saved_turn, 0, 127);
   let s = clamp_i64(turn_idx, 0, max_t);
 
@@ -108,7 +108,7 @@ fn rewind_to_turn(turn_idx: i64) -[Mem, Gpu]-> unit {
 
 // --- 4-Direction Line Detection (5+ in a row) ---
 
-fn mark_direction(sr: i64, sc: i64, dr: i64, dc: i64) -[Mem]-> unit {
+pub fn mark_direction(sr: i64, sc: i64, dr: i64, dc: i64) -[Mem]-> unit {
   if valid_coord(sr) && valid_coord(sc) {
     let start_idx = cell_index(sr, sc);
     let col_id = GameMem.cells[start_idx].color;
@@ -144,7 +144,7 @@ fn mark_direction(sr: i64, sc: i64, dr: i64, dc: i64) -[Mem]-> unit {
   }
 }
 
-fn find_marked_lines() -[Mem]-> i64 {
+pub fn find_marked_lines() -[Mem]-> i64 {
   for i in 0..81 {
     GameMem.cells[i].clear_mark = 0;
   }
@@ -163,7 +163,7 @@ fn find_marked_lines() -[Mem]-> i64 {
   marked
 }
 
-fn apply_marked_clear() -[Mem]-> i64 {
+pub fn apply_marked_clear() -[Mem]-> i64 {
   let mut cleared = 0;
   for j in 0..81 {
     if GameMem.cells[j].clear_mark == 1 {
@@ -188,7 +188,7 @@ fn apply_marked_clear() -[Mem]-> i64 {
 
 // --- BFS Shortest Path Reconstruction ---
 
-fn bfs_build_path(src_idx: i64, dst_idx: i64) -[Mem]-> bool {
+pub fn bfs_build_path(src_idx: i64, dst_idx: i64) -[Mem]-> bool {
   if src_idx == dst_idx || GameMem.cells[dst_idx].color != 0 {
     false
   } else {
@@ -275,7 +275,7 @@ fn bfs_build_path(src_idx: i64, dst_idx: i64) -[Mem]-> bool {
 
 // --- Spawning, Turn Progression & Game Lifecycle ---
 
-fn spawn_one_ball(color_id: i64) -[Mem]-> bool {
+pub fn spawn_one_ball(color_id: i64) -[Mem]-> bool {
   let mut empty_cnt = 0;
   for i in 0..81 {
     if GameMem.cells[i].color == 0 {
@@ -294,7 +294,7 @@ fn spawn_one_ball(color_id: i64) -[Mem]-> bool {
   }
 }
 
-fn finalize_turn_and_save() -[Mem, Gpu]-> unit {
+pub fn finalize_turn_and_save() -[Mem, Gpu]-> unit {
   if count_balls() >= 81 {
     GameMem.game_over = 1;
     GameMem.status_code = 3;
@@ -308,7 +308,7 @@ fn finalize_turn_and_save() -[Mem, Gpu]-> unit {
   save_turn_snapshot(next_turn);
 }
 
-fn spawn_preview_triplet() -[Mem, Gpu]-> unit {
+pub fn spawn_preview_triplet() -[Mem, Gpu]-> unit {
   let _ = spawn_one_ball(GameMem.next_colors[0]);
   let _ = spawn_one_ball(GameMem.next_colors[1]);
   let _ = spawn_one_ball(GameMem.next_colors[2]);
@@ -325,7 +325,7 @@ fn spawn_preview_triplet() -[Mem, Gpu]-> unit {
   }
 }
 
-fn reset_game(seed: i64) -[Mem, Gpu]-> unit {
+pub fn reset_game(seed: i64) -[Mem, Gpu]-> unit {
   let prev_best = GameMem.high_score;
   let clean_seed = if seed <= 0 { 981998 } else { seed & 2147483647 };
   GameMem.score = 0;
@@ -362,7 +362,7 @@ fn reset_game(seed: i64) -[Mem, Gpu]-> unit {
   save_turn_snapshot(0);
 }
 
-fn handle_cell_click(row: i64, col: i64) -[Mem, Gpu]-> unit {
+pub fn handle_cell_click(row: i64, col: i64) -[Mem, Gpu]-> unit {
   if GameMem.anim.mode == AnimMode::Idle && GameMem.game_over == 0 && valid_coord(row) && valid_coord(col) {
     GameMem.anim.blocked_idx = -1;
     GameMem.anim.blocked_timer = 0;
@@ -400,7 +400,7 @@ fn handle_cell_click(row: i64, col: i64) -[Mem, Gpu]-> unit {
   }
 }
 
-fn tick_animations() -[Mem, Gpu]-> unit {
+pub fn tick_animations() -[Mem, Gpu]-> unit {
   GameMem.anim_tick = (GameMem.anim_tick + 1) & 4095;
   if GameMem.anim.blocked_timer > 0 {
     GameMem.anim.blocked_timer -= 1;

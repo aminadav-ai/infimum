@@ -3,31 +3,31 @@
 //
 // INFIMUM COLOR LINES 98 — Shared Typed ABI, Structs & Memory Layout (Z3-Verified)
 
-use "std/prelude.ifm";
+pub use "std/prelude.ifm";
 
-const BOARD_N: i64 = 9;
-const BOARD_CELLS: i64 = 81;
-const MAX_TURNS: i64 = 128;
+pub const BOARD_N: i64 = 9;
+pub const BOARD_CELLS: i64 = 81;
+pub const MAX_TURNS: i64 = 128;
 
-enum AnimMode {
+pub enum AnimMode {
   Idle = 0,
   Hopping = 1,
   Exploding = 2,
 }
 
-enum CursorKind {
+pub enum CursorKind {
   Default = 0,
   Pointer = 1,
 }
 
-struct Cell {
+pub struct Cell {
   color: word inv 0..=7,
   clear_mark: word,
   bfs_vis: word,
   bfs_par: word,
 }
 
-struct AnimState {
+pub struct AnimState {
   mode: word inv 0..=2,
   hop_color: word inv 0..=7,
   path_len: word,
@@ -40,7 +40,7 @@ struct AnimState {
   last_clear_timer: word,
 }
 
-struct SnapMeta {
+pub struct SnapMeta {
   score: word,
   turn_num: word,
   game_over: word inv 0..=1,
@@ -51,7 +51,7 @@ struct SnapMeta {
 }
 
 // Auto-placed non-overlapping linear memory layout (compiler safely places at word 705536+)
-layout GameMem {
+pub layout GameMem {
   score: word,
   high_score: word,
   turn_num: word,

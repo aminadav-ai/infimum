@@ -11,8 +11,9 @@ use "primitives.ifm";
 use "theme.ifm";
 use "icons.ifm";
 use "text_buf.ifm";
+use "daemon_client.ifm";
 
-enum SetAct {
+pub enum SetAct {
   None = 0,
   Close = 301,
   Theme = 302,
@@ -26,7 +27,7 @@ enum SetAct {
   TestKey = 321,
 }
 
-enum CtxAct {
+pub enum CtxAct {
   None = 0,
   Copy = 401,
   Cut = 402,
@@ -34,7 +35,7 @@ enum CtxAct {
   SelectAll = 404,
 }
 
-enum DelAct {
+pub enum DelAct {
   None = 0,
   Cancel = 501,
   Confirm = 502,
@@ -42,13 +43,13 @@ enum DelAct {
 
 // --- Settings Modal Slot Renderers (only dynamic numeric/icon slots; static labels use Forma 2.0 Text!) ---
 
-fn draw_settings_scale_val(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_settings_scale_val(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let scale = StudioMem.font_scale_pct;
   let s_l = 15;
   ui_fmt(rx + 2, ry + (rh - s_l) / 2, "{scale}%", s_l, 1, col_accent(), clip_id);
 }
 
-fn draw_settings_row_currency(rx: i64, ry: i64, _rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_settings_row_currency(rx: i64, ry: i64, _rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let s_l = sf(14);
   let s_s = sf(12);
@@ -58,7 +59,7 @@ fn draw_settings_row_currency(rx: i64, ry: i64, _rw: i64, _rh: i64, clip_id: i64
   emit_cost_in_currency(rx + 2 + cw, ry + s_l + 6, StudioMem.total_milli_ils, cur_id, s_s, 2, col_emerald(), clip_id);
 }
 
-fn draw_settings_cur_btn(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_settings_cur_btn(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let s_l = sf(14);
   let cur_id = StudioMem.currency_id;
@@ -66,7 +67,7 @@ fn draw_settings_cur_btn(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem
   icon_chevron_down(rx + rw - 14, ry + rh / 2 + 1, s_l, if StudioMem.cur_dd_open == 1 { col_accent() } else { col_muted(th) }, clip_id);
 }
 
-forma CurOpt(
+pub forma CurOpt(
   w: i64, h: i64, lbl: str, is_sel: bool, act: i64,
   bg_surf: i64, bg_surf2: i64, col_txt: i64, col_acc: i64, col_ok: i64, s_l: i64
 )
@@ -81,7 +82,7 @@ forma CurOpt(
   }
 }
 
-fn draw_settings_api_keys_header(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_settings_api_keys_header(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let s_l = sf(13);
   let s_s = sf(12);
@@ -137,7 +138,7 @@ fn draw_settings_api_keys_header(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i
   }
 }
 
-fn draw_settings_api_keys_status(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_settings_api_keys_status(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let s_s = sf(12);
   let sel_p = clamp_i64(StudioMem.keys_sel_prov, 0, 6);
@@ -166,7 +167,7 @@ fn draw_settings_api_keys_status(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i
   }
 }
 
-forma SettingsModal(
+pub forma SettingsModal(
   vw: i64,
   vh: i64,
   mx0: i64,
@@ -284,7 +285,7 @@ forma SettingsModal(
   }
 }
 
-fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
+pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
   if StudioMem.settings_open == 1 {
     let th = StudioMem.theme;
     // Keep the Settings modal geometry invariant to `font_scale_pct` so dragging
@@ -390,7 +391,7 @@ fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
 
 // --- Confirm Delete Modal (Infimum.Forma 2.0 — for Project Folders & Individual Dialogs) ---
 
-forma ConfirmDeleteModal(
+pub forma ConfirmDeleteModal(
   vw: i64, vh: i64, mx0: i64, my0: i64, mw: i64, mh: i64,
   bw: i64, bh: i64, s_h: i64, s_l: i64,
   title: str, desc: str,
@@ -420,7 +421,7 @@ forma ConfirmDeleteModal(
   }
 }
 
-fn render_confirm_delete_modal(w: i64, h: i64) -[Mem, Net]-> unit {
+pub fn render_confirm_delete_modal(w: i64, h: i64) -[Mem, Net]-> unit {
   let kind = StudioMem.confirm_del_kind;
   if kind == 1 || kind == 2 {
     let th = StudioMem.theme;
@@ -487,7 +488,7 @@ fn render_confirm_delete_modal(w: i64, h: i64) -[Mem, Net]-> unit {
 
 // --- Full-Size Image Lightbox Preview Modal ---
 
-fn render_image_preview_modal(w: i64, h: i64, key_special: i64) -[Mem]-> unit {
+pub fn render_image_preview_modal(w: i64, h: i64, key_special: i64) -[Mem]-> unit {
   let raw_idx = StudioMem.img_preview_idx;
   if raw_idx >= 0 {
     let start = clamp_i64(StudioMem.img_preview_start, 0, 15);
@@ -602,7 +603,7 @@ fn render_image_preview_modal(w: i64, h: i64, key_special: i64) -[Mem]-> unit {
 
 // --- Right-Click Context Menu Overlay (Infimum.Forma 2.0 — 0 Slot callbacks!) ---
 
-forma ContextMenuOverlay(cm_x: i64, cm_y: i64, bg_surf: i64, bg_surf2: i64, col_brd: i64, col_txt: i64)
+pub forma ContextMenuOverlay(cm_x: i64, cm_y: i64, bg_surf: i64, bg_surf2: i64, col_brd: i64, col_txt: i64)
   -[Mem]-> i64
 {
   Overlay(x: cm_x, y: cm_y, w: 200, h: 140, radius: 10, bg: bg_surf, border: 1, border_col: col_brd, shadow: 14, pad_x: 4, pad_y: 6, visible: true) {
@@ -623,7 +624,7 @@ forma ContextMenuOverlay(cm_x: i64, cm_y: i64, bg_surf: i64, bg_surf2: i64, col_
   }
 }
 
-fn render_context_menu(w: i64, h: i64, key_special: i64) -[Mem]-> unit {
+pub fn render_context_menu(w: i64, h: i64, key_special: i64) -[Mem]-> unit {
   if key_special == KeySpecial::RightClick && StudioMem.settings_open == 0 {
     StudioMem.ctx_open = 1;
     StudioMem.ctx_x = clamp_i64(StudioMem.frame_mx, 8, clamp_i64(w - 210, 8, 4096));

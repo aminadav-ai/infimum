@@ -14,25 +14,25 @@ use "logic.ifm";
 // Camera tracks 32% of Lion's position so the board stays close, large & readable!
 // FOV = 54 deg (tan(27 deg) = 0.5095 -> fl_y = vh * 0.981).
 // Pitch = -114 (-40.08 deg -> cos_p = 0.7656, sin_p = 0.6436).
-const CAM_FL_SCALE: fixed = 0.981;
-const CAM_COS_P: fixed = 0.7656;
-const CAM_SIN_P: fixed = 0.6436;
+pub const CAM_FL_SCALE: fixed = 0.981;
+pub const CAM_COS_P: fixed = 0.7656;
+pub const CAM_SIN_P: fixed = 0.6436;
 
-fn herd_cam_x() -[Mem]-> i64 {
+pub fn herd_cam_x() -[Mem]-> i64 {
   clamp_i64(((HerdMem.lion_x - 512) * 32) / 10, -1900, 1900)
 }
 
-fn herd_cam_y() -> i64 { 6300 }
+pub fn herd_cam_y() -> i64 { 6300 }
 
-fn herd_cam_z() -[Mem]-> i64 {
+pub fn herd_cam_z() -[Mem]-> i64 {
   7400 + clamp_i64(((HerdMem.lion_y - 512) * 30) / 10, -1600, 1600)
 }
 
-fn arena_wx(ax: i64) -> i64 { (ax - 512) * 10 }
-fn arena_wz(ay: i64) -> i64 { (ay - 512) * 10 }
+pub fn arena_wx(ax: i64) -> i64 { (ax - 512) * 10 }
+pub fn arena_wz(ay: i64) -> i64 { (ay - 512) * 10 }
 
 // Exact inverse ray-plane intersection from screen (mx, my) onto ground plane Y = 0
-fn screen_to_arena_wz(my: i64, _vw: i64, vh: i64) -[Mem]-> i64 {
+pub fn screen_to_arena_wz(my: i64, _vw: i64, vh: i64) -[Mem]-> i64 {
   let fl = fixed_clamp(fixed(vh) * CAM_FL_SCALE, 320.0, 4096.0);
   let ndy = fixed(vh / 2 - my);
   // Camera looks along fwd = (0, -sin_p, -cos_p), up = (0, cos_p, -sin_p)
@@ -46,7 +46,7 @@ fn screen_to_arena_wz(my: i64, _vw: i64, vh: i64) -[Mem]-> i64 {
   }
 }
 
-fn screen_to_arena_x(mx: i64, my: i64, vw: i64, vh: i64) -[Mem]-> i64 {
+pub fn screen_to_arena_x(mx: i64, my: i64, vw: i64, vh: i64) -[Mem]-> i64 {
   let wz = screen_to_arena_wz(my, vw, vh);
   let fl = clamp_i64(fixed_to_int(fixed(vh) * CAM_FL_SCALE), 320, 4096);
   let dy = fixed(0 - herd_cam_y());
@@ -56,19 +56,19 @@ fn screen_to_arena_x(mx: i64, my: i64, vw: i64, vh: i64) -[Mem]-> i64 {
   clamp_i64(wx / 10 + 512, 36, 988)
 }
 
-fn screen_to_arena_y(my: i64, vw: i64, vh: i64) -[Mem]-> i64 {
+pub fn screen_to_arena_y(my: i64, vw: i64, vh: i64) -[Mem]-> i64 {
   let wz = screen_to_arena_wz(my, vw, vh);
   clamp_i64(wz / 10 + 512, 36, 988)
 }
 
 // Convert logic yaw (0=+X, 256=+Z, 512=-X, 768=-Z) to mesh3d_limb yaw (0..4095, 0=+Z, 1024=+X)
-fn to_mesh_yaw(logic_yaw: i64) -> i64 {
+pub fn to_mesh_yaw(logic_yaw: i64) -> i64 {
   (1024 - logic_yaw * 4 + 8192) & 4095
 }
 
 // --- 3D Sculpted Acacia Tree (1K Bark Trunk + Spreading Branches + Layered Canopy) ---
 
-fn draw_acacia_3d(tx: i64, tz: i64, scale_pct: i64) -[Mem]-> unit {
+pub fn draw_acacia_3d(tx: i64, tz: i64, scale_pct: i64) -[Mem]-> unit {
   let sc = clamp_i64(scale_pct, 75, 135);
   let h = (1450 * sc) / 100;
   let r_tr = (130 * sc) / 100;
@@ -92,7 +92,7 @@ fn draw_acacia_3d(tx: i64, tz: i64, scale_pct: i64) -[Mem]-> unit {
 
 // --- 3D Savanna Boulder Cluster ---
 
-fn draw_boulder_3d(bx: i64, bz: i64, rad: i64, h: i64) -[Mem]-> unit {
+pub fn draw_boulder_3d(bx: i64, bz: i64, rad: i64, h: i64) -[Mem]-> unit {
   let rock_c = pack_rgba(176, 152, 128, 255);
   let rock_d = pack_rgba(148, 128, 108, 255);
   mesh3d_box(0, bx - rad, 0, bz - rad, bx + rad, h, bz + rad, MAT_ROCK, rock_c, 230, 0, 950);
@@ -101,7 +101,7 @@ fn draw_boulder_3d(bx: i64, bz: i64, rad: i64, h: i64) -[Mem]-> unit {
 
 // --- Detailed 14-Part Fluffy 3D Woolly Sheep (1.5x Larger, Animated Legs, Fluffy Fleece, Ears & Face) ---
 
-fn draw_sheep_mesh_3d(idx: i64) -[Mem]-> unit {
+pub fn draw_sheep_mesh_3d(idx: i64) -[Mem]-> unit {
   let i = clamp_i64(idx, 0, 13);
   let sx = arena_wx(HerdMem.sheep[i].x);
   let sz = arena_wz(HerdMem.sheep[i].y);
@@ -158,7 +158,7 @@ fn draw_sheep_mesh_3d(idx: i64) -[Mem]-> unit {
 
 // --- Detailed 24-Part Sculpted 3D Lion Shepherd (Layered Mane, Running Legs, Fangs & Tail) ---
 
-fn draw_lion_mesh_3d() -[Mem]-> unit {
+pub fn draw_lion_mesh_3d() -[Mem]-> unit {
   let lx = arena_wx(HerdMem.lion_x);
   let lz = arena_wz(HerdMem.lion_y);
   let hop = HerdMem.lion_hop;
@@ -241,7 +241,7 @@ fn draw_lion_mesh_3d() -[Mem]-> unit {
 
 // --- Full Frame Renderer (Pass 1: Vulkan 1K Photo-PBR 3D Savanna, Pass 2: Crisp 2D HUD) ---
 
-fn render_herd_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
+pub fn render_herd_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
   req vw >= 560 && vh >= 460
 {
   set_clip_rect(0, 0, 0, vw, vh);

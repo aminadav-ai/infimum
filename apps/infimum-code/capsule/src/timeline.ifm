@@ -8,20 +8,21 @@ use "abi.ifm";
 use "primitives.ifm";
 use "theme.ifm";
 use "icons.ifm";
+use "daemon_client.ifm";
 
-const TL_HEADER_WORDS: i64 = 7;
-const TL_STEP_MIN_WORDS: i64 = 6;
-const TL_MAX_STEPS: i64 = 32;
-const TL_MAX_THOUGHT_CHARS: i64 = 600;
-const TL_MAX_TITLE_CHARS: i64 = 100;
-const TL_MAX_DETAIL_CHARS: i64 = 180;
-const TL_MAX_TAIL_CHARS: i64 = 1000;
-const TL_THOUGHT_MAX_LINES: i64 = 8;
-const TL_THOUGHT_STEP_MAX_LINES: i64 = 14;
-const TL_DETAIL_MAX_LINES: i64 = 2;
-const TL_TAIL_MAX_LINES: i64 = 4;
+pub const TL_HEADER_WORDS: i64 = 7;
+pub const TL_STEP_MIN_WORDS: i64 = 6;
+pub const TL_MAX_STEPS: i64 = 32;
+pub const TL_MAX_THOUGHT_CHARS: i64 = 600;
+pub const TL_MAX_TITLE_CHARS: i64 = 100;
+pub const TL_MAX_DETAIL_CHARS: i64 = 180;
+pub const TL_MAX_TAIL_CHARS: i64 = 1000;
+pub const TL_THOUGHT_MAX_LINES: i64 = 8;
+pub const TL_THOUGHT_STEP_MAX_LINES: i64 = 14;
+pub const TL_DETAIL_MAX_LINES: i64 = 2;
+pub const TL_TAIL_MAX_LINES: i64 = 4;
 
-fn tl_steps_word(n: i64) -> str {
+pub fn tl_steps_word(n: i64) -> str {
   let m100 = n % 100;
   let m10 = n % 10;
   if m100 >= 11 && m100 <= 14 { " действий" }
@@ -30,27 +31,27 @@ fn tl_steps_word(n: i64) -> str {
   else { " действий" }
 }
 
-fn tl_col_amber(th: i64) -> i64 {
+pub fn tl_col_amber(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(180, 120, 12, 255) } else { pack_rgba(234, 179, 8, 255) }
 }
 
-fn tl_col_thought_bg(th: i64) -> i64 {
+pub fn tl_col_thought_bg(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(238, 243, 252, 255) } else { pack_rgba(23, 27, 36, 255) }
 }
 
-fn tl_col_term_bg(th: i64) -> i64 {
+pub fn tl_col_term_bg(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(24, 28, 38, 255) } else { pack_rgba(14, 17, 23, 255) }
 }
 
-fn tl_col_term_text() -> i64 {
+pub fn tl_col_term_text() -> i64 {
   pack_rgba(204, 214, 232, 255)
 }
 
-fn tl_col_kill_bg(th: i64) -> i64 {
+pub fn tl_col_kill_bg(th: i64) -> i64 {
   if th == THEME_LIGHT { pack_rgba(220, 38, 38, 26) } else { pack_rgba(220, 38, 38, 38) }
 }
 
-fn tl_icon_status(cx: i64, cy: i64, status: i64, tick: i64, th: i64, clip: i64) -[Mem]-> unit {
+pub fn tl_icon_status(cx: i64, cy: i64, status: i64, tick: i64, th: i64, clip: i64) -[Mem]-> unit {
   match status {
     STEP_STATUS_RUNNING => {
       let phase = (tick / 12) % 4;
@@ -75,7 +76,7 @@ fn tl_icon_status(cx: i64, cy: i64, status: i64, tick: i64, th: i64, clip: i64) 
   }
 }
 
-fn tl_word_px(ptr: i64, start: i64, total: i64, size: i64, style: i64) -[Mem]-> i64 {
+pub fn tl_word_px(ptr: i64, start: i64, total: i64, size: i64, style: i64) -[Mem]-> i64 {
   let mut w = 0;
   for i in start..total max 64 {
     let ch = mem_load(ptr + 1 + i);
@@ -85,7 +86,7 @@ fn tl_word_px(ptr: i64, start: i64, total: i64, size: i64, style: i64) -[Mem]-> 
   w
 }
 
-fn tl_wrapped_text(
+pub fn tl_wrapped_text(
   draw: bool, x: i64, y: i64, ptr: i64, max_chars: i64, max_w: i64,
   size: i64, line_h: i64, style: i64, rgba: i64, clip: i64,
   max_lines: i64, vis_y0: i64, vis_y1: i64
@@ -151,7 +152,7 @@ fn tl_wrapped_text(
   }
 }
 
-fn tl_emit_clipped_line(
+pub fn tl_emit_clipped_line(
   x: i64, y: i64, ptr: i64, max_chars: i64, max_w: i64,
   size: i64, style: i64, rgba: i64, clip: i64
 ) -[Mem]-> i64 {
@@ -170,7 +171,7 @@ fn tl_emit_clipped_line(
   cx
 }
 
-fn tl_has_content(base: i64) -[Mem]-> bool {
+pub fn tl_has_content(base: i64) -[Mem]-> bool {
   if base <= 0 {
     false
   } else {
@@ -185,7 +186,7 @@ fn tl_has_content(base: i64) -[Mem]-> bool {
   }
 }
 
-fn tl_body_layout(
+pub fn tl_body_layout(
   draw: bool, x: i64, y: i64, w: i64, base: i64,
   th: i64, tick: i64, clip: i64, vis_y0: i64, vis_y1: i64
 ) -[Mem]-> i64 {
@@ -469,7 +470,7 @@ pub fn draw_timeline_card(
   card_h
 }
 
-fn tl_draw_summary_left_slot(rx: i64, ry: i64, _rw: i64, rh: i64, _clip_id: i64) -[Mem]-> unit {
+pub fn tl_draw_summary_left_slot(rx: i64, ry: i64, _rw: i64, rh: i64, _clip_id: i64) -[Mem]-> unit {
   let tl_ptr = StudioMem.tl_bar_ptr;
   let is_exp = StudioMem.tl_bar_exp == 1;
   let hov = StudioMem.tl_bar_hov == 1;
@@ -505,7 +506,7 @@ fn tl_draw_summary_left_slot(rx: i64, ry: i64, _rw: i64, rh: i64, _clip_id: i64)
   }
 }
 
-forma TimelineSummaryBar(
+pub forma TimelineSummaryBar(
   bar_x: i64,
   row_y: i64,
   bar_w: i64,
@@ -526,7 +527,7 @@ forma TimelineSummaryBar(
   }
 }
 
-fn tl_draw_msg_summary_bar(
+pub fn tl_draw_msg_summary_bar(
   bar_x: i64, row_y: i64, bar_w: i64, bar_h: i64, sm_sz: i64,
   tl_ptr: i64, is_exp: bool, hov: bool, th: i64, vis_y0: i64, vis_y1: i64
 ) -[Mem]-> unit {
@@ -544,7 +545,7 @@ fn tl_draw_msg_summary_bar(
   }
 }
 
-fn tl_copy_append_cp(pos: i64, cp: i64) -[Mem]-> i64 {
+pub fn tl_copy_append_cp(pos: i64, cp: i64) -[Mem]-> i64 {
   if pos >= 0 && pos < LARGE_COPY_MAX_CHARS {
     mem_store(StudioMem::copy_mailbox + 1 + pos, cp);
     pos + 1
@@ -553,7 +554,7 @@ fn tl_copy_append_cp(pos: i64, cp: i64) -[Mem]-> i64 {
   }
 }
 
-fn tl_copy_append_buf(pos: i64, ptr: i64, max_len: i64) -[Mem]-> i64 {
+pub fn tl_copy_append_buf(pos: i64, ptr: i64, max_len: i64) -[Mem]-> i64 {
   let n = clamp_i64(mem_load(ptr), 0, max_len);
   let mut p = pos;
   let mut i = 0;
@@ -565,7 +566,7 @@ fn tl_copy_append_buf(pos: i64, ptr: i64, max_len: i64) -[Mem]-> i64 {
   p
 }
 
-fn tl_copy_to_mailbox(tl_ptr: i64) -[Mem]-> unit {
+pub fn tl_copy_to_mailbox(tl_ptr: i64) -[Mem]-> unit {
   let total_w = clamp_i64(mem_load(tl_ptr), 0, LIVE_TIMELINE_MAX_WORDS);
   if total_w >= TL_HEADER_WORDS {
     let mut out_n = 0;

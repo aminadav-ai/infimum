@@ -9,15 +9,16 @@ use "primitives.ifm";
 use "theme.ifm";
 use "icons.ifm";
 use "text_buf.ifm";
+use "daemon_client.ifm";
 
-enum CompAct {
+pub enum CompAct {
   None = 0,
   PickImg = 201,
   ToggleModelDd = 202,
   SendOrStop = 203,
 }
 
-fn remove_attached_image(idx: i64) -[Mem]-> unit {
+pub fn remove_attached_image(idx: i64) -[Mem]-> unit {
   let base = clamp_i64(StudioMem.img_pending_base, 0, 15);
   let cnt = clamp_i64(StudioMem.img_count, 0, 6);
   if idx >= 0 && idx < cnt {
@@ -48,7 +49,7 @@ fn remove_attached_image(idx: i64) -[Mem]-> unit {
   }
 }
 
-fn draw_composer_image_preview(rx: i64, ry: i64, rw: i64, rh: i64, _clip_id: i64) -[Mem]-> unit {
+pub fn draw_composer_image_preview(rx: i64, ry: i64, rw: i64, rh: i64, _clip_id: i64) -[Mem]-> unit {
   let base = clamp_i64(StudioMem.img_pending_base, 0, 15);
   let cnt = clamp_i64(StudioMem.img_count, 0, 6);
   if cnt > 0 && rh >= 40 {
@@ -125,7 +126,7 @@ fn draw_composer_image_preview(rx: i64, ry: i64, rw: i64, rh: i64, _clip_id: i64
   }
 }
 
-fn handle_composer_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
+pub fn handle_composer_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
   let in_max_scroll = clamp_i64(StudioMem.frame_in_max_scroll, 0, 800000);
   if StudioMem.frame_modal_blocked == 0 && StudioMem.model_dd_open == 0 && in_max_scroll > 0 {
     let dy = forma_wheel_dy();
@@ -136,7 +137,7 @@ fn handle_composer_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) 
   }
 }
 
-fn draw_composer_editor(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_composer_editor(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let tsz = sf(15);
   let ui_sz = sf(13);
@@ -271,7 +272,7 @@ fn draw_composer_editor(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]
   }
 }
 
-fn draw_composer_attach_icon(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_composer_attach_icon(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let ui_sz = sf(13);
   let has_img = StudioMem.pasted_img_w > 0 && StudioMem.pasted_img_h > 0;
@@ -283,7 +284,7 @@ fn draw_composer_attach_icon(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -
   ui_icon_image(rx + (rw - img_ic_sz) / 2, ry + (rh - img_ic_sz) / 2, img_ic_sz, col, clip_id);
 }
 
-fn draw_composer_model_chip(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_composer_model_chip(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let ui_sz = sf(13);
   let m_idx = StudioMem.model_idx;
@@ -294,14 +295,14 @@ fn draw_composer_model_chip(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[
   icon_chevron_down(rx + 8 + ml_w + 10, ry + rh / 2 + 1, ui_sz, if dd_open { col_accent() } else { col_muted(th) }, clip_id);
 }
 
-fn draw_composer_cost_pill(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+pub fn draw_composer_cost_pill(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let sm_sz = sf(12);
   let cur_id = clamp_i64(StudioMem.currency_id, 0, 2);
   emit_cost_in_currency(rx + 10, ry + (rh - sm_sz) / 2, StudioMem.total_milli_ils, cur_id, sm_sz, 2, col_muted(th), clip_id);
 }
 
-fn provider_menu_label(p: i64) -> str {
+pub fn provider_menu_label(p: i64) -> str {
   match p {
     0 => "Google Gemini (7)",
     1 => "OpenAI (3)",
@@ -313,7 +314,7 @@ fn provider_menu_label(p: i64) -> str {
   }
 }
 
-fn provider_model_count(p: i64) -> i64 {
+pub fn provider_model_count(p: i64) -> i64 {
   match p {
     0 => 7,
     1 => 3,
@@ -323,7 +324,7 @@ fn provider_model_count(p: i64) -> i64 {
   }
 }
 
-fn provider_model_at(p: i64, idx: i64) -> i64 {
+pub fn provider_model_at(p: i64, idx: i64) -> i64 {
   if p == 0 {
     match idx {
       0 => ModelId::Gemini4Neon,
@@ -361,7 +362,7 @@ fn provider_model_at(p: i64, idx: i64) -> i64 {
   }
 }
 
-fn render_model_provider_menus(
+pub fn render_model_provider_menus(
   dd_x: i64, dd_y: i64, dd_w: i64, dd_rh: i64, h: i64, just_opened: bool
 ) -[Mem, Net]-> unit {
   let th = StudioMem.theme;
@@ -459,7 +460,7 @@ fn render_model_provider_menus(
   }
 }
 
-forma ComposerCard(
+pub forma ComposerCard(
   col_x: i64,
   box_y: i64,
   col_w: i64,
@@ -507,7 +508,7 @@ forma ComposerCard(
   }
 }
 
-fn render_composer(
+pub fn render_composer(
   col_x: i64, box_y: i64, col_w: i64, box_h: i64,
   img_bar_h: i64, h: i64, key_special: i64
 ) -[Mem, Net]-> unit {

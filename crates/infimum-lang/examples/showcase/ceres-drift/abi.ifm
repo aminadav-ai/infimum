@@ -4,96 +4,96 @@
 // CERES DRIFT — Shared Typed ABI, Fixed Room-and-Tube Constants & Auto-Placed Layout
 // True 6-DOF Zero-Gravity 3D Room-and-Tube Spaceship Shooter in Infimum Lang (Dark Sci-Fi 1K PBR Edition)
 
-use "std/prelude.ifm";
-use "std/mesh3d.ifm";
+pub use "std/prelude.ifm";
+pub use "std/mesh3d.ifm";
 
 // 1K CC0 Poly Haven Dark Sci-Fi PBR Material Slots (bound via textures.json)
-const PBR_CEILING_STEEL: i64 = 0;   // rusty_metal_03 (dark weathered industrial steel plates for ceilings & bulkheads)
-const PBR_TUBE_CORR: i64 = 1;       // corrugated_iron_03 (corrugated industrial steel for tubes, columns & airlock ribs)
-const PBR_STATION_WALL: i64 = 2;    // blue_metal_plate (dark scratched metallic armor plates for station walls)
-const PBR_WEAPON_METAL: i64 = 3;    // metal_plate (dark patterned techno-metal for ship cannons, drones & airlock frame)
-const PBR_GRATE_FLOOR: i64 = 6;     // metal_grate_rusty (industrial metal floor grate for Main & Upper decks)
-const PBR_CONCRETE_FLOOR: i64 = 7;  // hangar_concrete_floor (rough dark concrete for Lower Mine & Airlock floor)
-const PBR_REACTOR_ARMOR: i64 = 8;   // rusty_metal_grid (heavy industrial steel grid for Reactor Vault & blast barriers)
-const PBR_INDUSTRIAL_WALL: i64 = 10;// painted_metal_shutter (dark ribbed industrial wall panels for Armory, Security, Deck 3)
-const PBR_RIB_RUST: i64 = 11;       // rusty_metal_shutter (ribbed rusted steel for vertical shafts, tube bevels & structural ribs)
+pub const PBR_CEILING_STEEL: i64 = 0;   // rusty_metal_03 (dark weathered industrial steel plates for ceilings & bulkheads)
+pub const PBR_TUBE_CORR: i64 = 1;       // corrugated_iron_03 (corrugated industrial steel for tubes, columns & airlock ribs)
+pub const PBR_STATION_WALL: i64 = 2;    // blue_metal_plate (dark scratched metallic armor plates for station walls)
+pub const PBR_WEAPON_METAL: i64 = 3;    // metal_plate (dark patterned techno-metal for ship cannons, drones & airlock frame)
+pub const PBR_GRATE_FLOOR: i64 = 6;     // metal_grate_rusty (industrial metal floor grate for Main & Upper decks)
+pub const PBR_CONCRETE_FLOOR: i64 = 7;  // hangar_concrete_floor (rough dark concrete for Lower Mine & Airlock floor)
+pub const PBR_REACTOR_ARMOR: i64 = 8;   // rusty_metal_grid (heavy industrial steel grid for Reactor Vault & blast barriers)
+pub const PBR_INDUSTRIAL_WALL: i64 = 10;// painted_metal_shutter (dark ribbed industrial wall panels for Armory, Security, Deck 3)
+pub const PBR_RIB_RUST: i64 = 11;       // rusty_metal_shutter (ribbed rusted steel for vertical shafts, tube bevels & structural ribs)
 
 // World-space UV tile size in mm (1.6m per 1x1 texture repeat for crisp zero-stretch tiling)
-const PBR_TILE_MM: i64 = 1600;
+pub const PBR_TILE_MM: i64 = 1600;
 
 // Handcrafted Fixed 3D Mine Dimensions: 11 Distinct Chambers + 13 Octagonal Tubes across 3 Decks
-const ROOM_COUNT: i64 = 11;
-const TUBE_COUNT: i64 = 13;
+pub const ROOM_COUNT: i64 = 11;
+pub const TUBE_COUNT: i64 = 13;
 
 // Octagonal Tube Geometry (2400 x 2400 mm cross-section with 400 mm 45-degree corner bevels)
-const TUBE_HALF: i64 = 1200;
-const TUBE_FLAT: i64 = 800;
-const TUBE_OVERLAP: i64 = 1100;
+pub const TUBE_HALF: i64 = 1200;
+pub const TUBE_FLAT: i64 = 800;
+pub const TUBE_OVERLAP: i64 = 1100;
 
 // 6-bit face opening mask for rooms
-const DIR_PX: i64 = 1;
-const DIR_NX: i64 = 2;
-const DIR_PY: i64 = 4;
-const DIR_NY: i64 = 8;
-const DIR_PZ: i64 = 16;
-const DIR_NZ: i64 = 32;
+pub const DIR_PX: i64 = 1;
+pub const DIR_NX: i64 = 2;
+pub const DIR_PY: i64 = 4;
+pub const DIR_NY: i64 = 8;
+pub const DIR_PZ: i64 = 16;
+pub const DIR_NZ: i64 = 32;
 
 // Tube axis constants
-const AXIS_X: i64 = 0;
-const AXIS_Y: i64 = 1;
-const AXIS_Z: i64 = 2;
+pub const AXIS_X: i64 = 0;
+pub const AXIS_Y: i64 = 1;
+pub const AXIS_Z: i64 = 2;
 
 // Key Room IDs
-const ROOM_START: i64 = 0;    // Шлюз Альфа (0, 10000, 20000)
-const ROOM_ATRIUM: i64 = 1;   // Главный Атриум (0, 10000, 9000)
-const ROOM_ARMORY: i64 = 2;   // Склад Оружия (-11000, 10000, 9000)
-const ROOM_GEN: i64 = 3;      // Зал Генераторов (11000, 10000, 9000)
-const ROOM_CRYO: i64 = 4;     // Крио-Сектор (-11000, 10000, -2000)
-const ROOM_GUARD: i64 = 5;    // Охранный Пост (11000, 10000, -2000)
-const ROOM_REACTOR: i64 = 6;  // Ядро Реактора (0, 10000, -2000)
-const ROOM_MINE: i64 = 7;     // Рудная Шахта (0, 2000, 9000) — Deck 1
-const ROOM_COOLER: i64 = 8;   // Нижний Охладитель (0, 2000, -2000) — Deck 1
-const ROOM_BRIDGE: i64 = 9;   // Обзорный Мостик (0, 18000, 9000) — Deck 3
-const ROOM_DOME: i64 = 10;    // Купол Реактора (0, 18000, -2000) — Deck 3
+pub const ROOM_START: i64 = 0;    // Шлюз Альфа (0, 10000, 20000)
+pub const ROOM_ATRIUM: i64 = 1;   // Главный Атриум (0, 10000, 9000)
+pub const ROOM_ARMORY: i64 = 2;   // Склад Оружия (-11000, 10000, 9000)
+pub const ROOM_GEN: i64 = 3;      // Зал Генераторов (11000, 10000, 9000)
+pub const ROOM_CRYO: i64 = 4;     // Крио-Сектор (-11000, 10000, -2000)
+pub const ROOM_GUARD: i64 = 5;    // Охранный Пост (11000, 10000, -2000)
+pub const ROOM_REACTOR: i64 = 6;  // Ядро Реактора (0, 10000, -2000)
+pub const ROOM_MINE: i64 = 7;     // Рудная Шахта (0, 2000, 9000) — Deck 1
+pub const ROOM_COOLER: i64 = 8;   // Нижний Охладитель (0, 2000, -2000) — Deck 1
+pub const ROOM_BRIDGE: i64 = 9;   // Обзорный Мостик (0, 18000, 9000) — Deck 3
+pub const ROOM_DOME: i64 = 10;    // Купол Реактора (0, 18000, -2000) — Deck 3
 
 // Entity capacities
-const DRONE_COUNT: i64 = 18;
-const BOLT_COUNT: i64 = 40;
-const PICKUP_COUNT: i64 = 16;
-const PARTICLE_COUNT: i64 = 48;
+pub const DRONE_COUNT: i64 = 18;
+pub const BOLT_COUNT: i64 = 40;
+pub const PICKUP_COUNT: i64 = 16;
+pub const PARTICLE_COUNT: i64 = 48;
 
-enum GamePhase {
+pub enum GamePhase {
   Playing = 0,
   Escape = 1,   // Reactor destroyed! Self-destruct countdown active — reach Exit Airlock!
   Victory = 2,
   Dead = 3,
 }
 
-enum DroneKind {
+pub enum DroneKind {
   Scout = 1,    // Agile twin-wing interceptor
   Vulcan = 2,   // Heavy armored gunship
   Guardian = 3, // Reactor defense heavy sentinel
 }
 
-enum BoltKind {
+pub enum BoltKind {
   PlayerLaser = 1,
   PlayerMissile = 2,
   EnemyPlasma = 3,
 }
 
-enum PickupKind {
+pub enum PickupKind {
   Shield = 1,
   Energy = 2,
   Missiles = 3,
 }
 
-struct Vec3 {
+pub struct Vec3 {
   x: fixed,
   y: fixed,
   z: fixed,
 }
 
-struct Room {
+pub struct Room {
   x0: word,
   y0: word,
   z0: word,
@@ -105,7 +105,7 @@ struct Room {
   open_mask: word, // 6-bit mask of faces with octagonal tube openings
 }
 
-struct Tube {
+pub struct Tube {
   axis: word,   // 0=X, 1=Y (vertical shaft), 2=Z
   cx: word,     // cross-section X center (used by Y/Z tubes)
   cy: word,     // cross-section Y center (used by X/Z tubes)
@@ -117,7 +117,7 @@ struct Tube {
   theme: word,  // glowing guide ring color theme
 }
 
-struct Drone {
+pub struct Drone {
   x: word,
   y: word,
   z: word,
@@ -136,7 +136,7 @@ struct Drone {
   home_z: word,
 }
 
-struct Bolt {
+pub struct Bolt {
   x: word,
   y: word,
   z: word,
@@ -147,7 +147,7 @@ struct Bolt {
   life: word,
 }
 
-struct Pickup {
+pub struct Pickup {
   x: word,
   y: word,
   z: word,
@@ -155,7 +155,7 @@ struct Pickup {
   active: word,
 }
 
-struct Particle {
+pub struct Particle {
   x: word,
   y: word,
   z: word,
@@ -168,7 +168,7 @@ struct Particle {
 }
 
 // Auto-placed linear memory layout (safely placed by compiler at word 705536+)
-layout GameMem {
+pub layout GameMem {
   tick: word,
   phase: word inv 0..=3,
   rng_state: word,

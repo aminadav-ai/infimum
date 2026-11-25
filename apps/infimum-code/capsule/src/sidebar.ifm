@@ -8,13 +8,14 @@ use "primitives.ifm";
 use "theme.ifm";
 use "icons.ifm";
 use "text_buf.ifm";
+use "daemon_client.ifm";
 
-enum SideAct {
+pub enum SideAct {
   None = 0,
   Settings = 104,
 }
 
-fn handle_sidebar_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
+pub fn handle_sidebar_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
   if StudioMem.frame_modal_blocked == 0 {
     let side_max = clamp_i64(StudioMem.side_max_scroll, 0, 4000);
     let dy = forma_wheel_dy();
@@ -22,7 +23,7 @@ fn handle_sidebar_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -
   }
 }
 
-fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Net]-> unit {
+pub fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Net]-> unit {
   let th = StudioMem.theme;
   let scale = StudioMem.font_scale_pct;
   let ui_sz = sf(13);
@@ -407,7 +408,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
   StudioMem.side_max_scroll = if total_proj_h > p_view_h { total_proj_h - p_view_h } else { 0 };
 }
 
-forma SidebarShell(
+pub forma SidebarShell(
   side_w: i64,
   vh: i64,
   foot_h: i64,
@@ -437,7 +438,7 @@ forma SidebarShell(
   }
 }
 
-fn render_sidebar(side_w: i64, h: i64, foot_h: i64) -[Mem, Net]-> unit {
+pub fn render_sidebar(side_w: i64, h: i64, foot_h: i64) -[Mem, Net]-> unit {
   let th = StudioMem.theme;
   let sw = clamp_i64(side_w, 180, 600);
   let vh = clamp_i64(h, 460, 2160);

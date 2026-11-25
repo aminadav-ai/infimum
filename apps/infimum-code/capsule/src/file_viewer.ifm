@@ -4,24 +4,28 @@
 // ============================================================================
 
 use "abi.ifm";
+use "primitives.ifm";
+use "theme.ifm";
+use "icons.ifm";
+use "daemon_client.ifm";
 
-fn fv_is_alpha(ch: i64) -> bool {
+pub fn fv_is_alpha(ch: i64) -> bool {
   (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
 }
 
-fn fv_is_digit(ch: i64) -> bool {
+pub fn fv_is_digit(ch: i64) -> bool {
   ch >= '0' && ch <= '9'
 }
 
-fn fv_is_ident_cont(ch: i64) -> bool {
+pub fn fv_is_ident_cont(ch: i64) -> bool {
   fv_is_alpha(ch) || fv_is_digit(ch)
 }
 
-fn fv_is_hex(ch: i64) -> bool {
+pub fn fv_is_hex(ch: i64) -> bool {
   fv_is_digit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
-fn fv_is_keyword(ptr: i64, len: i64) -[Mem]-> bool {
+pub fn fv_is_keyword(ptr: i64, len: i64) -[Mem]-> bool {
   if len == 2 {
     slice_eq_str(ptr, len, "fn")
       || slice_eq_str(ptr, len, "if")
@@ -68,7 +72,7 @@ fn fv_is_keyword(ptr: i64, len: i64) -[Mem]-> bool {
   }
 }
 
-fn fv_is_builtin_type(ptr: i64, len: i64) -[Mem]-> bool {
+pub fn fv_is_builtin_type(ptr: i64, len: i64) -[Mem]-> bool {
   let c0 = mem_load(ptr);
   if c0 >= 'A' && c0 <= 'Z' {
     true
@@ -83,29 +87,29 @@ fn fv_is_builtin_type(ptr: i64, len: i64) -[Mem]-> bool {
   }
 }
 
-fn fv_col_kw(th: i64) -> i64 {
+pub fn fv_col_kw(th: i64) -> i64 {
   if th == 0 { pack_rgba(192, 132, 252, 255) } else { pack_rgba(126, 34, 206, 255) }
 }
-fn fv_col_ty(th: i64) -> i64 {
+pub fn fv_col_ty(th: i64) -> i64 {
   if th == 0 { pack_rgba(56, 189, 248, 255) } else { pack_rgba(3, 105, 161, 255) }
 }
-fn fv_col_fn(th: i64) -> i64 {
+pub fn fv_col_fn(th: i64) -> i64 {
   if th == 0 { pack_rgba(125, 211, 252, 255) } else { pack_rgba(2, 132, 199, 255) }
 }
-fn fv_col_num(th: i64) -> i64 {
+pub fn fv_col_num(th: i64) -> i64 {
   if th == 0 { pack_rgba(251, 191, 36, 255) } else { pack_rgba(180, 83, 9, 255) }
 }
-fn fv_col_str(th: i64) -> i64 {
+pub fn fv_col_str(th: i64) -> i64 {
   if th == 0 { pack_rgba(74, 222, 128, 255) } else { pack_rgba(21, 128, 61, 255) }
 }
-fn fv_col_cmt(th: i64) -> i64 {
+pub fn fv_col_cmt(th: i64) -> i64 {
   if th == 0 { pack_rgba(100, 116, 139, 255) } else { pack_rgba(100, 116, 139, 255) }
 }
-fn fv_col_op(th: i64) -> i64 {
+pub fn fv_col_op(th: i64) -> i64 {
   if th == 0 { pack_rgba(148, 163, 184, 255) } else { pack_rgba(71, 85, 105, 255) }
 }
 
-fn render_highlighted_line(
+pub fn render_highlighted_line(
   line_start: i64, line_len: i64,
   x0: i64, y: i64, max_x: i64,
   code_sz: i64, th: i64, clip_id: i64
@@ -219,7 +223,7 @@ fn render_highlighted_line(
   }
 }
 
-fn render_file_viewer(main_x: i64, main_w: i64, h: i64, top_h: i64, key_special: i64) -[Mem, Gpu, Net]-> unit {
+pub fn render_file_viewer(main_x: i64, main_w: i64, h: i64, top_h: i64, key_special: i64) -[Mem, Gpu, Net]-> unit {
   let th = StudioMem.theme;
   let scale = StudioMem.font_scale_pct;
   let mx = StudioMem.frame_mx;

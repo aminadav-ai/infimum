@@ -2,47 +2,32 @@
 #![allow(dead_code, clippy::all)]
 
 // --- Constants ---
-pub const SYS_CURSOR_KIND_WORD: i64 = 11;
-pub const SYS_PRIM_COUNT_WORD: i64 = 12;
-pub const SYS_SCRATCH_CURSOR_WORD: i64 = 16;
-pub const SYS_STR_SCRATCH_WORD: i64 = 17;
-pub const SYS_HOST_RET_WORD: i64 = 62;
-pub const SYS_CLIP_RECTS_WORD: i64 = 64;
-pub const GPU_CLIPS_BYTE_OFFSET: i64 = 256;
-pub const SYS_FORMA_MAILBOX_WORD: i64 = 128;
-pub const SYS_FORMA_MX_WORD: i64 = 128;
-pub const SYS_FORMA_MY_WORD: i64 = 129;
-pub const SYS_FORMA_CLICKED_WORD: i64 = 130;
-pub const SYS_FORMA_WHEEL_WORD: i64 = 131;
-pub const SYS_FORMA_HOVERED_WORD: i64 = 132;
-pub const SYS_FORMA_MDOWN_WORD: i64 = 133;
-pub const SYS_FORMA_KEY_CHAR_WORD: i64 = 134;
-pub const SYS_FORMA_KEY_SPECIAL_WORD: i64 = 135;
-pub const SYS_FORMA_TICK_WORD: i64 = 136;
-pub const SYS_FORMA_FOCUS_ID_WORD: i64 = 137;
-pub const SYS_FORMA_DRAG_ID_WORD: i64 = 138;
-pub const SYS_FORMA_CARET_POS_WORD: i64 = 139;
-pub const SYS_FORMA_TEXT_SCROLL_WORD: i64 = 140;
-pub const SYS_FORMA_SEL_ANCHOR_WORD: i64 = 141;
-pub const SYS_FORMA_TEXT_BUF_WORD: i64 = 142;
-pub const SYS_FORMA_TEXT_MAX_WORD: i64 = 143;
-pub const SYS_FORMA_TEXT_MASK_WORD: i64 = 144;
-pub const SYS_FORMA_TEXT_CHANGED_WORD: i64 = 145;
-pub const SYS_FORMA_FOCUS_SET_THIS_FRAME_WORD: i64 = 146;
-pub const SYS_INPUT_BASE_WORD: i64 = 192;
-pub const SYS_INPUT_BYTE_OFFSET: i64 = 768;
-pub const SYS_KEYS_HELD_WORD: i64 = 192;
-pub const SYS_MOUSE_DX_WORD: i64 = 193;
-pub const SYS_MOUSE_DY_WORD: i64 = 194;
-pub const SYS_POINTER_LOCK_WORD: i64 = 195;
-pub const SYS_FONT_METRICS_FLAG_WORD: i64 = 256;
-pub const SYS_FONT_METRICS_TABLE_WORD: i64 = 257;
-pub const SYS_FONT_METRICS_BYTE_OFFSET: i64 = 1024;
-pub const SYS_SCRATCH_BASE_WORD: i64 = 4096;
-pub const SYS_SCRATCH_CAP_WORDS: i64 = 61440;
-pub const SYS_GPU_PRIMS_WORD: i64 = 65536;
-pub const GPU_CMD_BYTE_OFFSET: i64 = 262144;
-pub const SYS_USER_LAYOUT_START_WORD: i64 = 705536;
+pub const MAX_GPU_PRIMS: i64 = 80000;
+pub const MAX_CLIP_RECTS: i64 = 16;
+pub const INPUT_MAX_CHARS: i64 = 8192;
+pub const CLIPBOARD_MAX_CHARS: i64 = 4096;
+pub const LARGE_COPY_MAX_CHARS: i64 = 32768;
+pub const MAX_MSG_CHARS: i64 = 32768;
+pub const MAX_MESSAGES: i64 = 128;
+pub const MSG_META_STRIDE: i64 = 8;
+pub const MSG_POOL_CAP: i64 = 1050000;
+pub const MSG_POOL_GUARD_OFFSET: i64 = 1049900;
+pub const MSG_POOL_WRAP_OFFSET: i64 = 1046000;
+pub const MAX_PROJECTS: i64 = 64;
+pub const MAX_CONVS: i64 = 60;
+pub const FONT_ATLAS_SLOTS: i64 = 176;
+pub const MAX_TBL_COLS: i64 = 12;
+pub const DEFAULT_FONT_SCALE_PCT: i64 = 120;
+pub const MIN_FONT_SCALE_PCT: i64 = 80;
+pub const MAX_FONT_SCALE_PCT: i64 = 200;
+pub const LIVE_TIMELINE_MAX_WORDS: i64 = 9000;
+pub const STEP_STATUS_RUNNING: i64 = 0;
+pub const STEP_STATUS_DONE: i64 = 1;
+pub const STEP_STATUS_ERROR: i64 = 2;
+pub const STEP_STATUS_CANCELLED: i64 = 3;
+pub const STEP_KIND_THINK: i64 = 0;
+pub const STEP_KIND_TOOL: i64 = 1;
+pub const STEP_KIND_CMD: i64 = 2;
 pub const STD_MAX_GPU_PRIMS: i64 = 80000;
 pub const STD_CURSOR_KIND_WORD: i64 = 11;
 pub const STD_PRIM_COUNT_WORD: i64 = 12;
@@ -97,105 +82,8 @@ pub const KEY_6: i64 = 8388608;
 pub const KEY_7: i64 = 16777216;
 pub const KEY_8: i64 = 33554432;
 pub const KEY_9: i64 = 67108864;
-pub const MAX_GPU_PRIMS: i64 = 80000;
-pub const MAX_CLIP_RECTS: i64 = 16;
-pub const INPUT_MAX_CHARS: i64 = 8192;
-pub const CLIPBOARD_MAX_CHARS: i64 = 4096;
-pub const LARGE_COPY_MAX_CHARS: i64 = 32768;
-pub const MAX_MSG_CHARS: i64 = 32768;
-pub const MAX_MESSAGES: i64 = 128;
-pub const MSG_META_STRIDE: i64 = 8;
-pub const MSG_POOL_CAP: i64 = 1050000;
-pub const MSG_POOL_GUARD_OFFSET: i64 = 1049900;
-pub const MSG_POOL_WRAP_OFFSET: i64 = 1046000;
-pub const MAX_PROJECTS: i64 = 64;
-pub const MAX_CONVS: i64 = 60;
-pub const FONT_ATLAS_SLOTS: i64 = 176;
-pub const MAX_TBL_COLS: i64 = 12;
-pub const DEFAULT_FONT_SCALE_PCT: i64 = 120;
-pub const MIN_FONT_SCALE_PCT: i64 = 80;
-pub const MAX_FONT_SCALE_PCT: i64 = 200;
-pub const LIVE_TIMELINE_MAX_WORDS: i64 = 9000;
-pub const STEP_STATUS_RUNNING: i64 = 0;
-pub const STEP_STATUS_DONE: i64 = 1;
-pub const STEP_STATUS_ERROR: i64 = 2;
-pub const STEP_STATUS_CANCELLED: i64 = 3;
-pub const STEP_KIND_THINK: i64 = 0;
-pub const STEP_KIND_TOOL: i64 = 1;
-pub const STEP_KIND_CMD: i64 = 2;
 
 // --- Enums ---
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum KeySpecial {
-    None = 0,
-    Backspace = 1,
-    Enter = 2,
-    Escape = 3,
-    Tab = 4,
-    ArrowLeft = 5,
-    ArrowRight = 6,
-    ArrowUp = 7,
-    ArrowDown = 8,
-    Home = 9,
-    End = 10,
-    Delete = 11,
-    ShiftEnter = 12,
-    CtrlA = 20,
-    CtrlC = 21,
-    CtrlV = 22,
-    CtrlX = 23,
-    ShiftLeft = 25,
-    ShiftRight = 26,
-    ShiftUp = 27,
-    ShiftDown = 28,
-    ShiftHome = 29,
-    ShiftEnd = 30,
-    RightClick = 31,
-    CtrlHome = 32,
-    CtrlEnd = 33,
-    CtrlShiftHome = 34,
-    CtrlShiftEnd = 35,
-}
-
-impl core::convert::TryFrom<i32> for KeySpecial {
-    type Error = i32;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::None),
-            1 => Ok(Self::Backspace),
-            2 => Ok(Self::Enter),
-            3 => Ok(Self::Escape),
-            4 => Ok(Self::Tab),
-            5 => Ok(Self::ArrowLeft),
-            6 => Ok(Self::ArrowRight),
-            7 => Ok(Self::ArrowUp),
-            8 => Ok(Self::ArrowDown),
-            9 => Ok(Self::Home),
-            10 => Ok(Self::End),
-            11 => Ok(Self::Delete),
-            12 => Ok(Self::ShiftEnter),
-            20 => Ok(Self::CtrlA),
-            21 => Ok(Self::CtrlC),
-            22 => Ok(Self::CtrlV),
-            23 => Ok(Self::CtrlX),
-            25 => Ok(Self::ShiftLeft),
-            26 => Ok(Self::ShiftRight),
-            27 => Ok(Self::ShiftUp),
-            28 => Ok(Self::ShiftDown),
-            29 => Ok(Self::ShiftHome),
-            30 => Ok(Self::ShiftEnd),
-            31 => Ok(Self::RightClick),
-            32 => Ok(Self::CtrlHome),
-            33 => Ok(Self::CtrlEnd),
-            34 => Ok(Self::CtrlShiftHome),
-            35 => Ok(Self::CtrlShiftEnd),
-            other => Err(other),
-        }
-    }
-}
-
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostAction {
@@ -431,6 +319,77 @@ impl core::convert::TryFrom<i32> for HostOp {
             62 => Ok(Self::GpuLoadImageUrl),
             63 => Ok(Self::GpuClearImages),
             64 => Ok(Self::NetPostPendingImage),
+            other => Err(other),
+        }
+    }
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeySpecial {
+    None = 0,
+    Backspace = 1,
+    Enter = 2,
+    Escape = 3,
+    Tab = 4,
+    ArrowLeft = 5,
+    ArrowRight = 6,
+    ArrowUp = 7,
+    ArrowDown = 8,
+    Home = 9,
+    End = 10,
+    Delete = 11,
+    ShiftEnter = 12,
+    CtrlA = 20,
+    CtrlC = 21,
+    CtrlV = 22,
+    CtrlX = 23,
+    ShiftLeft = 25,
+    ShiftRight = 26,
+    ShiftUp = 27,
+    ShiftDown = 28,
+    ShiftHome = 29,
+    ShiftEnd = 30,
+    RightClick = 31,
+    CtrlHome = 32,
+    CtrlEnd = 33,
+    CtrlShiftHome = 34,
+    CtrlShiftEnd = 35,
+}
+
+impl core::convert::TryFrom<i32> for KeySpecial {
+    type Error = i32;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Backspace),
+            2 => Ok(Self::Enter),
+            3 => Ok(Self::Escape),
+            4 => Ok(Self::Tab),
+            5 => Ok(Self::ArrowLeft),
+            6 => Ok(Self::ArrowRight),
+            7 => Ok(Self::ArrowUp),
+            8 => Ok(Self::ArrowDown),
+            9 => Ok(Self::Home),
+            10 => Ok(Self::End),
+            11 => Ok(Self::Delete),
+            12 => Ok(Self::ShiftEnter),
+            20 => Ok(Self::CtrlA),
+            21 => Ok(Self::CtrlC),
+            22 => Ok(Self::CtrlV),
+            23 => Ok(Self::CtrlX),
+            25 => Ok(Self::ShiftLeft),
+            26 => Ok(Self::ShiftRight),
+            27 => Ok(Self::ShiftUp),
+            28 => Ok(Self::ShiftDown),
+            29 => Ok(Self::ShiftHome),
+            30 => Ok(Self::ShiftEnd),
+            31 => Ok(Self::RightClick),
+            32 => Ok(Self::CtrlHome),
+            33 => Ok(Self::CtrlEnd),
+            34 => Ok(Self::CtrlShiftHome),
+            35 => Ok(Self::CtrlShiftEnd),
             other => Err(other),
         }
     }

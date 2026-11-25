@@ -6,7 +6,7 @@
 
 use "abi.ifm";
 
-fn next_rand() -[Mem]-> i64 {
+pub fn next_rand() -[Mem]-> i64 {
   let s = GameMem.rng_state;
   let nxt = (s * 1103515245 + 12345) & 2147483647;
   let safe = if nxt == 0 { 19950317 } else { nxt };
@@ -52,7 +52,7 @@ fn set_tube(
   GameMem.tubes[i].theme = theme;
 }
 
-fn room_center_xyz(id: i64) -[Mem]-> (i64, i64, i64) {
+pub fn room_center_xyz(id: i64) -[Mem]-> (i64, i64, i64) {
   let i = clamp_i64(id, 0, 10);
   let cx = (GameMem.rooms[i].x0 + GameMem.rooms[i].x1) / 2;
   let cy = (GameMem.rooms[i].y0 + GameMem.rooms[i].y1) / 2;
@@ -62,7 +62,7 @@ fn room_center_xyz(id: i64) -[Mem]-> (i64, i64, i64) {
 
 // Build the FIXED, memorable, handcrafted 3D Lunar Mine «ШАХТА ЦЕРЕРА-1»
 // Always identical so the pilot can memorize every chamber, tube & shortcut!
-fn build_ceres_mine() -[Mem]-> unit {
+pub fn build_ceres_mine() -[Mem]-> unit {
   // === 11 DISTINCT CHAMBERS ACROSS 3 VERTICAL DECKS ===
   // Deck 2 (Main Level, Y = 10000):
   // 0: Шлюз Альфа (Start & Escape Airlock) — opens -Z into Entry Tube 0
@@ -142,7 +142,7 @@ fn build_ceres_mine() -[Mem]-> unit {
 }
 
 // Verify room-graph connectivity via BFS (used in built-in unit tests)
-fn mine_rooms_reachable(src: i64, dst: i64) -[Mem]-> bool {
+pub fn mine_rooms_reachable(src: i64, dst: i64) -[Mem]-> bool {
   for i in 0..16 {
     GameMem.visited[i] = 0;
     GameMem.queue[i] = 0;
@@ -176,7 +176,7 @@ fn mine_rooms_reachable(src: i64, dst: i64) -[Mem]-> bool {
 }
 
 // Query current vertical deck (0=Lower P1, 1=Main P2, 2=Upper P3)
-fn world_to_deck(py: i64) -> i64
+pub fn world_to_deck(py: i64) -> i64
   ens result >= 0 && result <= 2
 {
   if py < 5800 {
@@ -189,7 +189,7 @@ fn world_to_deck(py: i64) -> i64
 }
 
 // Returns Room ID (0..10) if point is inside a chamber, or -1 if flying inside a tube
-fn find_current_room(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
+pub fn find_current_room(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
   let mut found = -1;
   for r in 0..11 {
     if px >= GameMem.rooms[r].x0 && px <= GameMem.rooms[r].x1
@@ -204,7 +204,7 @@ fn find_current_room(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
 }
 
 // Returns Tube ID (0..12) if point is inside a tube, or -1
-fn find_current_tube(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
+pub fn find_current_tube(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
   let mut found = -1;
   for t in 0..13 {
     let ax = GameMem.tubes[t].axis;
@@ -241,7 +241,7 @@ fn find_current_tube(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
 
 // Exact O(1) CSG Union Collision against 11 Rooms + 13 Octagonal Tubes
 // Returns true if (px, py, pz) with bounding radius `rad` hits a solid wall.
-fn hits_maze_3d(px: i64, py: i64, pz: i64, rad: i64) -[Mem]-> bool {
+pub fn hits_maze_3d(px: i64, py: i64, pz: i64, rad: i64) -[Mem]-> bool {
   let mut inside = false;
 
   // 1. Inside any of the 11 Chambers?
@@ -300,7 +300,7 @@ fn hits_maze_3d(px: i64, py: i64, pz: i64, rad: i64) -[Mem]-> bool {
 }
 
 // 24-step 3D Line-of-Sight raycast through chambers and octagonal tubes
-fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> bool {
+pub fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> bool {
   let mut clear = true;
   for s in 1..24 {
     let px = x0 + ((x1 - x0) * s) / 24;
