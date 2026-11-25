@@ -107,10 +107,14 @@ Inside `forma Name(...) { ... }`, containers (`Box`, `Col`, `Row`, `Stack`, `Scr
    - Returns the triggered `on_click` / `on_change` / `on_submit` action `i64` (`0` if none).
    - **Zero magic addresses with `std/gfx.ifm`:** Call `forma_begin_frame(w, h, mx, my, m_clicked, wheel_dy);` and `forma_set_input(m_down, key_char, key_special, tick);` before invoking your `forma` screen, then `gfx_set_cursor(forma_cursor());` after!
 4. **Strata (Direct Wasm `.ifw` Compilation & Segmented Linear Memory):**
-   - Module imports & **Namespaces (`mod` / `pub`)**:
-     - Flat import: `use "abi.ifm";`
-     - Namespaced inline or file module: `mod ai { const DEPTH: i64 = 3; fn score(x: i64) -> i64 { x * DEPTH } pub fn pick(x: i64) -> i64 { score(x) } }` or `mod ai from "ai.ifm";`.
-     - Items without `pub` are **private** to their module (`E068_PRIVATE_SYMBOL`). Public items are accessed via `ai::pick(x)` and `ai::SCALE`.
+   - **Strict Pascal-Unit Module System (`pub`, `use`, `pub use`, `as`, `mod`):**
+     - **Private by default (unit encapsulation):** Every `.ifm` file is an isolated compilation unit. Declarations without `pub` (`const`, `enum`, `struct`, `layout`, `forma`, `fn`, `mod`) are strictly private to their file and never collide across files. Mark public API items with `pub` (`pub const`, `pub enum`, `pub struct`, `pub layout`, `pub forma`, `pub fn`, `pub mod`).
+     - **Three canonical `use` forms** (prefix any with `pub use` to re-export into the current file's public interface — there are **zero implicit transitive leaks**):
+       - Flat public interface import: `use "abi.ifm";` (or `pub use "abi.ifm";`)
+       - Namespace import: `use "maze.ifm" as maze;` — access all 6 entity kinds via `maze::CONST`, `maze::Phase::Escape`, `maze::Vec2 { ... }`, `maze::Vec2::SIZE`, `maze::BoardMem.cells[i]`, `maze::BoardMem::cells::count`, `maze::step()`, `maze::Card(...)`, `Slot(render: maze::draw)`.
+       - Selective import with optional alias: `use "std/text.ifm" { ui_text, ui_text_centered as draw_centered };` (original name is hidden when aliased).
+     - **Inline namespaces:** `mod ai { const DEPTH: i64 = 3; fn score(x: i64) -> i64 { x * DEPTH } pub fn pick(x: i64) -> i64 { score(x) } }` (add `pub mod ai { ... }` to export namespace `ai` from the file).
+     - **Fail-loud diagnostics (zero shadowing):** Any collision between two distinct visible symbols raises `E024_DUPLICATE_SYMBOL` (naming both files & lines); duplicate module/item aliases raise `E069_DUPLICATE_ALIAS`; unknown selective imports raise `E067_UNKNOWN_IMPORT`; accessing a non-`pub` item across a module boundary raises `E068_PRIVATE_ITEM`. Diamond imports of the same symbol/layout are automatically deduplicated.
    - Constants: `const BOARD_N: i64 = 9;`
    - Enums: `enum CursorKind { Default = 0, Pointer = 1, Text = 2, EwResize = 3 }`.
    - **Canonical Segmented Memory Map (`std/sys_mem.ifm`, auto-sized Wasm 8 → 16 → 32 → 64 MiB):**
