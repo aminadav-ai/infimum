@@ -44,6 +44,7 @@ check_ifm() {
 echo "=== [1/4] Verifying infimum-lang stdlib tests & examples ==="
 check_ifm "tests/std_tests.ifm" "$REPO_ROOT/tests/std_tests.ifm" 1 0
 check_ifm "examples/forma_ui_demo.ifm" "$REPO_ROOT/examples/forma_ui_demo.ifm" 1 1
+check_ifm "examples/slices_vec_demo.ifm" "$REPO_ROOT/examples/slices_vec_demo.ifm" 1 1
 check_ifm "showcase/ceres-drift" "$REPO_ROOT/examples/showcase/ceres-drift/main.ifm" 1 1
 check_ifm "showcase/color-lines" "$REPO_ROOT/examples/showcase/color-lines/src/main.ifm" 1 1
 check_ifm "showcase/gomoku" "$REPO_ROOT/examples/showcase/gomoku/src/main.ifm" 1 1

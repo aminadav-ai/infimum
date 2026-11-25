@@ -9,6 +9,7 @@ pub use "std/color.ifm";
 pub use "std/sys_mem.ifm";
 pub use "std/mem.ifm";
 pub use "std/buf.ifm";
+pub use "std/slice.ifm";
 pub use "std/gfx.ifm";
 pub use "std/text.ifm";
 pub use "std/audio.ifm";

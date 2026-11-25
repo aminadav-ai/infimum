@@ -143,7 +143,9 @@ test "weapons and reactor destruction escape sequence work on fixed mine" {
   let m0 = GameMem.missiles;
   logic::fire_player_laser();
   assert(GameMem.energy == e0 - 2);
-  assert(GameMem.bolts[0].life > 0);
+  assert(GameMem.bolts.len > 0);
+  let b0_life = if GameMem.bolts.len > 0 { GameMem.bolts[0].life } else { 0 };
+  assert(b0_life > 0);
   logic::fire_player_missile();
   assert(GameMem.missiles == m0 - 1);
 

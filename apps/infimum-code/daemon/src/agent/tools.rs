@@ -1686,6 +1686,7 @@ pub(super) fn execute_native_tool(
             const ALLOWED_STD: &[&str] = &[
                 "audio.ifm",
                 "buf.ifm",
+                "slice.ifm",
                 "color.ifm",
                 "fmt.ifm",
                 "gfx.ifm",
@@ -1967,7 +1968,7 @@ pub(super) fn execute_native_tool(
                 (
                     "lang-demos",
                     "Compiler & language feature demos from infimum-lang (Telos Z3 anti-stub, Forma UI & built-in widgets_rt, Flux payment & secret-leak, Strata framebuffer, std_tests)",
-                    &["anti_stub_demo.ifm", "forma_ui_demo.ifm", "payment_demo.ifm", "secret_leak_demo.ifm", "std_tests.ifm", "strata_framebuffer_demo.ifm", "widgets_rt.ifm"],
+                    &["anti_stub_demo.ifm", "forma_ui_demo.ifm", "payment_demo.ifm", "secret_leak_demo.ifm", "slices_vec_demo.ifm", "std_tests.ifm", "strata_framebuffer_demo.ifm", "widgets_rt.ifm"],
                 ),
                 (
                     "web-cores",

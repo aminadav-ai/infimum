@@ -1,0 +1,68 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Infimum Standard Library: std/slice.ifm
+// Zero-heap, Z3-proven operations over `[i64]` slices (bounded by 4096 elements per call).
+
+/// Compare two `[i64]` slices for element-wise equality (up to 4096 elements).
+pub fn slice_eq(a: [i64], b: [i64]) -[Mem]-> bool {
+  if a.len != b.len {
+    false
+  } else {
+    let mut eq = true;
+    for i in 0..a.len max 4096 {
+      if i < b.len && a[i] != b[i] {
+        eq = false;
+        break;
+      }
+    }
+    eq
+  }
+}
+
+/// Return `true` if `haystack` begins with all elements of `prefix`.
+pub fn slice_starts_with(haystack: [i64], prefix: [i64]) -[Mem]-> bool {
+  if prefix.len > haystack.len {
+    false
+  } else {
+    let mut ok = true;
+    for i in 0..prefix.len max 4096 {
+      if i < haystack.len && haystack[i] != prefix[i] {
+        ok = false;
+        break;
+      }
+    }
+    ok
+  }
+}
+
+/// Find the first index `i` where `s[i] == needle`, or `-1` if not found.
+pub fn slice_find(s: [i64], needle: i64) -[Mem]-> i64 {
+  let mut found = -1;
+  for i in 0..s.len max 4096 {
+    if s[i] == needle {
+      found = i;
+      break;
+    }
+  }
+  found
+}
+
+/// Fill every element of `dst` with `val`.
+pub fn slice_fill(dst: [i64], val: i64) -[Mem]-> unit {
+  for i in 0..dst.len max 4096 {
+    dst[i] = val;
+  }
+}
+
+/// Copy `min(dst.len, src.len)` elements from `src` into `dst`.
+/// Returns the number of elements copied.
+pub fn slice_copy(dst: [i64], src: [i64]) -[Mem]-> i64 {
+  let n = if dst.len < src.len { dst.len } else { src.len };
+  for i in 0..n max 4096 {
+    if i < dst.len && i < src.len {
+      dst[i] = src[i];
+    }
+  }
+  n
+}

@@ -34,6 +34,9 @@ pub(super) fn resolve_embedded_std(spec: &str) -> Option<(&'static str, &'static
             Some(("__std__/markdown.ifm", include_str!("../../std/markdown.ifm")))
         }
         "std/buf" | "std/buf.ifm" => Some(("__std__/buf.ifm", include_str!("../../std/buf.ifm"))),
+        "std/slice" | "std/slice.ifm" => {
+            Some(("__std__/slice.ifm", include_str!("../../std/slice.ifm")))
+        }
         "std/json" | "std/json.ifm" => Some(("__std__/json.ifm", include_str!("../../std/json.ifm"))),
         "std/prelude" | "std/prelude.ifm" => {
             Some(("__std__/prelude.ifm", include_str!("../../std/prelude.ifm")))
@@ -259,7 +262,7 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
                     "parse",
                     format!("Unknown built-in Infimum stdlib module '{spec}'"),
                     use_span,
-                    "Available stdlib modules: std/prelude.ifm, std/sys_mem.ifm, std/mem.ifm, std/math.ifm, std/color.ifm, std/gfx.ifm, std/mesh3d.ifm, std/input.ifm, std/text.ifm, std/audio.ifm, std/fmt.ifm, std/theme.ifm, std/icons.ifm, std/ui.ifm, std/text_edit.ifm, std/markdown.ifm, std/buf.ifm, std/json.ifm",
+                    "Available stdlib modules: std/prelude.ifm, std/sys_mem.ifm, std/mem.ifm, std/math.ifm, std/color.ifm, std/gfx.ifm, std/mesh3d.ifm, std/input.ifm, std/text.ifm, std/audio.ifm, std/fmt.ifm, std/theme.ifm, std/icons.ifm, std/ui.ifm, std/text_edit.ifm, std/markdown.ifm, std/buf.ifm, std/slice.ifm, std/json.ifm",
                 ));
             };
             let label = format!("std/{}", virtual_key.trim_start_matches("__std__/"));

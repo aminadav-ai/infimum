@@ -1,0 +1,92 @@
+// Copyright (c) 2026 Infimum Language Contributors
+// License: Apache-2.0
+//
+// Zero-heap Slices (`[T]`) & Variable-Length Layout Arrays (`vec<T>[CAP]`) Demo.
+// Demonstrates whole-value struct elements, Z3-proven bounds & field invariants,
+// O(1) swap_remove, zero-copy subslicing, and `std/slice.ifm`.
+
+use "std/math.ifm";
+use "std/slice.ifm";
+
+pub struct Drone {
+  x: word,
+  y: word,
+  hp: word inv 0..=100,
+}
+
+pub layout Arena {
+  scores: vec<word>[16],
+  backup: words[16],
+  drones: vec<Drone>[8],
+}
+
+/// Heal every drone in the slice by `delta` (clamped to 0..=100) and count survivors.
+pub fn heal_drones(drones: [Drone], delta: i64) -[Mem]-> i64 {
+  let mut alive = 0;
+  for i in 0..drones.len max 8 {
+    let d = drones[i];
+    let next_hp = clamp_i64(d.hp + delta, 0, 100);
+    drones[i] = Drone { x: d.x, y: d.y, hp: next_hp };
+    if next_hp > 0 {
+      alive += 1;
+    }
+  }
+  alive
+}
+
+export fn run_slices_vec_demo() -[Mem]-> i64 {
+  // 1. Variable-length scalar vec + std/slice helpers
+  Arena.scores.clear();
+  Arena.scores.push(10);
+  Arena.scores.push(25);
+  let _ok = Arena.scores.try_push(40);
+
+  let dst: [i64] = Arena.backup[0..Arena.scores.len];
+  let copied = slice_copy(dst, Arena.scores.as_slice());
+  let same = slice_eq(dst, Arena.scores.as_slice());
+  let idx_25 = slice_find(dst, 25);
+  let pref_ok = if Arena.scores.len >= 2 {
+    slice_starts_with(dst, Arena.scores[0..2])
+  } else {
+    false
+  };
+
+  // 2. Variable-length struct vec with Z3-proven field invariants
+  Arena.drones.clear();
+  Arena.drones.push(Drone { x: 1, y: 2, hp: 50 });
+  Arena.drones.push(Drone { x: 3, y: 4, hp: 0 });
+  Arena.drones.push(Drone { x: 5, y: 6, hp: 90 });
+
+  // Remove the dead drone at index 1 in O(1) via swap_remove
+  if Arena.drones.len > 1 {
+    Arena.drones.swap_remove(1);
+  }
+
+  let alive = heal_drones(Arena.drones.as_slice(), 15);
+  // Remaining drones: [(x=1, hp=65), (x=5, hp=100)]
+  let ds: [Drone] = Arena.drones.as_slice();
+  let mut hp_sum = 0;
+  for i in 0..ds.len max 8 {
+    hp_sum += ds[i].hp;
+  }
+
+  // Pop the last drone as a whole struct value
+  let mut popped_x = 0;
+  if Arena.drones.len > 0 {
+    let last = Arena.drones.pop();
+    popped_x = last.x;
+  }
+
+  copied
+    + (if same { 1 } else { 0 })
+    + idx_25
+    + (if pref_ok { 1 } else { 0 })
+    + alive
+    + hp_sum
+    + popped_x
+}
+
+test "slices_vec_demo end-to-end" {
+  // copied(3) + same(1) + idx_25(1) + pref_ok(1) + alive(2) + hp_sum(165) + popped_x(5) = 178
+  assert(run_slices_vec_demo() == 178);
+}
