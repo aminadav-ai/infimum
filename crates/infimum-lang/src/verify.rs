@@ -297,8 +297,217 @@ where
                 }
                 Ok(res)
             }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let c = self.encode_expr(cond, env, types, guard, emit_checks)?;
+                let then_guard = format!("(and {guard} {c})");
+                let else_guard = format!("(and {guard} (not {c}))");
+                let pre_mem = self.known_mem.clone();
+                let mut then_env = env.clone();
+                let mut then_types = types.clone();
+                let then_res = self.encode_slice_fields(
+                    then_branch,
+                    &mut then_env,
+                    &mut then_types,
+                    &then_guard,
+                    emit_checks,
+                )?;
+                let then_mem = self.known_mem.clone();
+                self.known_mem = pre_mem;
+                let mut else_env = env.clone();
+                let mut else_types = types.clone();
+                let else_res = self.encode_slice_fields(
+                    else_branch,
+                    &mut else_env,
+                    &mut else_types,
+                    &else_guard,
+                    emit_checks,
+                )?;
+                let else_mem = self.known_mem.clone();
+                self.merge_known_mem(&c, then_mem, else_mem);
+                self.merge_branch_envs(&c, env, types, &then_env, &else_env);
+                match (then_res, else_res) {
+                    (Some((tp, tl)), Some((ep, el))) => {
+                        let p = self.fresh_sym("slice_if_ptr", &Type::I64);
+                        let l = self.fresh_sym("slice_if_len", &Type::I64);
+                        self.assumptions
+                            .push(format!("(assert (= {p} (ite {c} {tp} {ep})))"));
+                        self.assumptions
+                            .push(format!("(assert (= {l} (ite {c} {tl} {el})))"));
+                        Ok(Some((p, l)))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            Expr::Call { target, args } => {
+                let (_, slice_pair) =
+                    self.encode_call_with_slice(target, args, env, types, guard, emit_checks)?;
+                Ok(slice_pair)
+            }
             _ => Ok(None),
         }
+    }
+
+    fn encode_call_with_slice(
+        &mut self,
+        target: &TargetRef,
+        args: &[Expr],
+        env: &mut BTreeMap<String, String>,
+        types: &mut BTreeMap<String, Type>,
+        guard: &str,
+        emit_checks: bool,
+    ) -> Result<(String, Option<(String, String)>), InfimumDiagnostic> {
+        let mut encoded_args = Vec::with_capacity(args.len());
+        for a in args {
+            encoded_args.push(self.encode_expr(a, env, types, guard, emit_checks)?);
+        }
+
+        let callee_node: CanonicalNode;
+        let (callee_ast, callee_label): (&FnDef, String) = match target {
+            TargetRef::SelfRec => (&self.self_node.ast, "$self".to_string()),
+            TargetRef::Hash(h) => {
+                callee_node = (self.load_callee)(h)?;
+                let short = callee_node.short_hash.clone();
+                (&callee_node.ast, format!("#{short}"))
+            }
+            TargetRef::Named(n) => {
+                return Err(InfimumDiagnostic::new(
+                    "E055_UNRESOLVED_CALL",
+                    "verify",
+                    format!("Unresolved symbolic call '{n}' reached Z3 verifier"),
+                    Span::zero(),
+                    "Canonicalize function references to hashes before verification",
+                ));
+            }
+        };
+
+        if encoded_args.len() != callee_ast.params.len() {
+            return Err(InfimumDiagnostic::new(
+                "E056_ARITY_MISMATCH",
+                "verify",
+                format!(
+                    "Call to {callee_label} passed {} args, expected {}",
+                    encoded_args.len(),
+                    callee_ast.params.len()
+                ),
+                Span::zero(),
+                "Pass the exact number of arguments declared by the callee signature",
+            ));
+        }
+
+        let mut callee_env = BTreeMap::new();
+        let mut callee_types = BTreeMap::new();
+        for (i, arg_smt) in encoded_args.iter().enumerate() {
+            callee_env.insert(format!("p{i}"), arg_smt.clone());
+            callee_types.insert(format!("p{i}"), callee_ast.params[i].ty.clone());
+            if let Expr::TupleLit(elems) = &args[i] {
+                for (fi, elem) in elems.iter().enumerate() {
+                    let fty = self.infer_expr_type(elem, types);
+                    let mut tmp_env = env.clone();
+                    let mut tmp_types = types.clone();
+                    let esmt = self.encode_expr(elem, &mut tmp_env, &mut tmp_types, guard, false)?;
+                    callee_env.insert(format!("p{i}#{fi}"), esmt);
+                    callee_types.insert(format!("p{i}#{fi}"), fty);
+                }
+            } else if matches!(callee_ast.params[i].ty, Type::Slice(_)) {
+                let mut tmp_env = env.clone();
+                let mut tmp_types = types.clone();
+                if let Some((psmt, lsmt)) =
+                    self.encode_slice_fields(&args[i], &mut tmp_env, &mut tmp_types, guard, false)?
+                {
+                    callee_env.insert(format!("p{i}#0"), psmt);
+                    callee_types.insert(format!("p{i}#0"), Type::I64);
+                    callee_env.insert(format!("p{i}#1"), lsmt);
+                    callee_types.insert(format!("p{i}#1"), Type::I64);
+                }
+            } else if let Expr::Var(src) = &args[i] {
+                let prefix = format!("{src}#");
+                for (k, v) in env.iter() {
+                    if let Some(fi) = k.strip_prefix(&prefix) {
+                        callee_env.insert(format!("p{i}#{fi}"), v.clone());
+                        if let Some(fty) = types.get(k) {
+                            callee_types.insert(format!("p{i}#{fi}"), fty.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. Modular call-site obligation: prove callee's preconditions hold under `guard`!
+        if emit_checks {
+            for (req_idx, req_expr) in callee_ast.requires.iter().enumerate() {
+                let mut req_env = callee_env.clone();
+                let mut req_types = callee_types.clone();
+                let req_smt = self.encode_expr(req_expr, &mut req_env, &mut req_types, guard, false)?;
+                self.obligations.push(ProofObligation {
+                    guard_smt: guard.to_string(),
+                    goal_smt: req_smt,
+                    kind: ObligationKind::CallPrecondition {
+                        callee_desc: callee_label.clone(),
+                        req_index: req_idx + 1,
+                    },
+                });
+            }
+        }
+
+        // 2. Introduce fresh result symbol (and slice #0/#1 slots if returning `[T]`)
+        //    & assume callee's postconditions (or pure body summary if no `ens`).
+        let call_sym = self.fresh_sym("call_ret", &callee_ast.ret_type);
+        let ret_slice = if matches!(callee_ast.ret_type, Type::Slice(_)) {
+            let rp = self.fresh_sym("call_ret_ptr", &Type::I64);
+            let rl = self.fresh_sym("call_ret_len", &Type::I64);
+            self.assumptions.push(format!("(assert (>= {rp} 0))"));
+            self.assumptions.push(format!("(assert (>= {rl} 0))"));
+            callee_env.insert("$result#0".to_string(), rp.clone());
+            callee_types.insert("$result#0".to_string(), Type::I64);
+            callee_env.insert("$result#1".to_string(), rl.clone());
+            callee_types.insert("$result#1".to_string(), Type::I64);
+            Some((rp, rl))
+        } else {
+            None
+        };
+        if !callee_ast.ensures.is_empty() {
+            callee_env.insert("$result".to_string(), call_sym.clone());
+            callee_types.insert("$result".to_string(), callee_ast.ret_type.clone());
+            for ens_expr in &callee_ast.ensures {
+                let mut ens_env = callee_env.clone();
+                let mut ens_types = callee_types.clone();
+                let ens_smt = self.encode_expr(ens_expr, &mut ens_env, &mut ens_types, guard, false)?;
+                self.assumptions
+                    .push(format!("(assert (=> {guard} {ens_smt}))"));
+            }
+        } else if !matches!(target, TargetRef::SelfRec) && callee_ast.effects.is_empty() {
+            // Pure helper without explicit `ens`: inline its mathematical summary transparently
+            let mut body_env = callee_env.clone();
+            let mut body_types = callee_types.clone();
+            if let Some((ref rp, ref rl)) = ret_slice {
+                if let Some((bp, bl)) = self.encode_slice_fields(
+                    &callee_ast.body,
+                    &mut body_env,
+                    &mut body_types,
+                    guard,
+                    false,
+                )? {
+                    self.assumptions
+                        .push(format!("(assert (=> {guard} (and (= {rp} {bp}) (= {rl} {bl}))))"));
+                }
+            } else {
+                let body_smt =
+                    self.encode_expr(&callee_ast.body, &mut body_env, &mut body_types, guard, false)?;
+                self.assumptions
+                    .push(format!("(assert (=> {guard} (= {call_sym} {body_smt})))"));
+            }
+        }
+
+        // Soundness: any effectful call (e.g. Mem) may mutate linear memory
+        if !callee_ast.effects.is_empty() {
+            self.known_mem.clear();
+        }
+
+        Ok((call_sym, ret_slice))
     }
 
     fn merge_branch_envs(
@@ -582,126 +791,7 @@ where
                 Ok("true".to_string())
             }
             Expr::Call { target, args } => {
-                let mut encoded_args = Vec::with_capacity(args.len());
-                for a in args {
-                    encoded_args.push(self.encode_expr(a, env, types, guard, emit_checks)?);
-                }
-
-                let callee_node: CanonicalNode;
-                let (callee_ast, callee_label): (&FnDef, String) = match target {
-                    TargetRef::SelfRec => (&self.self_node.ast, "$self".to_string()),
-                    TargetRef::Hash(h) => {
-                        callee_node = (self.load_callee)(h)?;
-                        let short = callee_node.short_hash.clone();
-                        (&callee_node.ast, format!("#{short}"))
-                    }
-                    TargetRef::Named(n) => {
-                        return Err(InfimumDiagnostic::new(
-                            "E055_UNRESOLVED_CALL",
-                            "verify",
-                            format!("Unresolved symbolic call '{n}' reached Z3 verifier"),
-                            Span::zero(),
-                            "Canonicalize function references to hashes before verification",
-                        ));
-                    }
-                };
-
-                if encoded_args.len() != callee_ast.params.len() {
-                    return Err(InfimumDiagnostic::new(
-                        "E056_ARITY_MISMATCH",
-                        "verify",
-                        format!(
-                            "Call to {callee_label} passed {} args, expected {}",
-                            encoded_args.len(),
-                            callee_ast.params.len()
-                        ),
-                        Span::zero(),
-                        "Pass the exact number of arguments declared by the callee signature",
-                    ));
-                }
-
-                let mut callee_env = BTreeMap::new();
-                let mut callee_types = BTreeMap::new();
-                for (i, arg_smt) in encoded_args.iter().enumerate() {
-                    callee_env.insert(format!("p{i}"), arg_smt.clone());
-                    callee_types.insert(format!("p{i}"), callee_ast.params[i].ty.clone());
-                    if let Expr::TupleLit(elems) = &args[i] {
-                        for (fi, elem) in elems.iter().enumerate() {
-                            let fty = self.infer_expr_type(elem, types);
-                            let mut tmp_env = env.clone();
-                            let mut tmp_types = types.clone();
-                            let esmt = self.encode_expr(elem, &mut tmp_env, &mut tmp_types, guard, false)?;
-                            callee_env.insert(format!("p{i}#{fi}"), esmt);
-                            callee_types.insert(format!("p{i}#{fi}"), fty);
-                        }
-                    } else if matches!(callee_ast.params[i].ty, Type::Slice(_)) {
-                        let mut tmp_env = env.clone();
-                        let mut tmp_types = types.clone();
-                        if let Some((psmt, lsmt)) =
-                            self.encode_slice_fields(&args[i], &mut tmp_env, &mut tmp_types, guard, false)?
-                        {
-                            callee_env.insert(format!("p{i}#0"), psmt);
-                            callee_types.insert(format!("p{i}#0"), Type::I64);
-                            callee_env.insert(format!("p{i}#1"), lsmt);
-                            callee_types.insert(format!("p{i}#1"), Type::I64);
-                        }
-                    } else if let Expr::Var(src) = &args[i] {
-                        let prefix = format!("{src}#");
-                        for (k, v) in env.iter() {
-                            if let Some(fi) = k.strip_prefix(&prefix) {
-                                callee_env.insert(format!("p{i}#{fi}"), v.clone());
-                                if let Some(fty) = types.get(k) {
-                                    callee_types.insert(format!("p{i}#{fi}"), fty.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 1. Modular call-site obligation: prove callee's preconditions hold under `guard`!
-                if emit_checks {
-                    for (req_idx, req_expr) in callee_ast.requires.iter().enumerate() {
-                        let mut req_env = callee_env.clone();
-                        let mut req_types = callee_types.clone();
-                        let req_smt = self.encode_expr(req_expr, &mut req_env, &mut req_types, guard, false)?;
-                        self.obligations.push(ProofObligation {
-                            guard_smt: guard.to_string(),
-                            goal_smt: req_smt,
-                            kind: ObligationKind::CallPrecondition {
-                                callee_desc: callee_label.clone(),
-                                req_index: req_idx + 1,
-                            },
-                        });
-                    }
-                }
-
-                // 2. Introduce fresh result symbol & assume callee's postconditions (or pure body if no ens)
-                let call_sym = self.fresh_sym("call_ret", &callee_ast.ret_type);
-                if !callee_ast.ensures.is_empty() {
-                    callee_env.insert("$result".to_string(), call_sym.clone());
-                    callee_types.insert("$result".to_string(), callee_ast.ret_type.clone());
-                    for ens_expr in &callee_ast.ensures {
-                        let mut ens_env = callee_env.clone();
-                        let mut ens_types = callee_types.clone();
-                        let ens_smt = self.encode_expr(ens_expr, &mut ens_env, &mut ens_types, guard, false)?;
-                        self.assumptions
-                            .push(format!("(assert (=> {guard} {ens_smt}))"));
-                    }
-                } else if !matches!(target, TargetRef::SelfRec) && callee_ast.effects.is_empty() {
-                    // Pure helper without explicit `ens`: inline its mathematical summary transparently
-                    let mut body_env = callee_env.clone();
-                    let mut body_types = callee_types.clone();
-                    let body_smt = self.encode_expr(&callee_ast.body, &mut body_env, &mut body_types, guard, false)?;
-                    self.assumptions
-                        .push(format!("(assert (=> {guard} (= {call_sym} {body_smt})))"));
-                }
-
-                // Soundness: any effectful call (e.g. Mem) may mutate linear memory
-                if !callee_ast.effects.is_empty() {
-                    self.known_mem.clear();
-                }
-
-                Ok(call_sym)
+                Ok(self.encode_call_with_slice(target, args, env, types, guard, emit_checks)?.0)
             }
             Expr::Block { stmts, tail } => {
                 let outer_keys: Vec<String> = env.keys().cloned().collect();
@@ -1227,15 +1317,40 @@ where
         }
     }
 
-    // Encode function body -> $result
+    // Encode function body -> $result (binding `$result#0` / `$result#1` when returning `[T]`)
     let mut body_env = base_env.clone();
     let mut body_types = base_types.clone();
-    let body_smt = builder.encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?;
-    let result_sym = "$result";
-
-    // Encode postconditions (`ens`) as proof obligations
     let mut ens_env = base_env.clone();
     let mut ens_types = base_types.clone();
+    let result_sym = "$result";
+    let body_smt = if matches!(canon_fn.ret_type, Type::Slice(_)) {
+        let rp = builder.fresh_sym("ret_slice_ptr", &Type::I64);
+        let rl = builder.fresh_sym("ret_slice_len", &Type::I64);
+        builder.assumptions.push(format!("(assert (>= {rp} 0))"));
+        builder.assumptions.push(format!("(assert (>= {rl} 0))"));
+        if let Some((bp, bl)) =
+            builder.encode_slice_fields(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?
+        {
+            builder.assumptions.push(format!("(assert (= {rp} {bp}))"));
+            builder.assumptions.push(format!("(assert (= {rl} {bl}))"));
+            ens_env.insert("$result#0".to_string(), rp);
+            ens_env.insert("$result#1".to_string(), rl);
+            ens_types.insert("$result#0".to_string(), Type::I64);
+            ens_types.insert("$result#1".to_string(), Type::I64);
+            builder.fresh_sym("slice_body", &Type::I64)
+        } else {
+            let b = builder.encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?;
+            ens_env.insert("$result#0".to_string(), rp);
+            ens_env.insert("$result#1".to_string(), rl);
+            ens_types.insert("$result#0".to_string(), Type::I64);
+            ens_types.insert("$result#1".to_string(), Type::I64);
+            b
+        }
+    } else {
+        builder.encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?
+    };
+
+    // Encode postconditions (`ens`) as proof obligations
     ens_env.insert("$result".to_string(), result_sym.to_string());
     ens_types.insert("$result".to_string(), canon_fn.ret_type.clone());
     for (i, (canon_ens, raw_ens)) in canon_fn
