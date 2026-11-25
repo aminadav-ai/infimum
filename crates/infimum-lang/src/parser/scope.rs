@@ -482,7 +482,7 @@ pub(super) fn build_unit_tables(graph: &UnitGraph) -> Result<Vec<UnitTables>, In
                                 ));
                             } else {
                                 return Err(InfimumDiagnostic::new(
-                                    "E067_UNKNOWN_IMPORT",
+                                    "E075_UNKNOWN_IMPORT",
                                     "resolve",
                                     format!("Symbol '{}' not found in '{}'", item.name, dep_label),
                                     item.span,

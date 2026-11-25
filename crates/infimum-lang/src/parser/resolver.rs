@@ -2679,7 +2679,7 @@ impl ModuleResolver {
                 arms,
                 span,
             } => self.desugar_match(scrutinee, arms, *span, locals),
-            RawExpr::Call { target, args } => {
+            RawExpr::Call { target, args, span } => {
                 if args.len() == 1 {
                     if let TargetRef::Named(n) = target {
                         let fixed_uop = match n.as_str() {
@@ -2743,7 +2743,7 @@ impl ModuleResolver {
                 }
                 let resolved_target = match target {
                     TargetRef::Named(fname) => {
-                        if let Some(sym) = self.lookup_fn_sym(None, fname, Span::zero())? {
+                        if let Some(sym) = self.lookup_fn_sym(None, fname, *span)? {
                             TargetRef::Named(sym.canonical_name.clone())
                         } else if fname.starts_with("$forma_") || fname.starts_with("__forma_") {
                             TargetRef::Named(fname.clone())
@@ -2755,7 +2755,7 @@ impl ModuleResolver {
                                 format!(
                                     "{cur_file}: Unknown or unimported function '{fname}'"
                                 ),
-                                Span::zero(),
+                                *span,
                                 format!(
                                     "Declare 'fn {fname}(...)' in '{cur_file}' or import a 'pub fn {fname}' with 'use'"
                                 ),
