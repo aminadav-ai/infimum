@@ -323,6 +323,17 @@ pub(crate) enum RawExpr {
     },
     SliceIndex(Box<RawSliceIndex>),
     SliceRange(Box<RawSliceRange>),
+    VecOp(Box<RawVecOp>),
+}
+
+#[derive(Clone)]
+pub(crate) struct RawVecOp {
+    pub(super) module: Option<String>,
+    pub(super) layout: String,
+    pub(super) field: String,
+    pub(super) method: String,
+    pub(super) args: Vec<RawExpr>,
+    pub(super) span: Span,
 }
 
 pub(super) struct RawFnDef {

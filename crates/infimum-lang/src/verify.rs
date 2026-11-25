@@ -51,6 +51,7 @@ where
     obligations: Vec<ProofObligation>,
     fresh_counter: usize,
     known_mem: BTreeMap<i64, String>,
+    var_min_addr: BTreeMap<String, i64>,
 }
 
 impl<'a, F> SmtBuilder<'a, F>
@@ -66,6 +67,36 @@ where
             obligations: Vec::new(),
             fresh_counter: 0,
             known_mem: BTreeMap::new(),
+            var_min_addr: BTreeMap::new(),
+        }
+    }
+
+    fn static_min_addr(&self, expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::IntLit(v) => Some(*v),
+            Expr::BoundsCheck { .. } => Some(0),
+            Expr::Var(name) => self.var_min_addr.get(name).copied(),
+            Expr::Binary {
+                op: BinOp::Add,
+                lhs,
+                rhs,
+            } => self
+                .static_min_addr(lhs)?
+                .checked_add(self.static_min_addr(rhs)?),
+            Expr::Binary {
+                op: BinOp::Mul,
+                lhs,
+                rhs,
+            } => {
+                let a = self.static_min_addr(lhs)?;
+                let b = self.static_min_addr(rhs)?;
+                if a >= 0 && b >= 0 {
+                    a.checked_mul(b)
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 
@@ -543,6 +574,8 @@ where
                 }
                 if let Expr::IntLit(addr) = index.as_ref() {
                     self.known_mem.insert(*addr, v);
+                } else if let Some(min_a) = self.static_min_addr(index) {
+                    self.known_mem.retain(|&addr, _| addr < min_a);
                 } else {
                     self.known_mem.clear();
                 }
@@ -881,6 +914,11 @@ where
                         }
                     }
                     local_types.insert(name.clone(), inferred_ty);
+                    if let Some(min_a) = self.static_min_addr(value) {
+                        self.var_min_addr.insert(name.clone(), min_a);
+                    } else {
+                        self.var_min_addr.remove(name);
+                    }
                 }
                 Stmt::LetTuple { names, value } => {
                     if let Some(d) = declared.as_deref_mut() {
@@ -907,6 +945,7 @@ where
                     }
                 }
                 Stmt::Assign { name, value } => {
+                    self.var_min_addr.remove(name);
                     let is_slice_var = matches!(local_types.get(name), Some(Type::Slice(_)));
                     if Self::is_tuple_expr(value) {
                         if let Some(fields) =
@@ -983,6 +1022,7 @@ where
                     collect_mutated_vars_expr(cond, &mut mutated);
                     collect_mutated_vars(body, &mut mutated);
                     for mvar in mutated {
+                        self.var_min_addr.remove(&mvar);
                         let mty = local_types.get(&mvar).cloned().unwrap_or(Type::I64);
                         let fresh = self.fresh_sym("loop_havoc", &mty);
                         local_env.insert(mvar.clone(), fresh);

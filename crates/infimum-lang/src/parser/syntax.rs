@@ -9,7 +9,7 @@ use super::raw_ast::{
     RawConst, RawEnum, RawEnumVariant, RawExpr, RawFile, RawFnDef, RawInv, RawItem, RawLayout,
     RawLayoutField, RawLayoutLoad, RawMatchArm, RawMatchPattern, RawMod, RawModCall, RawSliceIndex,
     RawSliceRange, RawSliceStore, RawStmt, RawStruct, RawStructLit, RawType, RawUse, RawUseItem,
-    RawUseKind,
+    RawUseKind, RawVecOp,
 };
 
 pub(super) fn parse_raw_file(src: &str) -> Result<RawFile, InfimumDiagnostic> {
@@ -452,10 +452,51 @@ impl Parser {
         while !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Eof) {
             let (fname, fspan) = self.expect_ident("Expected layout field name")?;
             self.expect(&TokenKind::Colon, "Expected ':' after layout field name")?;
-            let (kind_kw, _) =
-                self.expect_ident("Expected 'word', 'words[N]', 'fixed', 'fixed[N]', 'Struct', or 'Struct[N]'")?;
-            let (struct_module, struct_type, is_array, is_fixed, len_expr) =
-                if matches!(self.peek().kind, TokenKind::ColonColon) {
+            let (kind_kw, _) = self.expect_ident(
+                "Expected 'word', 'words[N]', 'fixed', 'fixed[N]', 'vec<T>[CAP]', 'Struct', or 'Struct[N]'",
+            )?;
+            let (struct_module, struct_type, is_array, is_vec, is_fixed, len_expr) =
+                if kind_kw == "vec" && matches!(self.peek().kind, TokenKind::Lt) {
+                    self.advance(); // '<'
+                    let (elem_kw, elem_span) =
+                        self.expect_ident("Expected element type inside 'vec<T>[CAP]'")?;
+                    let (sm, st, fx) = if matches!(self.peek().kind, TokenKind::ColonColon) {
+                        self.advance();
+                        let (sname, _) = self.expect_ident(
+                            "Expected struct name after '::' in 'vec<m::Struct>[CAP]'",
+                        )?;
+                        (Some(elem_kw), Some(sname), false)
+                    } else {
+                        match elem_kw.as_str() {
+                            "word" | "i64" => (None, None, false),
+                            "fixed" => (None, None, true),
+                            "Secret" => {
+                                return Err(InfimumDiagnostic::new(
+                                    "E062_SECRET_IN_SLICE",
+                                    "parse",
+                                    "Secret<T> is not allowed inside 'vec<T>[CAP]'",
+                                    elem_span,
+                                    "Store non-secret words, fixed, or structs in vec<T>[CAP]",
+                                ));
+                            }
+                            other => (None, Some(other.to_string()), false),
+                        }
+                    };
+                    self.expect(
+                        &TokenKind::Gt,
+                        "Expected '>' after element type in 'vec<T>[CAP]'",
+                    )?;
+                    self.expect(
+                        &TokenKind::LBracket,
+                        "Expected '[' after 'vec<T>' (e.g. vec<word>[64])",
+                    )?;
+                    let cap_expr = self.parse_expr()?;
+                    self.expect(
+                        &TokenKind::RBracket,
+                        "Expected ']' after vec capacity",
+                    )?;
+                    (sm, st, true, true, fx, Some(cap_expr))
+                } else if matches!(self.peek().kind, TokenKind::ColonColon) {
                     self.advance();
                     let (sname, _) =
                         self.expect_ident("Expected struct name after '::' in layout field")?;
@@ -463,13 +504,13 @@ impl Parser {
                         self.advance();
                         let len = self.parse_expr()?;
                         self.expect(&TokenKind::RBracket, "Expected ']' after struct array length")?;
-                        (Some(kind_kw), Some(sname), true, false, Some(len))
+                        (Some(kind_kw), Some(sname), true, false, false, Some(len))
                     } else {
-                        (Some(kind_kw), Some(sname), false, false, None)
+                        (Some(kind_kw), Some(sname), false, false, false, None)
                     }
                 } else {
                     match kind_kw.as_str() {
-                        "word" => (None, None, false, false, None),
+                        "word" => (None, None, false, false, false, None),
                         "words" => {
                             self.expect(
                                 &TokenKind::LBracket,
@@ -477,7 +518,7 @@ impl Parser {
                             )?;
                             let len = self.parse_expr()?;
                             self.expect(&TokenKind::RBracket, "Expected ']' after words length")?;
-                            (None, None, true, false, Some(len))
+                            (None, None, true, false, false, Some(len))
                         }
                         "fixed" => {
                             if matches!(self.peek().kind, TokenKind::LBracket) {
@@ -487,9 +528,9 @@ impl Parser {
                                     &TokenKind::RBracket,
                                     "Expected ']' after fixed array length",
                                 )?;
-                                (None, None, true, true, Some(len))
+                                (None, None, true, false, true, Some(len))
                             } else {
-                                (None, None, false, true, None)
+                                (None, None, false, false, true, None)
                             }
                         }
                         other => {
@@ -500,9 +541,9 @@ impl Parser {
                                     &TokenKind::RBracket,
                                     "Expected ']' after struct array length",
                                 )?;
-                                (None, Some(other.to_string()), true, false, Some(len))
+                                (None, Some(other.to_string()), true, false, false, Some(len))
                             } else {
-                                (None, Some(other.to_string()), false, false, None)
+                                (None, Some(other.to_string()), false, false, false, None)
                             }
                         }
                     }
@@ -525,7 +566,7 @@ impl Parser {
                 struct_type,
                 len_expr,
                 is_array,
-                is_vec: false,
+                is_vec,
                 is_fixed,
                 at_expr,
                 inv,
@@ -2026,6 +2067,26 @@ impl Parser {
                         };
                     }
                     TokenKind::Ident(field) => {
+                        let is_vec_method_call = matches!(self.peek().kind, TokenKind::LParen)
+                            && matches!(
+                                &expr,
+                                RawExpr::LayoutLoad(ll)
+                                    if ll.index.is_none() && ll.subfield.is_none()
+                            );
+                        if is_vec_method_call {
+                            let args = self.parse_arg_list()?;
+                            if let RawExpr::LayoutLoad(ll) = expr {
+                                expr = RawExpr::VecOp(Box::new(RawVecOp {
+                                    module: ll.module,
+                                    layout: ll.layout,
+                                    field: ll.field,
+                                    method: field,
+                                    args,
+                                    span: if dot_span.line > 0 { dot_span } else { origin_span },
+                                }));
+                                continue;
+                            }
+                        }
                         if let RawExpr::LayoutLoad(ref mut ll) = expr {
                             if ll.subfield.is_none() {
                                 ll.subfield = Some(field);

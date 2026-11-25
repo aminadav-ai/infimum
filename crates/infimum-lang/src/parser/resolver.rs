@@ -12,7 +12,7 @@ use crate::diag::{InfimumDiagnostic, Span};
 use super::raw_ast::{
     LayoutFieldMeta, RawExpr, RawFnDef, RawItem, RawLayoutLoad, RawMatchArm, RawMatchPattern,
     RawModCall, RawSliceIndex, RawSliceRange, RawSliceStore, RawStmt, RawStructLit, RawType,
-    RawUnit, StructDef, UnitId,
+    RawUnit, RawVecOp, StructDef, UnitId,
 };
 use crate::lexer::tokenize;
 use super::scope::{SymRef, UnitTables, unit_canonical_name};
@@ -458,6 +458,20 @@ impl ModuleResolver {
     fn infer_raw_expr_slice(&self, expr: &RawExpr) -> Option<SliceElemMeta> {
         match expr {
             RawExpr::Var(v) => self.lookup_slice_var(v),
+            RawExpr::VecOp(vo) if vo.method == "as_slice" => {
+                let sym = self
+                    .lookup_layout_sym(vo.module.as_deref(), &vo.layout, vo.span)
+                    .ok()
+                    .flatten()?;
+                let meta = self
+                    .layout_field_meta
+                    .get(&(sym.canonical_name.clone(), vo.field.clone()))?;
+                if meta.is_vec {
+                    self.slice_meta_from_layout_field(meta)
+                } else {
+                    None
+                }
+            }
             RawExpr::SliceRange(sr) => {
                 if let RawExpr::LayoutLoad(ll) = &sr.base {
                     if ll.index.is_none() && ll.subfield.is_none() {
@@ -618,6 +632,20 @@ impl ModuleResolver {
             RawExpr::SliceIndex(si) if si.subfield.is_none() => self
                 .infer_raw_expr_slice(&si.base)
                 .and_then(|m| m.struct_canon),
+            RawExpr::VecOp(vo) if vo.method == "pop" => {
+                let sym = self
+                    .lookup_layout_sym(vo.module.as_deref(), &vo.layout, vo.span)
+                    .ok()
+                    .flatten()?;
+                let meta = self
+                    .layout_field_meta
+                    .get(&(sym.canonical_name.clone(), vo.field.clone()))?;
+                if meta.is_vec {
+                    meta.struct_type.clone()
+                } else {
+                    None
+                }
+            }
             RawExpr::Call {
                 target: TargetRef::Named(fname),
                 ..
@@ -1183,17 +1211,35 @@ impl ModuleResolver {
             (None, None) => 0,
         };
 
-        let base_word = meta.offset + sub_off;
+        let data_offset = if meta.is_vec {
+            meta.offset + 1
+        } else {
+            meta.offset
+        };
+        let base_word = data_offset + sub_off;
         match index {
             None => Ok(Expr::IntLit(base_word)),
             Some(idx_raw) => {
                 let idx_expr = self.lower_expr(idx_raw, locals)?;
-                let scaled = if meta.stride == 1 {
+                let idx_checked = if meta.is_vec {
+                    Expr::BoundsCheck {
+                        index: Box::new(idx_expr),
+                        len: Box::new(Expr::MemLoad {
+                            index: Box::new(Expr::IntLit(meta.offset)),
+                            inv: Some((0, meta.count)),
+                            fixed_ty: false,
+                        }),
+                        inclusive_hi: false,
+                    }
+                } else {
                     idx_expr
+                };
+                let scaled = if meta.stride == 1 {
+                    idx_checked
                 } else {
                     Expr::Binary {
                         op: BinOp::Mul,
-                        lhs: Box::new(idx_expr),
+                        lhs: Box::new(idx_checked),
                         rhs: Box::new(Expr::IntLit(meta.stride)),
                     }
                 };
@@ -1457,9 +1503,16 @@ impl ModuleResolver {
                         }
                         None => 1,
                     };
-                    let len = count
+                    let data_words = count
                         .checked_mul(stride)
                         .ok_or_else(|| const_overflow("*", rf.span))?;
+                    let len = if rf.is_vec {
+                        data_words
+                            .checked_add(1)
+                            .ok_or_else(|| const_overflow("+", rf.span))?
+                    } else {
+                        data_words
+                    };
                     let offset = match rf.at_expr {
                         Some(ref expr) => {
                             let o = self.eval_const_i64(
@@ -2298,6 +2351,29 @@ impl ModuleResolver {
                         }
                     }
                     let lcanon = self.resolve_layout_canon(module.as_deref(), layout, *span)?;
+                    if let Some(meta) = self
+                        .layout_field_meta
+                        .get(&(lcanon.clone(), field.clone()))
+                        .cloned()
+                    {
+                        if meta.is_vec && index.is_none() {
+                            return Err(InfimumDiagnostic::new(
+                                "E061_LAYOUT_ARRAY_ACCESS",
+                                "resolve",
+                                format!(
+                                    "Cannot assign directly to vec field '{layout}.{field}{}'",
+                                    subfield
+                                        .as_deref()
+                                        .map(|s| format!(".{s}"))
+                                        .unwrap_or_default()
+                                ),
+                                *span,
+                                format!(
+                                    "Use '{layout}.{field}.push(v)', '{layout}.{field}.try_push(v)', '{layout}.{field}.pop()', '{layout}.{field}.clear()', '{layout}.{field}.swap_remove(i)', or '{layout}.{field}[i] = v'"
+                                ),
+                            ));
+                        }
+                    }
                     // Case B: Whole-struct store into layout (`World.hero = v;` or `World.flock[i] = s;`)
                     if subfield.is_none() && op.is_none() {
                         if let Some(meta) = self
@@ -2326,14 +2402,31 @@ impl ModuleResolver {
                                 });
                                 let base_addr_var = if let Some(idx_raw) = index {
                                     let idx_e = self.lower_expr(idx_raw, locals)?;
-                                    let clamped =
-                                        self.inline_clamp_nonneg(idx_e, (meta.count - 1).max(0));
+                                    let (data_base, safe_idx) = if meta.is_vec {
+                                        (
+                                            meta.offset + 1,
+                                            Expr::BoundsCheck {
+                                                index: Box::new(idx_e),
+                                                len: Box::new(Expr::MemLoad {
+                                                    index: Box::new(Expr::IntLit(meta.offset)),
+                                                    inv: Some((0, meta.count)),
+                                                    fixed_ty: false,
+                                                }),
+                                                inclusive_hi: false,
+                                            },
+                                        )
+                                    } else {
+                                        (
+                                            meta.offset,
+                                            self.inline_clamp_nonneg(idx_e, (meta.count - 1).max(0)),
+                                        )
+                                    };
                                     let base_expr = Expr::Binary {
                                         op: BinOp::Add,
-                                        lhs: Box::new(Expr::IntLit(meta.offset)),
+                                        lhs: Box::new(Expr::IntLit(data_base)),
                                         rhs: Box::new(Expr::Binary {
                                             op: BinOp::Mul,
-                                            lhs: Box::new(clamped),
+                                            lhs: Box::new(safe_idx),
                                             rhs: Box::new(Expr::IntLit(meta.stride)),
                                         }),
                                     };
@@ -3019,6 +3112,34 @@ impl ModuleResolver {
                     }
                 }
                 let lcanon = self.resolve_layout_canon(module.as_deref(), layout, *span)?;
+                // Case A2: `vec<T>[CAP]` properties (`L.v.len`, `L.v.cap`)
+                if index.is_none() {
+                    if let Some(sf) = subfield.as_deref() {
+                        if let Some(meta) = self
+                            .layout_field_meta
+                            .get(&(lcanon.clone(), field.clone()))
+                            .cloned()
+                        {
+                            if meta.is_vec {
+                                return match sf {
+                                    "len" => Ok(Expr::MemLoad {
+                                        index: Box::new(Expr::IntLit(meta.offset)),
+                                        inv: Some((0, meta.count)),
+                                        fixed_ty: false,
+                                    }),
+                                    "cap" => Ok(Expr::IntLit(meta.count)),
+                                    _ => Err(InfimumDiagnostic::new(
+                                        "E063_UNKNOWN_FIELD",
+                                        "parse",
+                                        format!("Vec field '{layout}.{field}' has no property '.{sf}'"),
+                                        *span,
+                                        "Supported vec properties are '.len' and '.cap' (or call .as_slice(), .push(), .try_push(), .pop(), .clear(), .swap_remove())",
+                                    )),
+                                };
+                            }
+                        }
+                    }
+                }
                 // Case B: Whole-struct load from layout (`let h = World.hero;` or `let s = World.flock[i];`)
                 if subfield.is_none() {
                     if let Some(meta) = self
@@ -3038,14 +3159,31 @@ impl ModuleResolver {
                             })?;
                             if let Some(idx_raw) = index {
                                 let idx_e = self.lower_expr(idx_raw, locals)?;
-                                let clamped =
-                                    self.inline_clamp_nonneg(idx_e, (meta.count - 1).max(0));
+                                let (data_base, safe_idx) = if meta.is_vec {
+                                    (
+                                        meta.offset + 1,
+                                        Expr::BoundsCheck {
+                                            index: Box::new(idx_e),
+                                            len: Box::new(Expr::MemLoad {
+                                                index: Box::new(Expr::IntLit(meta.offset)),
+                                                inv: Some((0, meta.count)),
+                                                fixed_ty: false,
+                                            }),
+                                            inclusive_hi: false,
+                                        },
+                                    )
+                                } else {
+                                    (
+                                        meta.offset,
+                                        self.inline_clamp_nonneg(idx_e, (meta.count - 1).max(0)),
+                                    )
+                                };
                                 let base_expr = Expr::Binary {
                                     op: BinOp::Add,
-                                    lhs: Box::new(Expr::IntLit(meta.offset)),
+                                    lhs: Box::new(Expr::IntLit(data_base)),
                                     rhs: Box::new(Expr::Binary {
                                         op: BinOp::Mul,
-                                        lhs: Box::new(clamped),
+                                        lhs: Box::new(safe_idx),
                                         rhs: Box::new(Expr::IntLit(meta.stride)),
                                     }),
                                 };
@@ -3637,6 +3775,418 @@ impl ModuleResolver {
                     tail: Box::new(tail),
                 })
             }
+            RawExpr::VecOp(vo) => {
+                let RawVecOp {
+                    module,
+                    layout,
+                    field,
+                    method,
+                    args,
+                    span,
+                } = vo.as_ref();
+                let lcanon = self.resolve_layout_canon(module.as_deref(), layout, *span)?;
+                let meta = self
+                    .layout_field_meta
+                    .get(&(lcanon.clone(), field.clone()))
+                    .cloned()
+                    .ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E061_UNKNOWN_LAYOUT_FIELD",
+                            "resolve",
+                            format!("Layout '{layout}' has no field '{field}'"),
+                            *span,
+                            format!("Check the field name in 'layout {layout}'"),
+                        )
+                    })?;
+                if !meta.is_vec {
+                    return Err(InfimumDiagnostic::new(
+                        "E061_LAYOUT_ARRAY_ACCESS",
+                        "resolve",
+                        format!(
+                            "Field '{layout}.{field}' is not a 'vec<T>[CAP]'; cannot call '.{method}(...)'"
+                        ),
+                        *span,
+                        format!("Declare '{field}: vec<T>[CAP]' in 'layout {layout}' to use vec methods"),
+                    ));
+                }
+                let cap = meta.count;
+                let len_word = meta.offset;
+                let data_base = meta.offset + 1;
+                let stride = meta.stride;
+                let smeta = self.slice_meta_from_layout_field(&meta).ok_or_else(|| {
+                    InfimumDiagnostic::new(
+                        "E061_UNKNOWN_STRUCT",
+                        "resolve",
+                        format!("Unknown element struct on '{layout}.{field}'"),
+                        *span,
+                        "Declare the struct before using it in a vec",
+                    )
+                })?;
+                let sdef_opt = smeta
+                    .struct_canon
+                    .as_ref()
+                    .and_then(|sc| self.structs.get(sc).cloned());
+                let mk_len_load = || Expr::MemLoad {
+                    index: Box::new(Expr::IntLit(len_word)),
+                    inv: Some((0, cap)),
+                    fixed_ty: false,
+                };
+                let mk_elem_addr = |idx_expr: Expr| {
+                    let scaled = if stride == 1 {
+                        idx_expr
+                    } else {
+                        Expr::Binary {
+                            op: BinOp::Mul,
+                            lhs: Box::new(idx_expr),
+                            rhs: Box::new(Expr::IntLit(stride)),
+                        }
+                    };
+                    Expr::Binary {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::IntLit(data_base)),
+                        rhs: Box::new(scaled),
+                    }
+                };
+                match method.as_str() {
+                    "as_slice" => {
+                        if !args.is_empty() {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                format!("'{layout}.{field}.as_slice()' takes 0 arguments, got {}", args.len()),
+                                *span,
+                                "Call '.as_slice()' with no arguments",
+                            ));
+                        }
+                        Ok(Expr::SliceLit {
+                            ptr: Box::new(Expr::IntLit(data_base)),
+                            len: Box::new(mk_len_load()),
+                            elem_ty: smeta.elem_ty,
+                        })
+                    }
+                    "clear" => {
+                        if !args.is_empty() {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                format!("'{layout}.{field}.clear()' takes 0 arguments, got {}", args.len()),
+                                *span,
+                                "Call '.clear()' with no arguments",
+                            ));
+                        }
+                        Ok(Expr::MemStore {
+                            index: Box::new(Expr::IntLit(len_word)),
+                            value: Box::new(Expr::IntLit(0)),
+                            inv: Some((0, cap)),
+                            fixed_ty: false,
+                        })
+                    }
+                    "push" => {
+                        if args.len() != 1 {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                format!("'{layout}.{field}.push(val)' takes 1 argument, got {}", args.len()),
+                                *span,
+                                "Pass the element value to '.push(val)'",
+                            ));
+                        }
+                        let val_e = self.lower_expr(&args[0], locals)?;
+                        let n_var = format!("__ifm_vn_{}", self.addr_counter);
+                        self.addr_counter += 1;
+                        let mut stmts = vec![Stmt::Let {
+                            name: n_var.clone(),
+                            mutable: false,
+                            ty: Some(Type::I64),
+                            value: Expr::BoundsCheck {
+                                index: Box::new(mk_len_load()),
+                                len: Box::new(Expr::IntLit(cap)),
+                                inclusive_hi: false,
+                            },
+                        }];
+                        let elem_addr = mk_elem_addr(Expr::Var(n_var.clone()));
+                        if let Some(ref sdef) = sdef_opt {
+                            let store_stmts = self.emit_store_struct_at(elem_addr, val_e, sdef);
+                            stmts.extend(store_stmts);
+                        } else {
+                            stmts.push(Stmt::Expr(Expr::MemStore {
+                                index: Box::new(elem_addr),
+                                value: Box::new(val_e),
+                                inv: meta.inv,
+                                fixed_ty: meta.is_fixed,
+                            }));
+                        }
+                        let tail = Expr::MemStore {
+                            index: Box::new(Expr::IntLit(len_word)),
+                            value: Box::new(Expr::Binary {
+                                op: BinOp::Add,
+                                lhs: Box::new(Expr::Var(n_var)),
+                                rhs: Box::new(Expr::IntLit(1)),
+                            }),
+                            inv: Some((0, cap)),
+                            fixed_ty: false,
+                        };
+                        Ok(Expr::Block {
+                            stmts,
+                            tail: Box::new(tail),
+                        })
+                    }
+                    "try_push" => {
+                        if args.len() != 1 {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                format!("'{layout}.{field}.try_push(val)' takes 1 argument, got {}", args.len()),
+                                *span,
+                                "Pass the element value to '.try_push(val)'",
+                            ));
+                        }
+                        let val_e = self.lower_expr(&args[0], locals)?;
+                        let n_var = format!("__ifm_vn_{}", self.addr_counter);
+                        self.addr_counter += 1;
+                        let mut then_stmts = Vec::new();
+                        let elem_addr = mk_elem_addr(Expr::Var(n_var.clone()));
+                        if let Some(ref sdef) = sdef_opt {
+                            let store_stmts = self.emit_store_struct_at(elem_addr, val_e, sdef);
+                            then_stmts.extend(store_stmts);
+                        } else {
+                            then_stmts.push(Stmt::Expr(Expr::MemStore {
+                                index: Box::new(elem_addr),
+                                value: Box::new(val_e),
+                                inv: meta.inv,
+                                fixed_ty: meta.is_fixed,
+                            }));
+                        }
+                        then_stmts.push(Stmt::Expr(Expr::MemStore {
+                            index: Box::new(Expr::IntLit(len_word)),
+                            value: Box::new(Expr::Binary {
+                                op: BinOp::Add,
+                                lhs: Box::new(Expr::Var(n_var.clone())),
+                                rhs: Box::new(Expr::IntLit(1)),
+                            }),
+                            inv: Some((0, cap)),
+                            fixed_ty: false,
+                        }));
+                        Ok(Expr::Block {
+                            stmts: vec![Stmt::Let {
+                                name: n_var.clone(),
+                                mutable: false,
+                                ty: Some(Type::I64),
+                                value: mk_len_load(),
+                            }],
+                            tail: Box::new(Expr::If {
+                                cond: Box::new(Expr::Binary {
+                                    op: BinOp::Lt,
+                                    lhs: Box::new(Expr::Var(n_var)),
+                                    rhs: Box::new(Expr::IntLit(cap)),
+                                }),
+                                then_branch: Box::new(Expr::Block {
+                                    stmts: then_stmts,
+                                    tail: Box::new(Expr::BoolLit(true)),
+                                }),
+                                else_branch: Box::new(Expr::BoolLit(false)),
+                            }),
+                        })
+                    }
+                    "pop" => {
+                        if !args.is_empty() {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                format!("'{layout}.{field}.pop()' takes 0 arguments, got {}", args.len()),
+                                *span,
+                                "Call '.pop()' with no arguments",
+                            ));
+                        }
+                        let last_var = format!("__ifm_vlast_{}", self.addr_counter);
+                        let val_var = format!("__ifm_vpop_{}", self.addr_counter);
+                        self.addr_counter += 1;
+                        let last_expr = Expr::BoundsCheck {
+                            index: Box::new(Expr::Binary {
+                                op: BinOp::Sub,
+                                lhs: Box::new(mk_len_load()),
+                                rhs: Box::new(Expr::IntLit(1)),
+                            }),
+                            len: Box::new(Expr::IntLit(cap)),
+                            inclusive_hi: false,
+                        };
+                        let elem_addr = mk_elem_addr(Expr::Var(last_var.clone()));
+                        let (load_expr, val_ty) = if let Some(ref sdef) = sdef_opt {
+                            (
+                                self.emit_load_struct_at(elem_addr, sdef),
+                                Some(self.struct_tuple_type(sdef)),
+                            )
+                        } else {
+                            (
+                                Expr::MemLoad {
+                                    index: Box::new(elem_addr),
+                                    inv: meta.inv,
+                                    fixed_ty: meta.is_fixed,
+                                },
+                                Some(if meta.is_fixed { Type::Fixed } else { Type::I64 }),
+                            )
+                        };
+                        Ok(Expr::Block {
+                            stmts: vec![
+                                Stmt::Let {
+                                    name: last_var.clone(),
+                                    mutable: false,
+                                    ty: Some(Type::I64),
+                                    value: last_expr,
+                                },
+                                Stmt::Let {
+                                    name: val_var.clone(),
+                                    mutable: false,
+                                    ty: val_ty,
+                                    value: load_expr,
+                                },
+                                Stmt::Expr(Expr::MemStore {
+                                    index: Box::new(Expr::IntLit(len_word)),
+                                    value: Box::new(Expr::Var(last_var)),
+                                    inv: Some((0, cap)),
+                                    fixed_ty: false,
+                                }),
+                            ],
+                            tail: Box::new(Expr::Var(val_var)),
+                        })
+                    }
+                    "swap_remove" => {
+                        if args.len() != 1 {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                format!(
+                                    "'{layout}.{field}.swap_remove(i)' takes 1 argument, got {}",
+                                    args.len()
+                                ),
+                                *span,
+                                "Pass the element index to '.swap_remove(i)'",
+                            ));
+                        }
+                        let idx_e = self.lower_expr(&args[0], locals)?;
+                        let n_var = format!("__ifm_vn_{}", self.addr_counter);
+                        let i_var = format!("__ifm_vi_{}", self.addr_counter);
+                        let last_var = format!("__ifm_vlast_{}", self.addr_counter);
+                        self.addr_counter += 1;
+                        let mut copy_stmts = Vec::new();
+                        let dst_base = format!("__ifm_vdst_{}", self.addr_counter);
+                        let src_base = format!("__ifm_vsrc_{}", self.addr_counter);
+                        self.addr_counter += 1;
+                        copy_stmts.push(Stmt::Let {
+                            name: dst_base.clone(),
+                            mutable: false,
+                            ty: Some(Type::I64),
+                            value: mk_elem_addr(Expr::Var(i_var.clone())),
+                        });
+                        copy_stmts.push(Stmt::Let {
+                            name: src_base.clone(),
+                            mutable: false,
+                            ty: Some(Type::I64),
+                            value: mk_elem_addr(Expr::Var(last_var.clone())),
+                        });
+                        if let Some(ref sdef) = sdef_opt {
+                            for (k, fname) in sdef.field_names.iter().enumerate() {
+                                let src_a = if k == 0 {
+                                    Expr::Var(src_base.clone())
+                                } else {
+                                    Expr::Binary {
+                                        op: BinOp::Add,
+                                        lhs: Box::new(Expr::Var(src_base.clone())),
+                                        rhs: Box::new(Expr::IntLit(k as i64)),
+                                    }
+                                };
+                                let dst_a = if k == 0 {
+                                    Expr::Var(dst_base.clone())
+                                } else {
+                                    Expr::Binary {
+                                        op: BinOp::Add,
+                                        lhs: Box::new(Expr::Var(dst_base.clone())),
+                                        rhs: Box::new(Expr::IntLit(k as i64)),
+                                    }
+                                };
+                                let finv = sdef.field_invs.get(fname).copied();
+                                let ffx = sdef.field_fixed.contains(fname);
+                                copy_stmts.push(Stmt::Expr(Expr::MemStore {
+                                    index: Box::new(dst_a),
+                                    value: Box::new(Expr::MemLoad {
+                                        index: Box::new(src_a),
+                                        inv: finv,
+                                        fixed_ty: ffx,
+                                    }),
+                                    inv: finv,
+                                    fixed_ty: ffx,
+                                }));
+                            }
+                        } else {
+                            copy_stmts.push(Stmt::Expr(Expr::MemStore {
+                                index: Box::new(Expr::Var(dst_base)),
+                                value: Box::new(Expr::MemLoad {
+                                    index: Box::new(Expr::Var(src_base)),
+                                    inv: meta.inv,
+                                    fixed_ty: meta.is_fixed,
+                                }),
+                                inv: meta.inv,
+                                fixed_ty: meta.is_fixed,
+                            }));
+                        }
+                        Ok(Expr::Block {
+                            stmts: vec![
+                                Stmt::Let {
+                                    name: n_var.clone(),
+                                    mutable: false,
+                                    ty: Some(Type::I64),
+                                    value: mk_len_load(),
+                                },
+                                Stmt::Let {
+                                    name: i_var.clone(),
+                                    mutable: false,
+                                    ty: Some(Type::I64),
+                                    value: Expr::BoundsCheck {
+                                        index: Box::new(idx_e),
+                                        len: Box::new(Expr::Var(n_var.clone())),
+                                        inclusive_hi: false,
+                                    },
+                                },
+                                Stmt::Let {
+                                    name: last_var.clone(),
+                                    mutable: false,
+                                    ty: Some(Type::I64),
+                                    value: Expr::Binary {
+                                        op: BinOp::Sub,
+                                        lhs: Box::new(Expr::Var(n_var)),
+                                        rhs: Box::new(Expr::IntLit(1)),
+                                    },
+                                },
+                                Stmt::Expr(Expr::If {
+                                    cond: Box::new(Expr::Binary {
+                                        op: BinOp::Ne,
+                                        lhs: Box::new(Expr::Var(i_var)),
+                                        rhs: Box::new(Expr::Var(last_var.clone())),
+                                    }),
+                                    then_branch: Box::new(Expr::Block {
+                                        stmts: copy_stmts,
+                                        tail: Box::new(Expr::UnitLit),
+                                    }),
+                                    else_branch: Box::new(Expr::UnitLit),
+                                }),
+                            ],
+                            tail: Box::new(Expr::MemStore {
+                                index: Box::new(Expr::IntLit(len_word)),
+                                value: Box::new(Expr::Var(last_var)),
+                                inv: Some((0, cap)),
+                                fixed_ty: false,
+                            }),
+                        })
+                    }
+                    other => Err(InfimumDiagnostic::new(
+                        "E063_UNKNOWN_FIELD",
+                        "resolve",
+                        format!("Unknown vec method '.{other}(...)' on '{layout}.{field}'"),
+                        *span,
+                        "Supported vec methods: .as_slice(), .clear(), .push(val), .try_push(val), .pop(), .swap_remove(i)",
+                    )),
+                }
+            }
             RawExpr::SliceRange(sr) => {
                 let RawSliceRange { base, lo, hi, span } = sr.as_ref();
                 // Case 1: Slicing a layout array (`[m::]Layout.arr[lo..hi]` or `Layout.arr[..]`)
@@ -3653,7 +4203,33 @@ impl ModuleResolver {
                                 .get(&(sym.canonical_name.clone(), ll.field.clone()))
                                 .cloned()
                             {
-                                if meta.is_array {
+                                if meta.is_vec {
+                                    let smeta =
+                                        self.slice_meta_from_layout_field(&meta).ok_or_else(
+                                            || {
+                                                InfimumDiagnostic::new(
+                                                    "E061_UNKNOWN_STRUCT",
+                                                    "parse",
+                                                    format!("Unknown element struct on '{}.{}'", ll.layout, ll.field),
+                                                    *span,
+                                                    "Declare the struct before slicing its vec",
+                                                )
+                                            },
+                                        )?;
+                                    let vlen_var = format!("__ifm_vlen_{}", self.addr_counter);
+                                    self.addr_counter += 1;
+                                    pre_stmts.push(Stmt::Let {
+                                        name: vlen_var.clone(),
+                                        mutable: false,
+                                        ty: Some(Type::I64),
+                                        value: Expr::MemLoad {
+                                            index: Box::new(Expr::IntLit(meta.offset)),
+                                            inv: Some((0, meta.count)),
+                                            fixed_ty: false,
+                                        },
+                                    });
+                                    (Expr::IntLit(meta.offset + 1), Expr::Var(vlen_var), smeta)
+                                } else if meta.is_array {
                                     let smeta =
                                         self.slice_meta_from_layout_field(&meta).ok_or_else(
                                             || {
