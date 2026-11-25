@@ -11,7 +11,7 @@ pub fn slice_eq(a: [i64], b: [i64]) -[Mem]-> bool {
   } else {
     let mut eq = true;
     for i in 0..a.len max 4096 {
-      if i < b.len && a[i] != b[i] {
+      if a[i] != b[i] {
         eq = false;
         break;
       }
@@ -27,7 +27,7 @@ pub fn slice_starts_with(haystack: [i64], prefix: [i64]) -[Mem]-> bool {
   } else {
     let mut ok = true;
     for i in 0..prefix.len max 4096 {
-      if i < haystack.len && haystack[i] != prefix[i] {
+      if haystack[i] != prefix[i] {
         ok = false;
         break;
       }
@@ -60,9 +60,7 @@ pub fn slice_fill(dst: [i64], val: i64) -[Mem]-> unit {
 pub fn slice_copy(dst: [i64], src: [i64]) -[Mem]-> i64 {
   let n = if dst.len < src.len { dst.len } else { src.len };
   for i in 0..n max 4096 {
-    if i < dst.len && i < src.len {
-      dst[i] = src[i];
-    }
+    dst[i] = src[i];
   }
   n
 }
