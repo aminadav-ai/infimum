@@ -500,3 +500,41 @@ export fn run() -> i64 { m::call() }
         .expect_err("inline mod must not shadow parent fn");
     assert_eq!(err3.code, "E024_DUPLICATE_SYMBOL");
 }
+
+#[test]
+fn struct_array_layout_read_write_works_without_std_math() {
+    // Zero `use "std/math.ifm";` — inline clamp in parser must not depend on clamp_i64
+    let mut files = BTreeMap::new();
+    files.insert(
+        "main.ifm".to_string(),
+        r#"
+struct Point {
+  x: word,
+  y: word,
+}
+
+layout World {
+  pts: Point[4],
+}
+
+export fn roundtrip(idx: i64) -[Mem]-> i64 {
+  World.pts[idx] = Point { x: 11, y: 31 };
+  let p = World.pts[idx];
+  p.x + p.y
+}
+
+test "struct array works without std/math and clamps oob" {
+  assert(roundtrip(2) == 42);
+  assert(roundtrip(-5) == 42);
+  assert(roundtrip(99) == 42);
+}
+"#
+        .to_string(),
+    );
+    let module = parse_module_from_virtual_fs("main.ifm", &files)
+        .expect("struct array layout must parse without std/math.ifm");
+    assert_all_ifm_tests_pass(&module);
+    let (wasm, _) = compile_project_in_memory("main.ifm", &files)
+        .expect("struct array layout must compile to Wasm without std/math.ifm");
+    assert!(wasm.starts_with(b"\0asm"));
+}
