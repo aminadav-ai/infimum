@@ -6,6 +6,7 @@
 // attributes/event handlers before a single character reaches any capsule.
 
 use "std/math.ifm";
+use "std/slice.ifm";
 
 const MAX_IN_CHARS: i64 = 65536;
 const MAX_OUT_CHARS: i64 = 65536;
@@ -99,101 +100,86 @@ fn out_push_word_sep() -[Mem]-> unit {
   }
 }
 
-fn match_ci2(pos: i64, n: i64, c0: i64, c1: i64) -[Mem]-> bool {
-  pos + 2 <= n
-    && to_ascii_lower(in_at(pos, n)) == c0
-    && to_ascii_lower(in_at(pos + 1, n)) == c1
-}
-
-fn match_ci3(pos: i64, n: i64, c0: i64, c1: i64, c2: i64) -[Mem]-> bool {
-  match_ci2(pos, n, c0, c1) && to_ascii_lower(in_at(pos + 2, n)) == c2
-}
-
-fn match_ci4(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64) -[Mem]-> bool {
-  match_ci3(pos, n, c0, c1, c2) && to_ascii_lower(in_at(pos + 3, n)) == c3
-}
-
-fn match_ci5(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64) -[Mem]-> bool {
-  match_ci4(pos, n, c0, c1, c2, c3) && to_ascii_lower(in_at(pos + 4, n)) == c4
-}
-
-fn match_ci6(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64) -[Mem]-> bool {
-  match_ci5(pos, n, c0, c1, c2, c3, c4) && to_ascii_lower(in_at(pos + 5, n)) == c5
-}
-
-fn match_ci7(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64, c6: i64) -[Mem]-> bool {
-  match_ci6(pos, n, c0, c1, c2, c3, c4, c5) && to_ascii_lower(in_at(pos + 6, n)) == c6
-}
-
-fn match_ci8(pos: i64, n: i64, c0: i64, c1: i64, c2: i64, c3: i64, c4: i64, c5: i64, c6: i64, c7: i64) -[Mem]-> bool {
-  match_ci7(pos, n, c0, c1, c2, c3, c4, c5, c6) && to_ascii_lower(in_at(pos + 7, n)) == c7
+fn in_matches_ci(pos: i64, n: i64, pat: str) -[Mem]-> bool {
+  let ps = str_as_slice(pat);
+  let lim = clamp_i64(n, 0, MAX_IN_CHARS);
+  if pos < 0 || ps.len < 0 || pos + ps.len > lim {
+    false
+  } else {
+    slice_eq_ascii_ci(SanMem.in_buf[pos..pos + ps.len], ps)
+  }
 }
 
 // Classify HTML tag name at [start..start+tlen)
 fn classify_tag(start: i64, tlen: i64, n: i64) -[Mem]-> i64 {
-  match tlen {
-    1 => if to_ascii_lower(in_at(start, n)) == 'p' { TagKind::Block } else { TagKind::Other },
-    2 => {
-      if match_ci2(start, n, 'h', '1') || match_ci2(start, n, 'h', '2') || match_ci2(start, n, 'h', '3') {
-        TagKind::Heading
-      } else if match_ci2(start, n, 'l', 'i') {
-        TagKind::Li
-      } else if match_ci2(start, n, 'b', 'r') {
-        TagKind::Br
-      } else if match_ci2(start, n, 't', 'r') {
-        TagKind::Block
-      } else if match_ci2(start, n, 't', 'd') || match_ci2(start, n, 't', 'h') {
-        TagKind::Cell
-      } else {
-        TagKind::Other
-      }
-    },
-    3 => {
-      if match_ci3(start, n, 'd', 'i', 'v') {
-        TagKind::Block
-      } else if match_ci3(start, n, 's', 'v', 'g') {
-        TagKind::Svg
-      } else {
-        TagKind::Other
-      }
-    },
-    5 => if match_ci5(start, n, 's', 't', 'y', 'l', 'e') { TagKind::Style } else { TagKind::Other },
-    6 => {
-      if match_ci6(start, n, 's', 'c', 'r', 'i', 'p', 't') {
-        TagKind::Script
-      } else if match_ci6(start, n, 'i', 'f', 'r', 'a', 'm', 'e') {
-        TagKind::Iframe
-      } else {
-        TagKind::Other
-      }
-    },
-    7 => {
-      if match_ci7(start, n, 's', 'e', 'c', 't', 'i', 'o', 'n')
-        || match_ci7(start, n, 'a', 'r', 't', 'i', 'c', 'l', 'e')
-      {
-        TagKind::Block
-      } else {
-        TagKind::Other
-      }
-    },
-    8 => if match_ci8(start, n, 'n', 'o', 's', 'c', 'r', 'i', 'p', 't') { TagKind::Noscript } else { TagKind::Other },
-    _ => TagKind::Other,
+  let lim = clamp_i64(n, 0, MAX_IN_CHARS);
+  if start < 0 || tlen <= 0 || start + tlen > lim {
+    TagKind::Other
+  } else {
+    let tag = SanMem.in_buf[start..start + tlen];
+    match tlen {
+      1 => if slice_eq_ascii_ci(tag, str_as_slice("p")) { TagKind::Block } else { TagKind::Other },
+      2 => {
+        if slice_eq_ascii_ci(tag, str_as_slice("h1"))
+          || slice_eq_ascii_ci(tag, str_as_slice("h2"))
+          || slice_eq_ascii_ci(tag, str_as_slice("h3"))
+        {
+          TagKind::Heading
+        } else if slice_eq_ascii_ci(tag, str_as_slice("li")) {
+          TagKind::Li
+        } else if slice_eq_ascii_ci(tag, str_as_slice("br")) {
+          TagKind::Br
+        } else if slice_eq_ascii_ci(tag, str_as_slice("tr")) {
+          TagKind::Block
+        } else if slice_eq_ascii_ci(tag, str_as_slice("td")) || slice_eq_ascii_ci(tag, str_as_slice("th")) {
+          TagKind::Cell
+        } else {
+          TagKind::Other
+        }
+      },
+      3 => {
+        if slice_eq_ascii_ci(tag, str_as_slice("div")) {
+          TagKind::Block
+        } else if slice_eq_ascii_ci(tag, str_as_slice("svg")) {
+          TagKind::Svg
+        } else {
+          TagKind::Other
+        }
+      },
+      5 => if slice_eq_ascii_ci(tag, str_as_slice("style")) { TagKind::Style } else { TagKind::Other },
+      6 => {
+        if slice_eq_ascii_ci(tag, str_as_slice("script")) {
+          TagKind::Script
+        } else if slice_eq_ascii_ci(tag, str_as_slice("iframe")) {
+          TagKind::Iframe
+        } else {
+          TagKind::Other
+        }
+      },
+      7 => {
+        if slice_eq_ascii_ci(tag, str_as_slice("section"))
+          || slice_eq_ascii_ci(tag, str_as_slice("article"))
+        {
+          TagKind::Block
+        } else {
+          TagKind::Other
+        }
+      },
+      8 => if slice_eq_ascii_ci(tag, str_as_slice("noscript")) { TagKind::Noscript } else { TagKind::Other },
+      _ => TagKind::Other,
+    }
   }
 }
 
 // Check if position `pos` matches `</script>`, `</style>`, `</iframe>`, `</svg>`, or `</noscript>`
 fn match_skip_end(pos: i64, n: i64, kind: i64) -[Mem]-> i64 {
-  if in_at(pos, n) != '<' || in_at(pos + 1, n) != '/' {
-    0
-  } else {
-    match kind {
-      SkipKind::Script => if pos + 9 <= n && match_ci6(pos + 2, n, 's', 'c', 'r', 'i', 'p', 't') && in_at(pos + 8, n) == '>' { 9 } else { 0 },
-      SkipKind::Style => if pos + 8 <= n && match_ci5(pos + 2, n, 's', 't', 'y', 'l', 'e') && in_at(pos + 7, n) == '>' { 8 } else { 0 },
-      SkipKind::Iframe => if pos + 9 <= n && match_ci6(pos + 2, n, 'i', 'f', 'r', 'a', 'm', 'e') && in_at(pos + 8, n) == '>' { 9 } else { 0 },
-      SkipKind::Svg => if pos + 6 <= n && match_ci3(pos + 2, n, 's', 'v', 'g') && in_at(pos + 5, n) == '>' { 6 } else { 0 },
-      SkipKind::Noscript => if pos + 11 <= n && match_ci8(pos + 2, n, 'n', 'o', 's', 'c', 'r', 'i', 'p', 't') && in_at(pos + 10, n) == '>' { 11 } else { 0 },
-      _ => 0,
-    }
+  match kind {
+    SkipKind::Script => if in_matches_ci(pos, n, "</script>") { 9 } else { 0 },
+    SkipKind::Style => if in_matches_ci(pos, n, "</style>") { 8 } else { 0 },
+    SkipKind::Iframe => if in_matches_ci(pos, n, "</iframe>") { 9 } else { 0 },
+    SkipKind::Svg => if in_matches_ci(pos, n, "</svg>") { 6 } else { 0 },
+    SkipKind::Noscript => if in_matches_ci(pos, n, "</noscript>") { 11 } else { 0 },
+    _ => 0,
   }
 }
 
@@ -202,23 +188,23 @@ fn match_skip_end(pos: i64, n: i64, kind: i64) -[Mem]-> i64 {
 fn decode_entity_at(pos: i64, n: i64) -[Mem]-> (i64, i64) {
   if in_at(pos, n) != '&' {
     (0, 0)
-  } else if pos + 4 <= n && match_ci2(pos + 1, n, 'l', 't') && in_at(pos + 3, n) == ';' {
+  } else if in_matches_ci(pos, n, "&lt;") {
     (4, '<')
-  } else if pos + 4 <= n && match_ci2(pos + 1, n, 'g', 't') && in_at(pos + 3, n) == ';' {
+  } else if in_matches_ci(pos, n, "&gt;") {
     (4, '>')
-  } else if pos + 5 <= n && match_ci3(pos + 1, n, 'a', 'm', 'p') && in_at(pos + 4, n) == ';' {
+  } else if in_matches_ci(pos, n, "&amp;") {
     (5, '&')
-  } else if pos + 5 <= n && in_at(pos + 1, n) == '#' && in_at(pos + 2, n) == '3' && in_at(pos + 3, n) == '9' && in_at(pos + 4, n) == ';' {
+  } else if in_matches_ci(pos, n, "&#39;") {
     (5, '\'')
-  } else if pos + 6 <= n && match_ci4(pos + 1, n, 'n', 'b', 's', 'p') && in_at(pos + 5, n) == ';' {
+  } else if in_matches_ci(pos, n, "&nbsp;") {
     (6, ' ')
-  } else if pos + 6 <= n && match_ci4(pos + 1, n, 'q', 'u', 'o', 't') && in_at(pos + 5, n) == ';' {
+  } else if in_matches_ci(pos, n, "&quot;") {
     (6, '"')
-  } else if pos + 6 <= n && match_ci4(pos + 1, n, 'b', 'u', 'l', 'l') && in_at(pos + 5, n) == ';' {
+  } else if in_matches_ci(pos, n, "&bull;") {
     (6, 8226)
-  } else if pos + 7 <= n && match_ci5(pos + 1, n, 'm', 'd', 'a', 's', 'h') && in_at(pos + 6, n) == ';' {
+  } else if in_matches_ci(pos, n, "&mdash;") {
     (7, 8212)
-  } else if pos + 7 <= n && match_ci5(pos + 1, n, 'n', 'd', 'a', 's', 'h') && in_at(pos + 6, n) == ';' {
+  } else if in_matches_ci(pos, n, "&ndash;") {
     (7, '-')
   } else {
     (0, 0)

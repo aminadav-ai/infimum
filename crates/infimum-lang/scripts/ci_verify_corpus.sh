@@ -68,8 +68,8 @@ if [[ -d "$MONOREPO_ROOT/crates/infimum-web/capsules" ]]; then
   echo ""
   echo "=== [3/5] Verifying infimum-web cores & demos ==="
   check_ifm "web-cores/audio_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/audio_core.ifm" 1 1
-  check_ifm "web-cores/passport_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/passport_core.ifm" 0 1
-  check_ifm "web-cores/sanitizer_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/sanitizer_core.ifm" 0 1
+  check_ifm "web-cores/passport_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/passport_core.ifm" 1 1
+  check_ifm "web-cores/sanitizer_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/sanitizer_core.ifm" 1 1
   check_ifm "web-cores/text_demo.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/m2_text_demo/src/text_demo.ifm" 1 1
 fi
 
@@ -83,8 +83,8 @@ if [[ -n "$INFIMUM_CODE_DIR" ]]; then
   echo "=== [4/5] Verifying infimum-code capsule, cores, templates & guide sync ==="
   check_ifm "infimum-code/infimum_code.ifm" "$INFIMUM_CODE_DIR/capsule/src/infimum_code.ifm" 1 1
   check_ifm "infimum-code/agent_core.ifm" "$INFIMUM_CODE_DIR/cores/agent_core.ifm" 1 1
-  check_ifm "infimum-code/editor_core.ifm" "$INFIMUM_CODE_DIR/cores/editor_core.ifm" 0 1
-  check_ifm "infimum-code/outline_core.ifm" "$INFIMUM_CODE_DIR/cores/outline_core.ifm" 0 1
+  check_ifm "infimum-code/editor_core.ifm" "$INFIMUM_CODE_DIR/cores/editor_core.ifm" 1 1
+  check_ifm "infimum-code/outline_core.ifm" "$INFIMUM_CODE_DIR/cores/outline_core.ifm" 1 1
 
   if [[ -f "$INFIMUM_CODE_DIR/daemon/src/studio_abi.rs" ]]; then
     "$INF_BIN" export-abi "$INFIMUM_CODE_DIR/capsule/src/abi.ifm" --rust -o "$TMP_DIR/studio_abi.rs" >/dev/null

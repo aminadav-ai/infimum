@@ -6,6 +6,7 @@
 // applies all replacements atomically (or aborts with structured error code).
 
 use "std/math.ifm";
+use "std/slice.ifm";
 
 const MAX_EDITS: i64 = 64;
 const MAX_POOL: i64 = 65536;
@@ -43,17 +44,11 @@ layout EditMem at 0 {
 }
 
 fn match_at(pos: i64, src_n: i64, p_off: i64, p_len: i64) -[Mem]-> bool {
-  if pos < 0 || p_len <= 0 || pos + p_len > src_n || p_off < 0 || p_off + p_len > MAX_POOL {
+  let sn = clamp_i64(src_n, 0, MAX_SRC);
+  if pos < 0 || p_len <= 0 || pos + p_len > sn || p_off < 0 || p_off + p_len > MAX_POOL {
     false
   } else {
-    let mut ok = true;
-    for k in 0..p_len max 16384 {
-      if EditMem.src_buf[pos + k] != EditMem.pool_buf[p_off + k] {
-        ok = false;
-        break;
-      }
-    }
-    ok
+    slice_eq(EditMem.src_buf[pos..pos + p_len], EditMem.pool_buf[p_off..p_off + p_len])
   }
 }
 
@@ -109,22 +104,35 @@ fn sort_spans(n: i64) -[Mem]-> unit {
 }
 
 fn copy_src_to_out(src_from: i64, src_to: i64, out_pos: i64) -[Mem]-> i64 {
-  let mut p = out_pos;
-  for i in src_from..src_to max 131072 {
-    if p >= MAX_OUT { break; }
-    EditMem.out_buf[p] = EditMem.src_buf[i];
-    p += 1;
+  let mut s = clamp_i64(src_from, 0, MAX_SRC);
+  let end = clamp_i64(src_to, s, MAX_SRC);
+  let mut p = clamp_i64(out_pos, 0, MAX_OUT);
+  while s < end && p < MAX_OUT max 32 {
+    let chunk = min_i64(min_i64(end - s, MAX_OUT - p), 4096);
+    if s >= 0 && p >= 0 && chunk > 0 && s + chunk <= MAX_SRC && p + chunk <= MAX_OUT {
+      let copied = slice_copy(EditMem.out_buf[p..p + chunk], EditMem.src_buf[s..s + chunk]);
+      s += copied;
+      p += copied;
+    } else {
+      break;
+    }
   }
   p
 }
 
 fn copy_pool_to_out(p_off: i64, p_len: i64, out_pos: i64) -[Mem]-> i64 {
-  let mut p = out_pos;
-  let lim = clamp_i64(p_len, 0, MAX_POOL);
-  for i in 0..lim max 65536 {
-    if p >= MAX_OUT { break; }
-    EditMem.out_buf[p] = EditMem.pool_buf[p_off + i];
-    p += 1;
+  let mut off = clamp_i64(p_off, 0, MAX_POOL);
+  let end = clamp_i64(off + max_i64(p_len, 0), off, MAX_POOL);
+  let mut p = clamp_i64(out_pos, 0, MAX_OUT);
+  while off < end && p < MAX_OUT max 16 {
+    let chunk = min_i64(min_i64(end - off, MAX_OUT - p), 4096);
+    if off >= 0 && p >= 0 && chunk > 0 && off + chunk <= MAX_POOL && p + chunk <= MAX_OUT {
+      let copied = slice_copy(EditMem.out_buf[p..p + chunk], EditMem.pool_buf[off..off + chunk]);
+      off += copied;
+      p += copied;
+    } else {
+      break;
+    }
   }
   p
 }
