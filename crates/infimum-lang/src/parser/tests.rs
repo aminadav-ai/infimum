@@ -56,7 +56,8 @@ fn bad() -[Mem]-> i64 {
 
     #[test]
     fn auto_layout_places_safely_above_gpu_prims_and_packs_multiple_layouts() {
-        let src = r#"
+        // Headless profile (no std/gfx): starts at 65_536 right above FrameScratch
+        let headless_src = r#"
 layout GameState {
   score: word,
   board: words[10],
@@ -70,11 +71,33 @@ fn f() -[Mem]-> i64 {
   GameState.score + UiState.hover
 }
 "#;
-        let module = parse_module(src).expect("auto layouts should parse");
-        assert_eq!(module.layouts[0].base, 705_536);
-        assert_eq!(module.layouts[0].fields[0].offset, 705_536);
-        assert_eq!(module.layouts[1].base, 705_547);
-        assert_eq!(module.layouts[1].fields[0].offset, 705_547);
+        let hm = parse_module(headless_src).expect("headless auto layouts should parse");
+        assert_eq!(hm.layouts[0].base, 65_536);
+        assert_eq!(hm.layouts[0].fields[0].offset, 65_536);
+        assert_eq!(hm.layouts[1].base, 65_547);
+        assert_eq!(hm.layouts[1].fields[0].offset, 65_547);
+
+        // GPU profile (with GPU_CMD_BYTE_OFFSET / std/gfx): starts at 705_536 above gpu_prims
+        let gpu_src = r#"
+const GPU_CMD_BYTE_OFFSET: i64 = 262144;
+layout GameState {
+  score: word,
+  board: words[10],
+}
+layout UiState {
+  hover: word,
+}
+fn f() -[Mem]-> i64 {
+  GameState.score = 1;
+  UiState.hover = 2;
+  GameState.score + UiState.hover
+}
+"#;
+        let gm = parse_module(gpu_src).expect("gpu auto layouts should parse");
+        assert_eq!(gm.layouts[0].base, 705_536);
+        assert_eq!(gm.layouts[0].fields[0].offset, 705_536);
+        assert_eq!(gm.layouts[1].base, 705_547);
+        assert_eq!(gm.layouts[1].fields[0].offset, 705_547);
     }
 
     #[test]
@@ -114,6 +137,7 @@ export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, md: i64, mc: i64, wd: i64,
 "#;
         let module = parse_module(src).expect("minimal GPU capsule should auto-export");
         for name in [
+            "ifw_abi_version",
             "ifw_unicode_atlas",
             "get_cmd_byte_offset",
             "get_clips_byte_offset",

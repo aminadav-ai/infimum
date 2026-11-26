@@ -334,6 +334,7 @@ fn prealloc_x86_expr_slots(expr: &Expr, ctx: &mut X86FnCtx<'_>) {
         }
         Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
+        | Expr::StrPtr(inner)
         | Expr::SliceLen(inner) => prealloc_x86_expr_slots(inner, ctx),
         Expr::SliceLit { ptr, len, .. }
         | Expr::BoundsCheck {
@@ -665,6 +666,7 @@ fn emit_x86_expr(
         | Expr::TupleField { .. }
         | Expr::SliceLit { .. }
         | Expr::SlicePtr(_)
+        | Expr::StrPtr(_)
         | Expr::SliceLen(_) => {
             return Err(InfimumDiagnostic::new(
                 "E085_STRATA_UNSUPPORTED_TYPE",

@@ -428,6 +428,11 @@ impl<'a> Evaluator<'a> {
                 Val::Tuple(elems) if elems.len() == 2 => Ok(elems[1].clone()),
                 other => Err(format!("Expected slice for .len, got {other:?}")),
             },
+            Expr::StrPtr(inner) => match self.eval_expr(inner, scopes, cur_fn)? {
+                Val::Str(s) => Ok(Val::Int(self.intern_str(&s)?)),
+                Val::Int(p) => Ok(Val::Int(p)),
+                other => Err(format!("Expected str for str_as_slice, got {other:?}")),
+            },
             Expr::BoundsCheck {
                 index,
                 len,

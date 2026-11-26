@@ -133,7 +133,7 @@ impl ModuleResolver {
             layouts: BTreeMap::new(),
             layout_field_meta: BTreeMap::new(),
             layout_spans: Vec::new(),
-            auto_layout_cursor: 705_536,
+            auto_layout_cursor: if has_std_gfx { 705_536 } else { 65_536 },
             match_counter: 0,
             addr_counter: 0,
             loop_counter: 0,
@@ -3317,23 +3317,12 @@ impl ModuleResolver {
                         let sp_var = format!("__ifm_strp_{}", self.addr_counter);
                         self.addr_counter += 1;
                         return Ok(Expr::Block {
-                            stmts: vec![
-                                Stmt::Expr(Expr::Perform {
-                                    effect: "Mem".to_string(),
-                                    op: "store_str".to_string(),
-                                    args: vec![Expr::IntLit(17), s_e],
-                                }),
-                                Stmt::Let {
-                                    name: sp_var.clone(),
-                                    mutable: false,
-                                    ty: Some(Type::I64),
-                                    value: Expr::MemLoad {
-                                        index: Box::new(Expr::IntLit(17)),
-                                        inv: Some((0, 16_777_216)),
-                                        fixed_ty: false,
-                                    },
-                                },
-                            ],
+                            stmts: vec![Stmt::Let {
+                                name: sp_var.clone(),
+                                mutable: false,
+                                ty: Some(Type::I64),
+                                value: Expr::StrPtr(Box::new(s_e)),
+                            }],
                             tail: Box::new(Expr::SliceLit {
                                 ptr: Box::new(Expr::Binary {
                                     op: BinOp::Add,
@@ -4843,7 +4832,7 @@ pub(super) fn infer_and_rewrite_fixed_expr(
             infer_and_rewrite_fixed_expr(len, env, fn_rets);
             Type::Slice(Box::new(elem_ty.clone()))
         }
-        Expr::SlicePtr(inner) | Expr::SliceLen(inner) => {
+        Expr::SlicePtr(inner) | Expr::SliceLen(inner) | Expr::StrPtr(inner) => {
             infer_and_rewrite_fixed_expr(inner, env, fn_rets);
             Type::I64
         }

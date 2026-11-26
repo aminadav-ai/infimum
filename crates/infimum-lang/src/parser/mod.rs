@@ -260,6 +260,20 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
             name: "Mem".to_string(),
             scope: None,
         }];
+        if !existing.contains("ifw_abi_version") {
+            functions.push(FnDef {
+                name: "ifw_abi_version".to_string(),
+                exported: true,
+                params: vec![],
+                effects: vec![],
+                ret_type: Type::I64,
+                requires: vec![],
+                ensures: vec![],
+                body: Expr::IntLit(4),
+                source_file: None,
+                span: None,
+            });
+        }
         if !existing.contains("ifw_unicode_atlas") {
             functions.push(FnDef {
                 name: "ifw_unicode_atlas".to_string(),

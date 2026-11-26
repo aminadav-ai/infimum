@@ -862,6 +862,20 @@ where
                 ))
             }
         }
+        Expr::StrPtr(inner) => {
+            let ty = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if matches!(ty, Type::Str | Type::I64) {
+                Ok(Type::I64)
+            } else {
+                Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'str_as_slice' requires 'str', found '{ty}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Pass a 'str' literal or parameter to str_as_slice(s)",
+                ))
+            }
+        }
         Expr::SliceLen(inner) => {
             let ty = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
             if matches!(ty, Type::Slice(_)) {

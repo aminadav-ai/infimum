@@ -144,7 +144,7 @@ where
             },
             Expr::TupleLit(_) | Expr::TupleField { .. } => Type::I64,
             Expr::SliceLit { elem_ty, .. } => Type::Slice(Box::new(elem_ty.clone())),
-            Expr::SlicePtr(_)
+            Expr::SlicePtr(_) | Expr::StrPtr(_)
             | Expr::SliceLen(_)
             | Expr::BoundsCheck { .. }
             | Expr::RangeCheck { .. } => Type::I64,
@@ -870,6 +870,13 @@ where
                 self.assumptions.push(format!("(assert (>= {sym} 0))"));
                 Ok(sym)
             }
+            Expr::StrPtr(inner) => {
+                let _ = self.encode_expr(inner, env, types, guard, emit_checks)?;
+                let sym = self.fresh_sym("str_ptr", &Type::I64);
+                self.assumptions
+                    .push(format!("(assert (and (>= {sym} 0) (<= {sym} 16777215)))"));
+                Ok(sym)
+            }
             Expr::SliceLen(inner) => {
                 if let Some((_, l)) =
                     self.encode_slice_fields(inner, env, types, guard, emit_checks)?
@@ -1167,6 +1174,7 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::MemLoad { index: inner, .. }
         | Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
+        | Expr::StrPtr(inner)
         | Expr::SliceLen(inner) => collect_mutated_vars_expr(inner, out),
         Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
             collect_mutated_vars_expr(ptr, out);

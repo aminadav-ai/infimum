@@ -621,6 +621,15 @@ where
                 resolve_name,
                 resolve_hash,
             )?))),
+            Expr::StrPtr(inner) => Ok(Expr::StrPtr(Box::new(canon_expr(
+                inner,
+                self_name,
+                env,
+                deps,
+                perform_effects,
+                resolve_name,
+                resolve_hash,
+            )?))),
             Expr::SliceLen(inner) => Ok(Expr::SliceLen(Box::new(canon_expr(
                 inner,
                 self_name,
@@ -950,6 +959,11 @@ fn format_expr(expr: &Expr, out: &mut String) {
         Expr::SliceLen(inner) => {
             format_expr(inner, out);
             out.push_str(".len");
+        }
+        Expr::StrPtr(inner) => {
+            out.push_str("str_ptr(");
+            format_expr(inner, out);
+            out.push(')');
         }
         Expr::BoundsCheck {
             index,

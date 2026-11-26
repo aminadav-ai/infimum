@@ -385,6 +385,9 @@ fn emit_expr(expr: &Expr, self_hash: &str, short_hash: &str, out: &mut String) {
             emit_expr(inner, self_hash, short_hash, out);
             out.push_str(").1");
         }
+        Expr::StrPtr(inner) => {
+            emit_expr(inner, self_hash, short_hash, out);
+        }
         Expr::BoundsCheck { index, .. } => {
             emit_expr(index, self_hash, short_hash, out);
         }

@@ -212,7 +212,7 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
 }
 
 const DEFAULT_STRATA_STR_WORD_BASE: u32 = 2_030_000; // Legacy fallback when no Module layouts are provided
-const USER_LAYOUT_SEGMENT_START: u32 = 705_536; // First word above GPU primitive stream (65536..705535)
+const HEADLESS_LAYOUT_SEGMENT_START: u32 = 65_536; // First word above FrameScratch (4096..65535) for headless capsules
 
 /// Compute the highest word address used by any `layout` in a parsed module (aligned to 16 words).
 pub fn compute_module_layout_end_word(module: &Module) -> u32 {
@@ -283,7 +283,7 @@ fn collect_str_lits_expr<'a>(expr: &'a Expr, out: &mut BTreeSet<&'a str>) {
             collect_str_lits_expr(ptr, out);
             collect_str_lits_expr(len, out);
         }
-        Expr::SlicePtr(e) | Expr::SliceLen(e) | Expr::TupleField { expr: e, .. } => {
+        Expr::SlicePtr(e) | Expr::SliceLen(e) | Expr::StrPtr(e) | Expr::TupleField { expr: e, .. } => {
             collect_str_lits_expr(e, out);
         }
         Expr::RangeCheck { lo, hi, len } => {
@@ -312,10 +312,14 @@ fn estimate_str_pool_words(nodes: &[CanonicalNode]) -> u32 {
 fn select_wasm_mem_pages(required_words: u32) -> (u32, i32) {
     // 1 Wasm page = 65,536 bytes = 16,384 32-bit words
     const CANDIDATES: &[(u32, u32)] = &[
-        (128, 2_097_152),   // 8 MiB  -> mask 0x001F_FFFF
-        (256, 4_194_304),   // 16 MiB -> mask 0x003F_FFFF
-        (512, 8_388_608),   // 32 MiB -> mask 0x007F_FFFF
-        (1024, 16_777_216), // 64 MiB -> mask 0x00FF_FFFF
+        (8, 131_072),       // 512 KiB -> mask 0x0001_FFFF (compact headless profile)
+        (16, 262_144),      // 1 MiB   -> mask 0x0003_FFFF
+        (32, 524_288),      // 2 MiB   -> mask 0x0007_FFFF
+        (64, 1_048_576),    // 4 MiB   -> mask 0x000F_FFFF
+        (128, 2_097_152),   // 8 MiB   -> mask 0x001F_FFFF
+        (256, 4_194_304),   // 16 MiB  -> mask 0x003F_FFFF
+        (512, 8_388_608),   // 32 MiB  -> mask 0x007F_FFFF
+        (1024, 16_777_216), // 64 MiB  -> mask 0x00FF_FFFF
     ];
     for &(pages, max_words) in CANDIDATES {
         if required_words <= max_words {
@@ -416,7 +420,7 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
     layout_end_word: u32,
 ) -> Result<Vec<u8>, InfimumDiagnostic> {
     let str_word_base = if layout_end_word > 0 {
-        layout_end_word.max(USER_LAYOUT_SEGMENT_START)
+        layout_end_word.max(HEADLESS_LAYOUT_SEGMENT_START)
     } else {
         DEFAULT_STRATA_STR_WORD_BASE
     };
@@ -760,6 +764,7 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
         | Expr::Reveal { expr: inner, .. }
         | Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
+        | Expr::StrPtr(inner)
         | Expr::SliceLen(inner) => collect_expr_tuple_arities(inner, out),
         Expr::SliceLit { ptr, len, .. } => {
             out.insert(2);
@@ -946,7 +951,7 @@ fn prealloc_expr_locals(expr: &Expr, ctx: &mut FnCodegenCtx<'_>) {
                 prealloc_expr_locals(a, ctx);
             }
         }
-        Expr::TupleField { expr, .. } | Expr::SlicePtr(expr) | Expr::SliceLen(expr) => {
+        Expr::TupleField { expr, .. } | Expr::SlicePtr(expr) | Expr::SliceLen(expr) | Expr::StrPtr(expr) => {
             prealloc_expr_locals(expr, ctx);
             if !ctx.local_map.contains_key("__ifm_tup_tmp") {
                 ctx.alloc_local(Some("__ifm_tup_tmp"));
@@ -1386,6 +1391,9 @@ fn emit_expr(
                 ctx,
                 out,
             )?;
+        }
+        Expr::StrPtr(inner) => {
+            emit_expr(inner, ctx, out)?;
         }
         Expr::BoundsCheck { index, .. } => {
             // Zero runtime overhead in Wasm: proven statically by Z3!

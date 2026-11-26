@@ -231,6 +231,7 @@ pub enum Expr {
     },
     SlicePtr(Box<Expr>),
     SliceLen(Box<Expr>),
+    StrPtr(Box<Expr>),
     BoundsCheck {
         index: Box<Expr>,
         len: Box<Expr>,

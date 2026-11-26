@@ -946,7 +946,7 @@ fn expr_uses_secret(e: &Expr) -> bool {
         Expr::Call { args, .. } | Expr::Perform { args, .. } => args.iter().any(expr_uses_secret),
         Expr::Block { stmts, tail } => stmts.iter().any(stmt_uses_secret) || expr_uses_secret(tail),
         Expr::TupleLit(elems) => elems.iter().any(expr_uses_secret),
-        Expr::TupleField { expr, .. } | Expr::SlicePtr(expr) | Expr::SliceLen(expr) => {
+        Expr::TupleField { expr, .. } | Expr::SlicePtr(expr) | Expr::SliceLen(expr) | Expr::StrPtr(expr) => {
             expr_uses_secret(expr)
         }
         Expr::SliceLit { ptr, len, elem_ty } => {
@@ -1000,6 +1000,7 @@ fn collect_named_calls(expr: &Expr, self_name: &str, out: &mut BTreeSet<String>)
         | Expr::Reveal { expr: inner, .. }
         | Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
+        | Expr::StrPtr(inner)
         | Expr::SliceLen(inner) => collect_named_calls(inner, self_name, out),
         Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
             collect_named_calls(ptr, self_name, out);
