@@ -30,7 +30,6 @@ pub struct Cell {
 pub struct AnimState {
   mode: word inv 0..=2,
   hop_color: word inv 0..=7,
-  path_len: word,
   hop_step: word,
   hop_sub: word,
   explode_timer: word,
@@ -73,10 +72,8 @@ pub layout GameMem {
   // 9x9 typed board cells (81 * 4 = 324 words)
   cells: Cell[81],
 
-  // BFS queue, empty cell picker & reconstructed path
-  bfs_q: words[81],
-  empty_list: words[81],
-  path: words[82],
+  // Reconstructed BFS hop path (BFS queue & empty picker live in FrameScratch)
+  path: vec<word>[82],
 
   // 128-turn Time-Travel snapshots: typed metadata + board states (128 * 81 = 10368 words)
   snap_meta: SnapMeta[128],

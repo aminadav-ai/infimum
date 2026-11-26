@@ -1,4 +1,5 @@
 use "std/prelude.ifm";
+use "std/slice.ifm";
 
 mod board_rules {
   pub const N: i64 = 18;
@@ -19,7 +20,6 @@ layout GameState {
   ai_timer: word,
   hover: word,                   // -1 или 0..323
   last_move: word,               // -1 или 0..323
-  move_count: word inv 0..=324,  // 0..324
   mode: word inv 0..=1,          // 0 = Против ИИ, 1 = На двоих
   difficulty: word inv 0..=2,    // 0 = Лёгкий, 1 = Средний, 2 = Сложный
   sound_on: word inv 0..=1,      // 1 = вкл, 0 = выкл
@@ -27,11 +27,10 @@ layout GameState {
   wins_white: word,
   draws: word,
   rng_seed: word,
-  win_count: word inv 0..=5,     // 0 или 5
 
-  win_cells: words[5] inv 0..=323,
+  win_cells: vec<word>[5],
   board: words[324] inv 0..=2,
-  history: words[324] inv 0..=323,
+  history: vec<word>[324],
   anim: words[324],
 }
 
@@ -48,20 +47,16 @@ fn cell_at(r: i64, c: i64) -[Mem]-> i64 {
 fn reset_board() -[Mem]-> unit {
   for i in 0..324 {
     GameState.board[i] = 0;
-    GameState.history[i] = 0;
     GameState.anim[i] = 0;
   }
-  for k in 0..5 {
-    GameState.win_cells[k] = 0;
-  }
+  GameState.history.clear();
+  GameState.win_cells.clear();
   GameState.turn = 1;
   GameState.state = 1;
   GameState.winner = 0;
   GameState.ai_timer = 0;
   GameState.hover = -1;
   GameState.last_move = -1;
-  GameState.move_count = 0;
-  GameState.win_count = 0;
 }
 
 fn check_win_from(r: i64, c: i64, dr: i64, dc: i64, p: i64) -[Mem]-> i64 {
@@ -73,12 +68,12 @@ fn check_win_from(r: i64, c: i64, dr: i64, dc: i64, p: i64) -[Mem]-> i64 {
     }
   }
   if ok == 1 {
+    GameState.win_cells.clear();
     for k in 0..5 {
       let rr = clamp_i64(r + dr * k, 0, 17);
       let cc = clamp_i64(c + dc * k, 0, 17);
-      GameState.win_cells[k] = rr * 18 + cc;
+      let _ = GameState.win_cells.try_push(rr * 18 + cc);
     }
-    GameState.win_count = 5;
   }
   ok
 }
@@ -99,19 +94,6 @@ fn find_win(p: i64) -[Mem]-> i64 {
   found
 }
 
-fn is_win_cell(idx: i64) -[Mem]-> i64 {
-  let mut res = 0;
-  if GameState.win_count == 5 {
-    for k in 0..5 {
-      if GameState.win_cells[k] == idx {
-        res = 1;
-        break;
-      }
-    }
-  }
-  res
-}
-
 fn place_stone(idx: i64, p: i64) -[Mem, Gpu]-> unit
   req p == 1 || p == 2
 {
@@ -120,11 +102,7 @@ fn place_stone(idx: i64, p: i64) -[Mem, Gpu]-> unit
     GameState.board[ci] = p;
     GameState.anim[ci] = 10;
     GameState.last_move = ci;
-    let mc = GameState.move_count;
-    if mc < 324 {
-      GameState.history[mc] = ci;
-      GameState.move_count = mc + 1;
-    }
+    let _ = GameState.history.try_push(ci);
     if GameState.sound_on == 1 {
       if p == 1 { sfx_play(SFX_CLACK, 96, 82); }
       else { sfx_play(SFX_CLACK, 114, 82); }
@@ -135,7 +113,7 @@ fn place_stone(idx: i64, p: i64) -[Mem, Gpu]-> unit
       if p == 1 { GameState.wins_black += 1; }
       else { GameState.wins_white += 1; }
       if GameState.sound_on == 1 { sfx_win(); }
-    } else if GameState.move_count >= board_rules::CELLS {
+    } else if GameState.history.len >= board_rules::CELLS {
       GameState.state = 2;
       GameState.winner = 3;
       GameState.draws += 1;
@@ -154,29 +132,30 @@ fn revert_win_stats() -[Mem]-> unit {
     else if GameState.winner == 3 && GameState.draws > 0 { GameState.draws -= 1; }
     GameState.state = 1;
     GameState.winner = 0;
-    GameState.win_count = 0;
+    GameState.win_cells.clear();
   }
 }
 
 fn undo_one() -[Mem]-> i64 {
-  let cur_mc = GameState.move_count;
-  if cur_mc > 0 {
+  if GameState.history.len > 0 {
     revert_win_stats();
-    let next_mc = cur_mc - 1;
-    GameState.move_count = next_mc;
-    // Z3 proves 0 <= next_mc < 324 (from move_count inv 0..=324) and 0 <= idx <= 323 (from history inv 0..=323)!
-    let idx = GameState.history[next_mc];
-    let prev_p = GameState.board[idx];
-    GameState.board[idx] = 0;
-    GameState.anim[idx] = 0;
-    GameState.turn = if prev_p == 1 { 1 } else { 2 };
-    if next_mc > 0 {
-      GameState.last_move = GameState.history[next_mc - 1];
+    if GameState.history.len > 0 {
+      let idx = clamp_i64(GameState.history.pop(), 0, 323);
+      let prev_p = GameState.board[idx];
+      GameState.board[idx] = 0;
+      GameState.anim[idx] = 0;
+      GameState.turn = if prev_p == 1 { 1 } else { 2 };
+      let hist = GameState.history.as_slice();
+      if hist.len > 0 {
+        GameState.last_move = hist[hist.len - 1];
+      } else {
+        GameState.last_move = -1;
+      }
+      GameState.ai_timer = 0;
+      1
     } else {
-      GameState.last_move = -1;
+      0
     }
-    GameState.ai_timer = 0;
-    1
   } else {
     0
   }
@@ -373,11 +352,11 @@ mod ai {
   }
 
   pub fn pick() -[Mem]-> i64 {
-    if GameState.move_count == 0 {
+    if GameState.history.len == 0 {
       8 * board_rules::N + 8
     } else {
       let diff = GameState.difficulty;
-      GameState.rng_seed = rng_next(GameState.rng_seed + GameState.tick * 7 + GameState.move_count * 31);
+      GameState.rng_seed = rng_next(GameState.rng_seed + GameState.tick * 7 + GameState.history.len * 31);
 
       let mut best = -1;
       let mut choice = -1;
@@ -638,9 +617,10 @@ export fn step_ui(
   }
 
   // Линия, соединяющая выигрышную пятёрку (под шариками для мягкого свечения)
-  if GameState.state == 2 && GameState.win_count == 5 {
-    let w0 = GameState.win_cells[0];
-    let w4 = GameState.win_cells[4];
+  let wcells = GameState.win_cells.as_slice();
+  if GameState.state == 2 && wcells.len == 5 {
+    let w0 = clamp_i64(wcells[0], 0, 323);
+    let w4 = clamp_i64(wcells[4], 0, 323);
     let wx0 = bx + (w0 % 18) * cell + cell / 2;
     let wy0 = by + (w0 / 18) * cell + cell / 2;
     let wx4 = bx + (w4 % 18) * cell + cell / 2;
@@ -670,8 +650,8 @@ export fn step_ui(
       }
 
       // Свечение под выигрышными шариками
-      let win_hit = if GameState.state == 2 { is_win_cell(i) } else { 0 };
-      if win_hit == 1 {
+      let win_hit = GameState.state == 2 && slice_find(GameState.win_cells.as_slice(), i) >= 0;
+      if win_hit {
         let glow_r = ball_r + 8 + (pulse * 2) / 1024;
         ui_glow(cx, cy, glow_r, 22, pack_rgba(255, 215, 60, 175), pack_rgba(255, 160, 20, 0), 0);
       }
@@ -683,7 +663,7 @@ export fn step_ui(
       }
 
       // Ободок победы
-      if win_hit == 1 {
+      if win_hit {
         ui_circle(cx, cy, ball_r + 3, ball_r, pack_rgba(255, 215, 55, 245), 0);
       } else if i == GameState.last_move {
         // Метка последнего хода
@@ -794,16 +774,16 @@ export fn step_ui(
 
   let l_blk = if GameState.mode == 0 { "Вы" } else { "Чёрн." };
   let l_wht = if GameState.mode == 0 { "ИИ" } else { "Бел." };
-  ui_text(c0 - ui_text_width(l_blk, 11, 0) / 2, cy_ui + 7, l_blk, 11, 0, muted, 0);
-  ui_text(c1 - ui_text_width("Ничьи", 11, 0) / 2, cy_ui + 7, "Ничьи", 11, 0, muted, 0);
-  ui_text(c2 - ui_text_width(l_wht, 11, 0) / 2, cy_ui + 7, l_wht, 11, 0, muted, 0);
+  ui_text_centered(c0, cy_ui + 7, l_blk, 11, 0, muted, 0);
+  ui_text_centered(c1, cy_ui + 7, "Ничьи", 11, 0, muted, 0);
+  ui_text_centered(c2, cy_ui + 7, l_wht, 11, 0, muted, 0);
 
   ui_int_centered(c0, cy_ui + 22, GameState.wins_black, 18, 1, ink, 0);
   ui_int_centered(c1, cy_ui + 22, GameState.draws, 18, 1, muted, 0);
   ui_int_centered(c2, cy_ui + 22, GameState.wins_white, 18, 1, ink, 0);
 
   ui_line(ix + 10, cy_ui + 46, ix + iw - 10, cy_ui + 46, 1, inner_brd, 0);
-  ui_fmt_centered(ix + iw / 2, cy_ui + 51, "Ходов в партии: {GameState.move_count}", 11, 1, ink, 0);
+  ui_fmt_centered(ix + iw / 2, cy_ui + 51, "Ходов в партии: {GameState.history.len}", 11, 1, ink, 0);
   cy_ui += score_h + 10;
 
   // Режим игры
@@ -846,14 +826,14 @@ export fn step_ui(
   cy_ui += 38;
 
   // Кнопки управления
-  let can_undo = if GameState.move_count > 0 { 1 } else { 0 };
+  let can_undo = if GameState.history.len > 0 { 1 } else { 0 };
   if wood_btn(ix, cy_ui, iw, 32, "Отменить ход", 13, 0, if can_undo == 0 { 1 } else { 0 }, 0, mx, my, m_clicked) == 1 {
     let mut did = 0;
     if GameState.mode == 1 {
       did = undo_one();
     } else {
-      if (GameState.state == 1 && GameState.turn == 1 && GameState.move_count >= 2)
-      || (GameState.state == 2 && GameState.winner == 2 && GameState.move_count >= 2) {
+      if (GameState.state == 1 && GameState.turn == 1 && GameState.history.len >= 2)
+      || (GameState.state == 2 && GameState.winner == 2 && GameState.history.len >= 2) {
         let _ = undo_one();
         did = undo_one();
       } else {
@@ -886,7 +866,7 @@ test "init resets clean 18x18 board" {
   let _ = init_app();
   assert(GameState.turn == 1);
   assert(GameState.state == 1);
-  assert(GameState.move_count == 0);
+  assert(GameState.history.len == 0);
   assert(cell_at(8, 8) == 0);
 }
 
@@ -896,7 +876,7 @@ test "find_win detects horizontal five in a row" {
     GameState.board[8 * 18 + c] = 1;
   }
   assert(find_win(1) == 1);
-  assert(GameState.win_count == 5);
+  assert(GameState.win_cells.len == 5);
   assert(find_win(2) == 0);
 }
 
@@ -907,7 +887,10 @@ test "ai blocks opponent four in a row" {
   GameState.board[8 * 18 + 6] = 1;
   GameState.board[8 * 18 + 7] = 1;
   GameState.board[8 * 18 + 8] = 1;
-  GameState.move_count = 4;
+  let _ = GameState.history.try_push(8 * 18 + 5);
+  let _ = GameState.history.try_push(8 * 18 + 6);
+  let _ = GameState.history.try_push(8 * 18 + 7);
+  let _ = GameState.history.try_push(8 * 18 + 8);
   let pick = ai::pick();
   assert(pick == 8 * board_rules::N + 4 || pick == 8 * board_rules::N + 9);
 }

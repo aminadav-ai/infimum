@@ -7,7 +7,7 @@
 // savanna grass/ground/bark/rock/wood textures, acacia trees & lantern-lit corral.
 
 use "abi.ifm";
-use "logic.ifm";
+use "logic.ifm" as logic;
 
 // --- Synchronized Close-Up Follow Camera & Exact Inverse Ray-Plane Picker ---
 // Arena [0..1024]x[0..1024] -> World [-5120..5120]x[-5120..5120], Y = 0 up.
@@ -101,14 +101,13 @@ pub fn draw_boulder_3d(bx: i64, bz: i64, rad: i64, h: i64) -[Mem]-> unit {
 
 // --- Detailed 14-Part Fluffy 3D Woolly Sheep (1.5x Larger, Animated Legs, Fluffy Fleece, Ears & Face) ---
 
-pub fn draw_sheep_mesh_3d(idx: i64) -[Mem]-> unit {
-  let i = clamp_i64(idx, 0, 13);
-  let sx = arena_wx(HerdMem.sheep[i].x);
-  let sz = arena_wz(HerdMem.sheep[i].y);
-  let penned = HerdMem.sheep[i].penned;
-  let hop = HerdMem.sheep[i].hop;
-  let tint = HerdMem.sheep[i].tint;
-  let yaw = to_mesh_yaw(HerdMem.sheep[i].yaw);
+fn draw_sheep_mesh_3d(s: Sheep) -[Mem]-> unit {
+  let sx = arena_wx(s.x);
+  let sz = arena_wz(s.y);
+  let penned = s.penned;
+  let hop = s.hop;
+  let tint = s.tint;
+  let yaw = to_mesh_yaw(s.yaw);
 
   let bounce = if hop < 8 { hop * 18 } else { (15 - hop) * 18 };
   let stride = fixed_to_int(fixed_sin(hop * 256) * 110.0);
@@ -153,6 +152,12 @@ pub fn draw_sheep_mesh_3d(idx: i64) -[Mem]-> unit {
   // Subtle green glow marker above safely penned sheep
   if penned == 1 && HerdMem.pen_flash_timer > 0 {
     mesh3d_limb(sx, by + 680, sz, yaw, -45, 0, -45, 45, 90, 45, MAT_GLOW, pack_rgba(126, 255, 168, 255), 255, 1);
+  }
+}
+
+fn draw_flock_3d(flock: [Sheep]) -[Mem]-> unit {
+  for i in 0..flock.len max 14 {
+    draw_sheep_mesh_3d(flock[i]);
   }
 }
 
@@ -304,10 +309,8 @@ pub fn render_herd_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
   draw_boulder_3d(3850, 3650, 380, 290);
   draw_boulder_3d(-3950, 2850, 320, 240);
 
-  // 6. 14 Large Fluffy 3D Woolly Sheep
-  for i in 0..14 {
-    draw_sheep_mesh_3d(i);
-  }
+  // 6. 14 Large Fluffy 3D Woolly Sheep (rendered via `[Sheep]` slice)
+  draw_flock_3d(HerdMem.sheep[..]);
 
   // 7. Detailed 24-Part Sculpted 3D Lion Shepherd!
   draw_lion_mesh_3d();
@@ -346,7 +349,7 @@ pub fn render_herd_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
   ui_rect(rew_x, btn_y, 114, 32, 8, 1, 2, if hov_z { pack_rgba(68, 50, 32, 255) } else { pack_rgba(44, 32, 22, 255) }, pack_rgba(196, 148, 82, 235), 0);
   ui_text(rew_x + 16, btn_y + 9, "Rewind [Z]", 12, 1, pack_rgba(248, 228, 190, 255), 0);
   if hov_z && m_clicked == 1 && HerdMem.snap_count > 10 {
-    rewind_snapshots(24);
+    logic::rewind_snapshots(24);
   }
 
   // Restart [R] button
@@ -356,7 +359,7 @@ pub fn render_herd_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
   ui_rect(rst_x, btn_y, 114, 32, 8, 1, 2, if hov_r { pack_rgba(68, 50, 32, 255) } else { pack_rgba(44, 32, 22, 255) }, pack_rgba(196, 148, 82, 235), 0);
   ui_text(rst_x + 14, btn_y + 9, "Restart [R]", 12, 1, pack_rgba(248, 228, 190, 255), 0);
   if hov_r && m_clicked == 1 {
-    reset_herd(HerdMem.rng_state + HerdMem.tick + 7919);
+    logic::reset_herd(HerdMem.rng_state + HerdMem.tick + 7919);
     sfx_play(SFX_CLICK, 110, 75);
   }
 

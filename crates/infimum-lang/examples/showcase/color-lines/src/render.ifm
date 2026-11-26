@@ -6,7 +6,7 @@
 // MAT_GLASS_SPHERE (Fresnel + dual specular + subsurface caustic) & MAT_SHADOW_CAUSTIC.
 
 use "abi.ifm";
-use "logic.ifm";
+use "logic.ifm" as logic;
 
 // --- 7 Saturated Gemstone Pigments (1=Ruby, 2=Emerald, 3=Sapphire, 4=Amber, 5=Aqua, 6=Amethyst, 7=Garnet) ---
 
@@ -284,7 +284,7 @@ pub fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
         hover = idx;
         gfx_set_cursor(CursorKind::Pointer);
         if m_clicked == 1 {
-          handle_cell_click(r, c);
+          logic::handle_cell_click(r, c);
         }
       }
 
@@ -326,10 +326,11 @@ pub fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
   GameMem.hover_idx = hover;
 
   // --- Animated 3D Hopping Jewel along BFS Path ---
-  if GameMem.anim.mode == AnimMode::Hopping && GameMem.anim.path_len >= 2 {
-    let step = clamp_i64(GameMem.anim.hop_step, 0, 80);
-    let a_idx = GameMem.path[step];
-    let b_idx = GameMem.path[step + 1];
+  let path = GameMem.path.as_slice();
+  if GameMem.anim.mode == AnimMode::Hopping && path.len >= 2 {
+    let step = clamp_i64(GameMem.anim.hop_step, 0, path.len - 2);
+    let a_idx = path[step];
+    let b_idx = path[step + 1];
     let ar = a_idx / 9;
     let ac = a_idx - ar * 9;
     let br = b_idx / 9;
@@ -387,7 +388,7 @@ pub fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
   let prev_hov = !modal_open && can_prev && point_in_rect(mx, my, prev_x, bar_y, prev_w, btn_h);
   if prev_hov {
     gfx_set_cursor(CursorKind::Pointer);
-    if m_clicked == 1 { rewind_to_turn(GameMem.turn_num - 1); }
+    if m_clicked == 1 { logic::rewind_to_turn(GameMem.turn_num - 1); }
   }
   ui_rect(prev_x, bar_y, prev_w, btn_h, 9, 1, 2,
     if prev_hov { pack_rgba(68, 60, 82, 255) } else { pack_rgba(28, 26, 36, 242) },
@@ -398,7 +399,7 @@ pub fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
   let next_hov = !modal_open && can_next && point_in_rect(mx, my, next_x, bar_y, next_w, btn_h);
   if next_hov {
     gfx_set_cursor(CursorKind::Pointer);
-    if m_clicked == 1 { rewind_to_turn(GameMem.turn_num + 1); }
+    if m_clicked == 1 { logic::rewind_to_turn(GameMem.turn_num + 1); }
   }
   ui_rect(next_x, bar_y, next_w, btn_h, 9, 1, 2,
     if next_hov { pack_rgba(68, 60, 82, 255) } else { pack_rgba(28, 26, 36, 242) },
@@ -419,7 +420,7 @@ pub fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
   if new_hov {
     gfx_set_cursor(CursorKind::Pointer);
     if m_clicked == 1 {
-      reset_game(GameMem.rng_state + GameMem.anim_tick + 7919);
+      logic::reset_game(GameMem.rng_state + GameMem.anim_tick + 7919);
       sfx_play(SFX_CLICK, 110, 75);
     }
   }
@@ -448,7 +449,7 @@ pub fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
     if b1_hov {
       gfx_set_cursor(CursorKind::Pointer);
       if m_clicked == 1 {
-        reset_game(GameMem.rng_state + GameMem.anim_tick + 31337);
+        logic::reset_game(GameMem.rng_state + GameMem.anim_tick + 31337);
         sfx_play(SFX_CLICK, 115, 80);
       }
     }
@@ -460,7 +461,7 @@ pub fn render_game_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[M
     let b2_hov = GameMem.turn_num > 0 && point_in_rect(mx, my, b2x, b1y, b1w, 42);
     if b2_hov {
       gfx_set_cursor(CursorKind::Pointer);
-      if m_clicked == 1 { rewind_to_turn(GameMem.turn_num - 1); }
+      if m_clicked == 1 { logic::rewind_to_turn(GameMem.turn_num - 1); }
     }
     ui_rect(b2x, b1y, b1w, 42, 10, 1, 4,
       if b2_hov { pack_rgba(88, 72, 114, 255) } else { pack_rgba(54, 46, 70, 255) },

@@ -5,15 +5,15 @@
 // 100% Clean-Room Infimum Lang (Telos + Flux + Strata Structs) • Zero JS / Zero Chromium
 
 use "abi.ifm";
-use "logic.ifm";
-use "render.ifm";
+use "logic.ifm" as logic;
+use "render.ifm" as render;
 
 export fn init_app(seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu]-> i64 {
   GameMem.high_score = 0;
   GameMem.prev_r_key = 0;
   GameMem.prev_z_key = 0;
   GameMem.prev_y_key = 0;
-  reset_game(seed);
+  logic::reset_game(seed);
   1
 }
 
@@ -30,25 +30,25 @@ export fn step_ui(
   // Keyboard shortcuts: R = restart, Z / Left = undo, Y / Right = redo
   let r_now = if key_held(KEY_R) || key_char == 'r' || key_char == 'R' { 1 } else { 0 };
   if r_now == 1 && GameMem.prev_r_key == 0 {
-    reset_game(GameMem.rng_state + GameMem.anim_tick + 9973);
+    logic::reset_game(GameMem.rng_state + GameMem.anim_tick + 9973);
     sfx_play(SFX_CLICK, 110, 75);
   }
   GameMem.prev_r_key = r_now;
 
   let z_now = if key_held(KEY_Z) || key_char == 'z' || key_char == 'Z' || key_special == KeySpecial::ArrowLeft { 1 } else { 0 };
   if z_now == 1 && GameMem.prev_z_key == 0 && GameMem.turn_num > 0 && GameMem.anim.mode == AnimMode::Idle {
-    rewind_to_turn(GameMem.turn_num - 1);
+    logic::rewind_to_turn(GameMem.turn_num - 1);
   }
   GameMem.prev_z_key = z_now;
 
   let y_now = if key_held(KEY_Y) || key_char == 'y' || key_char == 'Y' || key_special == KeySpecial::ArrowRight { 1 } else { 0 };
   if y_now == 1 && GameMem.prev_y_key == 0 && GameMem.turn_num < GameMem.max_saved_turn && GameMem.anim.mode == AnimMode::Idle {
-    rewind_to_turn(GameMem.turn_num + 1);
+    logic::rewind_to_turn(GameMem.turn_num + 1);
   }
   GameMem.prev_y_key = y_now;
 
-  tick_animations();
-  render_game_frame(w, h, mx, my, m_clicked);
+  logic::tick_animations();
+  render::render_game_frame(w, h, mx, my, m_clicked);
   gfx_end_frame()
 }
 
@@ -68,7 +68,7 @@ test "clear_lines removes 5 in a row and awards score" {
   for c in 0..5 {
     GameMem.cells[c].color = 3;
   }
-  let cleared = find_marked_lines();
+  let cleared = logic::find_marked_lines();
   assert(cleared == 5);
-  assert(compute_line_points(5) == 10);
+  assert(logic::compute_line_points(5) == 10);
 }

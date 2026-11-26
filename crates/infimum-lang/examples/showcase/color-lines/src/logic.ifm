@@ -52,12 +52,18 @@ pub fn roll_next_preview() -[Mem]-> unit {
   GameMem.next_colors[2] = rand_color();
 }
 
-pub fn count_balls() -[Mem]-> i64 {
+fn count_balls_in_slice(cells: [Cell]) -[Mem]-> i64
+  ens result >= 0 && result <= 81
+{
   let mut cnt = 0;
-  for i in 0..81 {
-    if GameMem.cells[i].color > 0 { cnt += 1; }
+  for i in 0..cells.len max 81 {
+    if cells[i].color > 0 { cnt += 1; }
   }
-  let safe_cnt = clamp_i64(cnt, 0, 81);
+  clamp_i64(cnt, 0, 81)
+}
+
+pub fn count_balls() -[Mem]-> i64 {
+  let safe_cnt = count_balls_in_slice(GameMem.cells[..]);
   GameMem.balls_count = safe_cnt;
   safe_cnt
 }
@@ -186,111 +192,135 @@ pub fn apply_marked_clear() -[Mem]-> i64 {
   cleared
 }
 
-// --- BFS Shortest Path Reconstruction ---
+// --- BFS Shortest Path Reconstruction (FrameScratch queue + vec<word>[82] path) ---
 
-pub fn bfs_build_path(src_idx: i64, dst_idx: i64) -[Mem]-> bool {
-  if src_idx == dst_idx || GameMem.cells[dst_idx].color != 0 {
+fn bfs_build_path(src_idx: i64, dst_idx: i64) -[Mem]-> bool {
+  if src_idx < 0 || src_idx >= 81 || dst_idx < 0 || dst_idx >= 81 || src_idx == dst_idx || GameMem.cells[dst_idx].color != 0 {
     false
   } else {
-    for i in 0..81 {
-      GameMem.cells[i].bfs_vis = 0;
-      GameMem.cells[i].bfs_par = -1;
-    }
-    let mut q_head = 0;
-    let mut q_tail = 1;
-    GameMem.bfs_q[0] = src_idx;
-    GameMem.cells[src_idx].bfs_vis = 1;
-    let mut found = false;
-
-    while q_head < q_tail && !found max 81 {
-      let cur = GameMem.bfs_q[q_head];
-      q_head += 1;
-      let cr = cur / 9;
-      let cc = cur - cr * 9;
-
-      if cr > 0 {
-        let up = (cr - 1) * 9 + cc;
-        if GameMem.cells[up].bfs_vis == 0 && (up == dst_idx || GameMem.cells[up].color == 0) {
-          GameMem.cells[up].bfs_vis = 1;
-          GameMem.cells[up].bfs_par = cur;
-          GameMem.bfs_q[q_tail] = up;
-          q_tail += 1;
-          if up == dst_idx { found = true; }
-        }
-      }
-      if cr < 8 && !found {
-        let dn = (cr + 1) * 9 + cc;
-        if GameMem.cells[dn].bfs_vis == 0 && (dn == dst_idx || GameMem.cells[dn].color == 0) {
-          GameMem.cells[dn].bfs_vis = 1;
-          GameMem.cells[dn].bfs_par = cur;
-          GameMem.bfs_q[q_tail] = dn;
-          q_tail += 1;
-          if dn == dst_idx { found = true; }
-        }
-      }
-      if cc > 0 && !found {
-        let lf = cr * 9 + (cc - 1);
-        if GameMem.cells[lf].bfs_vis == 0 && (lf == dst_idx || GameMem.cells[lf].color == 0) {
-          GameMem.cells[lf].bfs_vis = 1;
-          GameMem.cells[lf].bfs_par = cur;
-          GameMem.bfs_q[q_tail] = lf;
-          q_tail += 1;
-          if lf == dst_idx { found = true; }
-        }
-      }
-      if cc < 8 && !found {
-        let rt = cr * 9 + (cc + 1);
-        if GameMem.cells[rt].bfs_vis == 0 && (rt == dst_idx || GameMem.cells[rt].color == 0) {
-          GameMem.cells[rt].bfs_vis = 1;
-          GameMem.cells[rt].bfs_par = cur;
-          GameMem.bfs_q[q_tail] = rt;
-          q_tail += 1;
-          if rt == dst_idx { found = true; }
-        }
-      }
-    }
-
-    if found {
-      let mut steps = 0;
-      let mut walk = dst_idx;
-      while walk >= 0 && walk != src_idx max 81 {
-        steps += 1;
-        walk = GameMem.cells[walk].bfs_par;
-      }
-      let total_nodes = steps + 1;
-      GameMem.anim.path_len = total_nodes;
-      let mut pos = total_nodes - 1;
-      let mut cur_back = dst_idx;
-      while pos >= 0 && cur_back >= 0 max 82 {
-        GameMem.path[pos] = cur_back;
-        cur_back = GameMem.cells[cur_back].bfs_par;
-        pos -= 1;
-      }
-      true
-    } else {
+    scratch_reset();
+    let q_ptr = scratch_alloc(81);
+    let rev_ptr = scratch_alloc(82);
+    if q_ptr < 0 || rev_ptr < 0 {
       false
+    } else {
+      let bfs_q = slice_i64(q_ptr, 81);
+      let rev = slice_i64(rev_ptr, 82);
+      for i in 0..81 {
+        GameMem.cells[i].bfs_vis = 0;
+        GameMem.cells[i].bfs_par = -1;
+      }
+      let mut q_head = 0;
+      let mut q_tail = 1;
+      bfs_q[0] = src_idx;
+      GameMem.cells[src_idx].bfs_vis = 1;
+      let mut found = false;
+
+      while q_head < q_tail && !found max 81 {
+        let cur = if q_head >= 0 && q_head < 81 { bfs_q[q_head] } else { 0 };
+        q_head += 1;
+        let cr = cur / 9;
+        let cc = cur - cr * 9;
+
+        if cr > 0 {
+          let up = (cr - 1) * 9 + cc;
+          if up >= 0 && up < 81 && GameMem.cells[up].bfs_vis == 0 && (up == dst_idx || GameMem.cells[up].color == 0) {
+            GameMem.cells[up].bfs_vis = 1;
+            GameMem.cells[up].bfs_par = cur;
+            if q_tail >= 0 && q_tail < 81 {
+              bfs_q[q_tail] = up;
+              q_tail += 1;
+            }
+            if up == dst_idx { found = true; }
+          }
+        }
+        if cr < 8 && !found {
+          let dn = (cr + 1) * 9 + cc;
+          if dn >= 0 && dn < 81 && GameMem.cells[dn].bfs_vis == 0 && (dn == dst_idx || GameMem.cells[dn].color == 0) {
+            GameMem.cells[dn].bfs_vis = 1;
+            GameMem.cells[dn].bfs_par = cur;
+            if q_tail >= 0 && q_tail < 81 {
+              bfs_q[q_tail] = dn;
+              q_tail += 1;
+            }
+            if dn == dst_idx { found = true; }
+          }
+        }
+        if cc > 0 && !found {
+          let lf = cr * 9 + (cc - 1);
+          if lf >= 0 && lf < 81 && GameMem.cells[lf].bfs_vis == 0 && (lf == dst_idx || GameMem.cells[lf].color == 0) {
+            GameMem.cells[lf].bfs_vis = 1;
+            GameMem.cells[lf].bfs_par = cur;
+            if q_tail >= 0 && q_tail < 81 {
+              bfs_q[q_tail] = lf;
+              q_tail += 1;
+            }
+            if lf == dst_idx { found = true; }
+          }
+        }
+        if cc < 8 && !found {
+          let rt = cr * 9 + (cc + 1);
+          if rt >= 0 && rt < 81 && GameMem.cells[rt].bfs_vis == 0 && (rt == dst_idx || GameMem.cells[rt].color == 0) {
+            GameMem.cells[rt].bfs_vis = 1;
+            GameMem.cells[rt].bfs_par = cur;
+            if q_tail >= 0 && q_tail < 81 {
+              bfs_q[q_tail] = rt;
+              q_tail += 1;
+            }
+            if rt == dst_idx { found = true; }
+          }
+        }
+      }
+
+      if found {
+        let mut rlen = 0;
+        let mut walk = dst_idx;
+        while walk >= 0 && walk < 81 && rlen >= 0 && rlen < 82 max 82 {
+          rev[rlen] = walk;
+          rlen += 1;
+          if walk == src_idx { break; }
+          walk = GameMem.cells[walk].bfs_par;
+        }
+        GameMem.path.clear();
+        for k in 0..rlen max 82 {
+          let idx = rlen - 1 - k;
+          if idx >= 0 && idx < 82 {
+            let _ = GameMem.path.try_push(rev[idx]);
+          }
+        }
+        true
+      } else {
+        false
+      }
     }
   }
 }
 
 // --- Spawning, Turn Progression & Game Lifecycle ---
 
-pub fn spawn_one_ball(color_id: i64) -[Mem]-> bool {
-  let mut empty_cnt = 0;
-  for i in 0..81 {
-    if GameMem.cells[i].color == 0 {
-      GameMem.empty_list[empty_cnt] = i;
-      empty_cnt += 1;
-    }
-  }
-  if empty_cnt <= 0 {
+fn spawn_one_ball(color_id: i64) -[Mem]-> bool {
+  scratch_reset();
+  let empty_ptr = scratch_alloc(81);
+  if empty_ptr < 0 {
     false
   } else {
-    let r = next_rand();
-    let pick = r - (r / empty_cnt) * empty_cnt;
-    let target_cell = GameMem.empty_list[pick];
-    GameMem.cells[target_cell].color = clamp_i64(color_id, 0, 7);
-    true
+    let empty_list = slice_i64(empty_ptr, 81);
+    let mut empty_cnt = 0;
+    for i in 0..81 {
+      if GameMem.cells[i].color == 0 && empty_cnt >= 0 && empty_cnt < 81 {
+        empty_list[empty_cnt] = i;
+        empty_cnt += 1;
+      }
+    }
+    if empty_cnt <= 0 {
+      false
+    } else {
+      let r = next_rand();
+      let pick = clamp_i64(r - (r / empty_cnt) * empty_cnt, 0, 80);
+      let target_cell = clamp_i64(empty_list[pick], 0, 80);
+      GameMem.cells[target_cell].color = clamp_i64(color_id, 0, 7);
+      true
+    }
   }
 }
 
@@ -340,7 +370,7 @@ pub fn reset_game(seed: i64) -[Mem, Gpu]-> unit {
   GameMem.hover_idx = -1;
   GameMem.anim.mode = AnimMode::Idle;
   GameMem.anim.hop_color = 0;
-  GameMem.anim.path_len = 0;
+  GameMem.path.clear();
   GameMem.anim.hop_step = 0;
   GameMem.anim.hop_sub = 0;
   GameMem.anim.explode_timer = 0;
@@ -420,13 +450,15 @@ pub fn tick_animations() -[Mem, Gpu]-> unit {
     } else {
       GameMem.anim.hop_sub = 0;
       let next_step = GameMem.anim.hop_step + 1;
-      let plen = GameMem.anim.path_len;
+      let plen = GameMem.path.len;
       if next_step < plen - 1 {
         GameMem.anim.hop_step = next_step;
         sfx_play(SFX_HOP, clamp_i64(95 + next_step * 9, 80, 210), 65);
       } else {
-        let dst_idx = GameMem.path[plen - 1];
-        GameMem.cells[dst_idx].color = GameMem.anim.hop_color;
+        if plen > 0 {
+          let dst_idx = clamp_i64(GameMem.path[plen - 1], 0, 80);
+          GameMem.cells[dst_idx].color = GameMem.anim.hop_color;
+        }
         GameMem.anim.mode = AnimMode::Idle;
         sfx_clack();
 
