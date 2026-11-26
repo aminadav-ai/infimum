@@ -8,10 +8,9 @@ use std::sync::OnceLock;
 use wasmi::{Engine, Linker, Module, Store};
 
 const SANITIZER_AXW: &[u8] = include_bytes!("../capsules/core/sanitizer_core.ifw");
+const SANITIZER_CORE_ABI: i32 = 1;
 const MAX_IN_CHARS: usize = 65_536;
 const MAX_OUT_CHARS: usize = 65_536;
-const IN_BUF_WORD: usize = 64;
-const OUT_BUF_WORD: usize = 65_600;
 const SANITIZER_FUEL: u64 = 80_000_000;
 
 #[derive(Debug, Clone, Default)]
@@ -25,15 +24,6 @@ pub struct SanitizedDoc {
 fn compiled_module() -> &'static (Engine, Module) {
     static CELL: OnceLock<(Engine, Module)> = OnceLock::new();
     CELL.get_or_init(|| crate::runtime::load_core_axw("sanitizer_core.ifw", SANITIZER_AXW))
-}
-
-fn read_word(mem: &[u8], word: usize) -> i32 {
-    let off = word * 4;
-    if off + 4 <= mem.len() {
-        i32::from_le_bytes(mem[off..off + 4].try_into().unwrap())
-    } else {
-        0
-    }
 }
 
 /// Sanitize arbitrary untrusted HTML into clean, structured UTF-8 text with zero executable JS.
@@ -53,39 +43,55 @@ pub fn sanitize_html(raw: &str) -> SanitizedDoc {
     let Some(memory) = inst.get_memory(&store, "memory") else {
         return SanitizedDoc::default();
     };
+    if crate::core_mem::check_core_abi(&inst, &mut store, SANITIZER_CORE_ABI, "sanitizer_core")
+        .is_err()
+    {
+        return SanitizedDoc::default();
+    }
+    let Ok(in_buf_word) = crate::core_mem::get_word_export(&inst, &mut store, "get_in_buf_word")
+    else {
+        return SanitizedDoc::default();
+    };
+    let Ok(out_buf_word) = crate::core_mem::get_word_export(&inst, &mut store, "get_out_buf_word")
+    else {
+        return SanitizedDoc::default();
+    };
+    let Ok(scripts_word) =
+        crate::core_mem::get_word_export(&inst, &mut store, "get_stripped_scripts_word")
+    else {
+        return SanitizedDoc::default();
+    };
+    let Ok(iframes_word) =
+        crate::core_mem::get_word_export(&inst, &mut store, "get_stripped_iframes_word")
+    else {
+        return SanitizedDoc::default();
+    };
+    let Ok(tags_word) =
+        crate::core_mem::get_word_export(&inst, &mut store, "get_stripped_tags_word")
+    else {
+        return SanitizedDoc::default();
+    };
     let Ok(func) = inst.get_typed_func::<i32, i32>(&store, "sanitize_html_ifm") else {
         return SanitizedDoc::default();
     };
 
-    let chars: Vec<u32> = raw.chars().take(MAX_IN_CHARS).map(|c| c as u32).collect();
-    {
+    let n_chars = {
         let mem = memory.data_mut(&mut store);
-        for (idx, &cp) in chars.iter().enumerate() {
-            let off = (IN_BUF_WORD + idx) * 4;
-            if off + 4 <= mem.len() {
-                mem[off..off + 4].copy_from_slice(&cp.to_le_bytes());
-            }
-        }
-    }
+        crate::core_mem::write_raw_chars(mem, in_buf_word, raw, MAX_IN_CHARS)
+    };
 
-    let Ok(out_len_raw) = func.call(&mut store, chars.len() as i32) else {
+    let Ok(out_len_raw) = func.call(&mut store, n_chars as i32) else {
         return SanitizedDoc::default();
     };
     let out_len = (out_len_raw.max(0) as usize).min(MAX_OUT_CHARS);
     let mem = memory.data(&store);
-    let mut clean_text = String::with_capacity(out_len);
-    for idx in 0..out_len {
-        let cp = read_word(mem, OUT_BUF_WORD + idx) as u32;
-        if let Some(ch) = char::from_u32(cp) {
-            clean_text.push(ch);
-        }
-    }
+    let clean_text = crate::core_mem::read_raw_chars(mem, out_buf_word, out_len);
 
     SanitizedDoc {
         clean_text,
-        stripped_scripts: read_word(mem, 1).max(0) as usize,
-        stripped_iframes: read_word(mem, 2).max(0) as usize,
-        stripped_tags: read_word(mem, 3).max(0) as usize,
+        stripped_scripts: crate::core_mem::get_i32(mem, scripts_word).max(0) as usize,
+        stripped_iframes: crate::core_mem::get_i32(mem, iframes_word).max(0) as usize,
+        stripped_tags: crate::core_mem::get_i32(mem, tags_word).max(0) as usize,
     }
 }
 

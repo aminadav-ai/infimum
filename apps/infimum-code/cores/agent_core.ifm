@@ -18,6 +18,7 @@ layout AgentMem {
   json_out: words[2060],    // max 2048 chars
 }
 
+export fn core_abi_version() -> i64 { 1 }
 export fn get_prov_buf_word() -> i64 { AgentMem::prov_buf }
 export fn get_model_buf_word() -> i64 { AgentMem::model_buf }
 export fn get_json_in_word() -> i64 { AgentMem::json_in }

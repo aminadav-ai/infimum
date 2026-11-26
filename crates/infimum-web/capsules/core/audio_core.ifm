@@ -33,12 +33,15 @@ enum SfxPreset {
   Missile = 18,
 }
 
-// Binary ABI shared with Rust host (`infimum-web/src/audio.rs`): words 0, 1, 64..66213
-layout AudioMem at 0 {
-  sample_count: word at 0 inv 0..=66150,
-  rng: word at 1,
-  pcm_buf: words[66150] at 64 inv -15000..=15000,
+// Auto-placed layout with self-describing ABI getters for Rust (`audio.rs`) & JS (`player.js`, `code.js`).
+layout AudioMem {
+  sample_count: word inv 0..=66150,
+  rng: word,
+  pcm_buf: words[66150] inv -15000..=15000,
 }
+
+export fn core_abi_version() -> i64 { 1 }
+export fn get_pcm_buf_word() -> i64 { AudioMem::pcm_buf }
 
 fn pcm_clear(n: i64) -[Mem]-> unit {
   let lim = clamp_i64(n, 0, MAX_SAMPLES);

@@ -36,15 +36,23 @@ enum TagKind {
   Br = 10,
 }
 
-// Binary ABI shared with Rust host (`infimum-web/src/sanitizer.rs`): words 0..3, 64..65599, 65600..131135
-layout SanMem at 0 {
-  out_len: word at 0 inv 0..=65536,
-  stripped_scripts: word at 1,
-  stripped_iframes: word at 2,
-  stripped_tags: word at 3,
-  in_buf: words[65536] at 64,
-  out_buf: words[65536] at 65600,
+// Auto-placed layout with self-describing ABI getters for `infimum-web/src/sanitizer.rs`.
+layout SanMem {
+  out_len: word inv 0..=65536,
+  stripped_scripts: word,
+  stripped_iframes: word,
+  stripped_tags: word,
+  in_buf: words[65536],
+  out_buf: words[65536],
 }
+
+export fn core_abi_version() -> i64 { 1 }
+export fn get_out_len_word() -> i64 { SanMem::out_len }
+export fn get_stripped_scripts_word() -> i64 { SanMem::stripped_scripts }
+export fn get_stripped_iframes_word() -> i64 { SanMem::stripped_iframes }
+export fn get_stripped_tags_word() -> i64 { SanMem::stripped_tags }
+export fn get_in_buf_word() -> i64 { SanMem::in_buf }
+export fn get_out_buf_word() -> i64 { SanMem::out_buf }
 
 fn to_ascii_lower(c: i64) -> i64 {
   if c >= 'A' && c <= 'Z' { c + 32 } else { c }

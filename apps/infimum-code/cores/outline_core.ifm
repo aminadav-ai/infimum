@@ -15,21 +15,30 @@ const MAX_ENTRIES: i64 = 400;
 const MAX_ENTRY_CHARS: i64 = 300;
 const MAX_HDR_CHARS: i64 = 480;
 
-// Binary ABI shared with `infimum-code/daemon/src/agent.rs`
-layout OutMem at 0 {
-  src_len: word at 0,
-  is_rust: word at 1,
-  out_len: word at 2 inv 0..=131072,
-  entry_count: word at 3 inv 0..=400,
-  truncated: word at 4 inv 0..=1,
-  line_count: word at 5 inv 0..=12000,
-  line_start: words[12000] at 64,
-  line_end: words[12000] at 12064,
-  cdepth_stack: words[32] at 24064,
-  hdr_buf: words[512] at 24128,
-  src_buf: words[262144] at 25000,
-  out_buf: words[131072] at 287200,
+// Auto-placed layout with self-describing ABI getters for `infimum-code/daemon/src/agent/tools.rs`.
+layout OutMem {
+  src_len: word,
+  is_rust: word,
+  out_len: word inv 0..=131072,
+  entry_count: word inv 0..=400,
+  truncated: word inv 0..=1,
+  line_count: word inv 0..=12000,
+  line_start: words[12000],
+  line_end: words[12000],
+  cdepth_stack: words[32],
+  hdr_buf: words[512],
+  src_buf: words[262144],
+  out_buf: words[131072],
 }
+
+export fn core_abi_version() -> i64 { 1 }
+export fn get_src_len_word() -> i64 { OutMem::src_len }
+export fn get_is_rust_word() -> i64 { OutMem::is_rust }
+export fn get_out_len_word() -> i64 { OutMem::out_len }
+export fn get_entry_count_word() -> i64 { OutMem::entry_count }
+export fn get_truncated_word() -> i64 { OutMem::truncated }
+export fn get_src_buf_word() -> i64 { OutMem::src_buf }
+export fn get_out_buf_word() -> i64 { OutMem::out_buf }
 
 struct LineScan {
   delta: i64,

@@ -343,19 +343,32 @@ pub(super) fn extract_outline_via_infimum(src: &str, is_rust: bool) -> (Vec<Stri
         return (Vec::new(), false);
     };
 
+    if crate::core_loader::check_core_abi(&inst, &mut store, 1, "outline_core").is_err() {
+        return (Vec::new(), false);
+    }
+    let Ok(src_len_word) = crate::core_loader::get_word_export(&inst, &mut store, "get_src_len_word") else {
+        return (Vec::new(), false);
+    };
+    let Ok(is_rust_word) = crate::core_loader::get_word_export(&inst, &mut store, "get_is_rust_word") else {
+        return (Vec::new(), false);
+    };
+    let Ok(truncated_word) = crate::core_loader::get_word_export(&inst, &mut store, "get_truncated_word") else {
+        return (Vec::new(), false);
+    };
+    let Ok(src_buf_word) = crate::core_loader::get_word_export(&inst, &mut store, "get_src_buf_word") else {
+        return (Vec::new(), false);
+    };
+    let Ok(out_buf_word) = crate::core_loader::get_word_export(&inst, &mut store, "get_out_buf_word") else {
+        return (Vec::new(), false);
+    };
+
     let chars: Vec<u32> = src.chars().take(262_144).map(|c| c as u32).collect();
     {
         let mem = memory.data_mut(&mut store);
-        let put = |m: &mut [u8], word: usize, v: i32| {
-            let off = word * 4;
-            if off + 4 <= m.len() {
-                m[off..off + 4].copy_from_slice(&v.to_le_bytes());
-            }
-        };
-        put(mem, 0, chars.len() as i32);
-        put(mem, 1, i32::from(is_rust));
+        crate::core_loader::put_i32(mem, src_len_word, chars.len() as i32);
+        crate::core_loader::put_i32(mem, is_rust_word, i32::from(is_rust));
         for (i, &cp) in chars.iter().enumerate() {
-            put(mem, 25_000 + i, cp as i32);
+            crate::core_loader::put_i32(mem, src_buf_word + i, cp as i32);
         }
     }
 
@@ -363,19 +376,11 @@ pub(super) fn extract_outline_via_infimum(src: &str, is_rust: bool) -> (Vec<Stri
         return (Vec::new(), false);
     };
     let mem = memory.data(&store);
-    let get = |word: usize| -> i32 {
-        let off = word * 4;
-        if off + 4 <= mem.len() {
-            i32::from_le_bytes(mem[off..off + 4].try_into().unwrap())
-        } else {
-            0
-        }
-    };
-    let truncated = get(4) != 0;
+    let truncated = crate::core_loader::get_i32(mem, truncated_word) != 0;
     let out_len = (out_len_raw.max(0) as usize).min(131_072);
     let mut text = String::with_capacity(out_len);
     for i in 0..out_len {
-        let cp = get(287_200 + 1 + i) as u32;
+        let cp = crate::core_loader::get_i32(mem, out_buf_word + 1 + i) as u32;
         if let Some(ch) = char::from_u32(cp) {
             text.push(ch);
         }
@@ -940,60 +945,73 @@ pub(super) fn apply_batch_edits(
     let memory = inst
         .get_memory(&store, "memory")
         .ok_or_else(|| (0, "editor_core missing memory".to_string()))?;
+    crate::core_loader::check_core_abi(&inst, &mut store, 1, "editor_core")
+        .map_err(|e| (0, e))?;
+    let err_code_word = crate::core_loader::get_word_export(&inst, &mut store, "get_err_code_word")
+        .map_err(|e| (0, e))?;
+    let err_idx_word = crate::core_loader::get_word_export(&inst, &mut store, "get_err_idx_word")
+        .map_err(|e| (0, e))?;
+    let err_aux_word = crate::core_loader::get_word_export(&inst, &mut store, "get_err_aux_word")
+        .map_err(|e| (0, e))?;
+    let src_len_word = crate::core_loader::get_word_export(&inst, &mut store, "get_src_len_word")
+        .map_err(|e| (0, e))?;
+    let edit_count_word =
+        crate::core_loader::get_word_export(&inst, &mut store, "get_edit_count_word")
+            .map_err(|e| (0, e))?;
+    let t_off_word = crate::core_loader::get_word_export(&inst, &mut store, "get_t_off_word")
+        .map_err(|e| (0, e))?;
+    let t_len_word = crate::core_loader::get_word_export(&inst, &mut store, "get_t_len_word")
+        .map_err(|e| (0, e))?;
+    let r_off_word = crate::core_loader::get_word_export(&inst, &mut store, "get_r_off_word")
+        .map_err(|e| (0, e))?;
+    let r_len_word = crate::core_loader::get_word_export(&inst, &mut store, "get_r_len_word")
+        .map_err(|e| (0, e))?;
+    let pool_buf_word =
+        crate::core_loader::get_word_export(&inst, &mut store, "get_pool_buf_word")
+            .map_err(|e| (0, e))?;
+    let src_buf_word = crate::core_loader::get_word_export(&inst, &mut store, "get_src_buf_word")
+        .map_err(|e| (0, e))?;
+    let out_buf_word = crate::core_loader::get_word_export(&inst, &mut store, "get_out_buf_word")
+        .map_err(|e| (0, e))?;
     let func = inst
         .get_typed_func::<(), i32>(&store, "apply_batch_edits_ifm")
         .map_err(|e| (0, e.to_string()))?;
 
-    let put_i32 = |mem: &mut [u8], word: usize, val: i32| {
-        let off = word * 4;
-        if off + 4 <= mem.len() {
-            mem[off..off + 4].copy_from_slice(&val.to_le_bytes());
-        }
-    };
-    let get_i32 = |mem: &[u8], word: usize| -> i32 {
-        let off = word * 4;
-        if off + 4 <= mem.len() {
-            i32::from_le_bytes(mem[off..off + 4].try_into().unwrap())
-        } else {
-            0
-        }
-    };
-
     {
         let mem = memory.data_mut(&mut store);
-        put_i32(mem, 4, src_chars.len() as i32);
-        put_i32(mem, 5, edits.len() as i32);
+        crate::core_loader::put_i32(mem, src_len_word, src_chars.len() as i32);
+        crate::core_loader::put_i32(mem, edit_count_word, edits.len() as i32);
         for (i, &cp) in src_chars.iter().enumerate() {
-            put_i32(mem, 66_048 + i, cp as i32);
+            crate::core_loader::put_i32(mem, src_buf_word + i, cp as i32);
         }
         let mut p_cur = 0usize;
         for (idx, (target, replacement)) in edits.iter().enumerate() {
             let t_off = p_cur;
             let mut t_len = 0usize;
             for ch in target.chars() {
-                put_i32(mem, 512 + p_cur, ch as i32);
+                crate::core_loader::put_i32(mem, pool_buf_word + p_cur, ch as i32);
                 p_cur += 1;
                 t_len += 1;
             }
             let r_off = p_cur;
             let mut r_len = 0usize;
             for ch in replacement.chars() {
-                put_i32(mem, 512 + p_cur, ch as i32);
+                crate::core_loader::put_i32(mem, pool_buf_word + p_cur, ch as i32);
                 p_cur += 1;
                 r_len += 1;
             }
-            put_i32(mem, 16 + idx, t_off as i32);
-            put_i32(mem, 80 + idx, t_len as i32);
-            put_i32(mem, 144 + idx, r_off as i32);
-            put_i32(mem, 208 + idx, r_len as i32);
+            crate::core_loader::put_i32(mem, t_off_word + idx, t_off as i32);
+            crate::core_loader::put_i32(mem, t_len_word + idx, t_len as i32);
+            crate::core_loader::put_i32(mem, r_off_word + idx, r_off as i32);
+            crate::core_loader::put_i32(mem, r_len_word + idx, r_len as i32);
         }
     }
 
     let out_len = func.call(&mut store, ()).map_err(|e| (0, e.to_string()))?;
     let mem = memory.data(&store);
-    let err_code = get_i32(mem, 0);
-    let err_idx = get_i32(mem, 1).max(0) as usize;
-    let err_aux = get_i32(mem, 2).max(0) as usize;
+    let err_code = crate::core_loader::get_i32(mem, err_code_word);
+    let err_idx = crate::core_loader::get_i32(mem, err_idx_word).max(0) as usize;
+    let err_aux = crate::core_loader::get_i32(mem, err_aux_word).max(0) as usize;
 
     if out_len < 0 || err_code != 0 {
         let msg = match err_code {
@@ -1012,7 +1030,7 @@ pub(super) fn apply_batch_edits(
     let n = (out_len as usize).min(131_072);
     let mut out = String::with_capacity(n);
     for i in 0..n {
-        let cp = get_i32(mem, 197_120 + i) as u32;
+        let cp = crate::core_loader::get_i32(mem, out_buf_word + i) as u32;
         if let Some(ch) = char::from_u32(cp) {
             out.push(ch);
         }

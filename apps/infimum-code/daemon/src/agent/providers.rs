@@ -97,22 +97,22 @@ pub(super) fn calc_cost_milli_ils_via_infimum(
     let Some(memory) = inst.get_memory(&store, "memory") else {
         return 0;
     };
+    if crate::core_loader::check_core_abi(&inst, &mut store, 1, "agent_core").is_err() {
+        return 0;
+    }
     let Ok(func) = inst.get_typed_func::<(i32, i32, i32), i32>(&store, "calc_cost_milli_ils_ifm")
     else {
         return 0;
     };
-    let prov_word = inst
-        .get_typed_func::<(), i32>(&store, "get_prov_buf_word")
-        .ok()
-        .and_then(|f| f.call(&mut store, ()).ok())
-        .map(|w| w.max(0) as usize)
-        .unwrap_or(16);
-    let model_word = inst
-        .get_typed_func::<(), i32>(&store, "get_model_buf_word")
-        .ok()
-        .and_then(|f| f.call(&mut store, ()).ok())
-        .map(|w| w.max(0) as usize)
-        .unwrap_or(96);
+    let Ok(prov_word) = crate::core_loader::get_word_export(&inst, &mut store, "get_prov_buf_word")
+    else {
+        return 0;
+    };
+    let Ok(model_word) =
+        crate::core_loader::get_word_export(&inst, &mut store, "get_model_buf_word")
+    else {
+        return 0;
+    };
     {
         let mem = memory.data_mut(&mut store);
         write_ifm_u32_buf(mem, prov_word, provider, 64);
@@ -1929,21 +1929,14 @@ pub(super) fn extract_gemini_error_from_raw(raw: &str) -> Option<String> {
         .and_then(|pre| pre.start(&mut store))
         .ok()?;
     let memory = inst.get_memory(&store, "memory")?;
+    crate::core_loader::check_core_abi(&inst, &mut store, 1, "agent_core").ok()?;
     let func = inst
         .get_typed_func::<i32, i32>(&store, "extract_api_error_ifm")
         .ok()?;
-    let json_in_word = inst
-        .get_typed_func::<(), i32>(&store, "get_json_in_word")
-        .ok()
-        .and_then(|f| f.call(&mut store, ()).ok())
-        .map(|w| w.max(0) as usize)
-        .unwrap_or(512);
-    let json_out_word = inst
-        .get_typed_func::<(), i32>(&store, "get_json_out_word")
-        .ok()
-        .and_then(|f| f.call(&mut store, ()).ok())
-        .map(|w| w.max(0) as usize)
-        .unwrap_or(17_000);
+    let json_in_word =
+        crate::core_loader::get_word_export(&inst, &mut store, "get_json_in_word").ok()?;
+    let json_out_word =
+        crate::core_loader::get_word_export(&inst, &mut store, "get_json_out_word").ok()?;
     let in_len = {
         let mem = memory.data_mut(&mut store);
         write_ifm_u32_buf(mem, json_in_word, trimmed, 16_384)

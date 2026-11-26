@@ -5,6 +5,7 @@ mod audio;
 mod browser_abi;
 mod capabilities;
 mod clipboard;
+mod core_mem;
 mod gpu;
 mod passport;
 mod runtime;

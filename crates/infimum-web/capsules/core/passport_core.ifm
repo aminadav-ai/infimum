@@ -19,15 +19,12 @@ const CAP_UNKNOWN: i64 = 64;
 
 const MAX_EFF_CHARS: i64 = 256;
 
-layout PassMem at 0 {
-  last_mask: word at 0,
-  eff_buf: words[256] at 16,
+layout PassMem {
+  eff_buf: words[256],
 }
 
-// Private scratch buffer outside `PassMem` (0..271) and `SYS_STR_SCRATCH_WORD` (17).
-layout PassScratch at 512 {
-  tok_buf: words[256],
-}
+export fn core_abi_version() -> i64 { 1 }
+export fn get_eff_buf_word() -> i64 { PassMem::eff_buf }
 
 // Classify a single capability token written into `eff_buf[0..raw_len)`.
 export fn classify_effect_ifm(raw_len: i64) -[Mem]-> i64 {
@@ -35,10 +32,8 @@ export fn classify_effect_ifm(raw_len: i64) -[Mem]-> i64 {
   if n == 0 {
     CAP_NONE
   } else {
-    let saved_w1 = PassMem.eff_buf[1];
-    let _ = slice_copy(PassScratch.tok_buf[0..n], PassMem.eff_buf[0..n]);
-    let tok = PassScratch.tok_buf[0..n];
-    let cap = if slice_eq_ascii_ci(tok, str_as_slice("mem"))
+    let tok = PassMem.eff_buf[0..n];
+    if slice_eq_ascii_ci(tok, str_as_slice("mem"))
       || slice_eq_ascii_ci(tok, str_as_slice("pure"))
       || slice_eq_ascii_ci(tok, str_as_slice("time"))
       || slice_eq_ascii_ci(tok, str_as_slice("state"))
@@ -65,9 +60,7 @@ export fn classify_effect_ifm(raw_len: i64) -[Mem]-> i64 {
       CAP_NET
     } else {
       CAP_UNKNOWN
-    };
-    PassMem.eff_buf[1] = saved_w1;
-    cap
+    }
   }
 }
 

@@ -9,6 +9,8 @@ pub mod browser_abi;
 pub mod capabilities;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod clipboard;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod core_mem;
 pub mod gpu;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod passport;

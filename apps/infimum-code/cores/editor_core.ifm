@@ -23,25 +23,40 @@ enum EditErr {
   Overflow = 6,
 }
 
-// Binary ABI shared with `infimum-code/daemon/src/agent.rs`
-layout EditMem at 0 {
-  err_code: word at 0 inv 0..=6,
-  err_idx: word at 1,
-  err_aux: word at 2,
-  out_len: word at 3 inv 0..=131072,
-  src_len: word at 4,
-  edit_count: word at 5,
-  t_off: words[64] at 16,
-  t_len: words[64] at 80,
-  r_off: words[64] at 144,
-  r_len: words[64] at 208,
-  s_start: words[64] at 272,
-  s_end: words[64] at 336,
-  s_idx: words[64] at 400 inv 0..=63,
-  pool_buf: words[65536] at 512,
-  src_buf: words[131072] at 66048,
-  out_buf: words[131072] at 197120,
+// Auto-placed layout with self-describing ABI getters for `infimum-code/daemon/src/agent/tools.rs`.
+layout EditMem {
+  err_code: word inv 0..=6,
+  err_idx: word,
+  err_aux: word,
+  out_len: word inv 0..=131072,
+  src_len: word,
+  edit_count: word,
+  t_off: words[64],
+  t_len: words[64],
+  r_off: words[64],
+  r_len: words[64],
+  s_start: words[64],
+  s_end: words[64],
+  s_idx: words[64] inv 0..=63,
+  pool_buf: words[65536],
+  src_buf: words[131072],
+  out_buf: words[131072],
 }
+
+export fn core_abi_version() -> i64 { 1 }
+export fn get_err_code_word() -> i64 { EditMem::err_code }
+export fn get_err_idx_word() -> i64 { EditMem::err_idx }
+export fn get_err_aux_word() -> i64 { EditMem::err_aux }
+export fn get_out_len_word() -> i64 { EditMem::out_len }
+export fn get_src_len_word() -> i64 { EditMem::src_len }
+export fn get_edit_count_word() -> i64 { EditMem::edit_count }
+export fn get_t_off_word() -> i64 { EditMem::t_off }
+export fn get_t_len_word() -> i64 { EditMem::t_len }
+export fn get_r_off_word() -> i64 { EditMem::r_off }
+export fn get_r_len_word() -> i64 { EditMem::r_len }
+export fn get_pool_buf_word() -> i64 { EditMem::pool_buf }
+export fn get_src_buf_word() -> i64 { EditMem::src_buf }
+export fn get_out_buf_word() -> i64 { EditMem::out_buf }
 
 fn match_at(pos: i64, src_n: i64, p_off: i64, p_len: i64) -[Mem]-> bool {
   let sn = clamp_i64(src_n, 0, MAX_SRC);

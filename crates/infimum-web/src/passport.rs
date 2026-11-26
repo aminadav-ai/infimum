@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 use wasmi::{Engine, Linker, Module, Store};
 
 const PASSPORT_AXW: &[u8] = include_bytes!("../capsules/core/passport_core.ifw");
-const EFF_BUF_WORD: usize = 16;
+const PASSPORT_CORE_ABI: i32 = 1;
 const MAX_EFF_CHARS: usize = 256;
 const CAP_NET: i32 = 32;
 
@@ -276,6 +276,10 @@ pub fn verify_capsule_passport(
     let memory = inst
         .get_memory(&store, "memory")
         .ok_or(GatekeeperError::MalformedSection)?;
+    crate::core_mem::check_core_abi(&inst, &mut store, PASSPORT_CORE_ABI, "passport_core")
+        .map_err(|_| GatekeeperError::MalformedSection)?;
+    let eff_buf_word = crate::core_mem::get_word_export(&inst, &mut store, "get_eff_buf_word")
+        .map_err(|_| GatekeeperError::MalformedSection)?;
     let classify_fn = inst
         .get_typed_func::<i32, i32>(&store, "classify_effect_ifm")
         .map_err(|_| GatekeeperError::MalformedSection)?;
@@ -286,18 +290,12 @@ pub fn verify_capsule_passport(
     let allow_mask = policy_to_allow_mask(policy);
     for token in passport.effect_names() {
         let norm = token.trim();
-        let chars: Vec<u32> = norm.chars().take(MAX_EFF_CHARS).map(|c| c as u32).collect();
-        {
+        let n_chars = {
             let mem = memory.data_mut(&mut store);
-            for (idx, &cp) in chars.iter().enumerate() {
-                let off = (EFF_BUF_WORD + idx) * 4;
-                if off + 4 <= mem.len() {
-                    mem[off..off + 4].copy_from_slice(&cp.to_le_bytes());
-                }
-            }
-        }
+            crate::core_mem::write_raw_chars(mem, eff_buf_word, norm, MAX_EFF_CHARS)
+        };
         let cap_bit = classify_fn
-            .call(&mut store, chars.len() as i32)
+            .call(&mut store, n_chars as i32)
             .map_err(|_| GatekeeperError::UnauthorizedCapability(norm.to_string()))?;
         let denied = check_fn
             .call(&mut store, (cap_bit, allow_mask))

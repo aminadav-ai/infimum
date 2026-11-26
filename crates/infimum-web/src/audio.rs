@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use wasmi::{Engine, Linker, Module, Store};
 
 const AUDIO_AXW: &[u8] = include_bytes!("../capsules/core/audio_core.ifw");
-const PCM_BUF_WORD: usize = 64;
+const AUDIO_CORE_ABI: i32 = 1;
 const MAX_SAMPLES: usize = 66_150;
 const AUDIO_FUEL: u64 = 120_000_000;
 #[cfg(not(target_arch = "wasm32"))]
@@ -282,16 +282,11 @@ fn audio_module() -> &'static (Engine, Module) {
     CELL.get_or_init(|| crate::runtime::load_core_axw("audio_core.ifw", AUDIO_AXW))
 }
 
-fn read_pcm_samples(mem: &[u8], count: usize) -> Vec<f32> {
+fn read_pcm_samples(mem: &[u8], pcm_buf_word: usize, count: usize) -> Vec<f32> {
     let n = count.min(MAX_SAMPLES);
     let mut out = Vec::with_capacity(n);
     for idx in 0..n {
-        let off = (PCM_BUF_WORD + idx) * 4;
-        let v = if off + 4 <= mem.len() {
-            i32::from_le_bytes(mem[off..off + 4].try_into().unwrap())
-        } else {
-            0
-        };
+        let v = crate::core_mem::get_i32(mem, pcm_buf_word + idx);
         out.push((v as f32) / 10_000.0);
     }
     out
@@ -313,6 +308,13 @@ pub fn synth_preset(preset: i64, pitch: f32, vol: f32) -> Vec<f32> {
     let Some(memory) = inst.get_memory(&store, "memory") else {
         return Vec::new();
     };
+    if crate::core_mem::check_core_abi(&inst, &mut store, AUDIO_CORE_ABI, "audio_core").is_err() {
+        return Vec::new();
+    }
+    let Ok(pcm_buf_word) = crate::core_mem::get_word_export(&inst, &mut store, "get_pcm_buf_word")
+    else {
+        return Vec::new();
+    };
     let Ok(func) = inst.get_typed_func::<(i32, i32, i32), i32>(&store, "synth_preset_ifm") else {
         return Vec::new();
     };
@@ -321,7 +323,7 @@ pub fn synth_preset(preset: i64, pitch: f32, vol: f32) -> Vec<f32> {
     let Ok(n_raw) = func.call(&mut store, (preset as i32, pitch_pct, vol_pct)) else {
         return Vec::new();
     };
-    read_pcm_samples(memory.data(&store), n_raw.max(0) as usize)
+    read_pcm_samples(memory.data(&store), pcm_buf_word, n_raw.max(0) as usize)
 }
 
 pub fn synth_tone(freq_hz: f32, dur_ms: f32, wave: i64, vol: f32) -> Vec<f32> {
@@ -340,6 +342,13 @@ pub fn synth_tone(freq_hz: f32, dur_ms: f32, wave: i64, vol: f32) -> Vec<f32> {
     let Some(memory) = inst.get_memory(&store, "memory") else {
         return Vec::new();
     };
+    if crate::core_mem::check_core_abi(&inst, &mut store, AUDIO_CORE_ABI, "audio_core").is_err() {
+        return Vec::new();
+    }
+    let Ok(pcm_buf_word) = crate::core_mem::get_word_export(&inst, &mut store, "get_pcm_buf_word")
+    else {
+        return Vec::new();
+    };
     let Ok(func) = inst.get_typed_func::<(i32, i32, i32, i32), i32>(&store, "synth_tone_ifm") else {
         return Vec::new();
     };
@@ -355,7 +364,7 @@ pub fn synth_tone(freq_hz: f32, dur_ms: f32, wave: i64, vol: f32) -> Vec<f32> {
     ) else {
         return Vec::new();
     };
-    read_pcm_samples(memory.data(&store), n_raw.max(0) as usize)
+    read_pcm_samples(memory.data(&store), pcm_buf_word, n_raw.max(0) as usize)
 }
 
 #[cfg(test)]
