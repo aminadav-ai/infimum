@@ -7,12 +7,10 @@ use crate::capabilities::{dispatch_host_call, E_IO_FAILED};
 use crate::passport::{verify_capsule_passport, CapabilityPolicy, SecurityPassport};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::browser_abi::{
-    CLIPBOARD_MAX_CHARS as ABI_CLIPBOARD_MAX_CHARS,
-    FONT_METRICS_FLAG_WORD as STUDIO_MEM_FONT_METRICS_FLAG_WORD,
-    FONT_METRICS_TABLE_WORD as STUDIO_MEM_FONT_METRICS_TABLE_WORD, GPU_CLIPS_BYTE_OFFSET,
-    GPU_CMD_BYTE_OFFSET, INPUT_MAX_CHARS as ABI_INPUT_MAX_CHARS,
-    LARGE_COPY_MAX_CHARS as ABI_LARGE_COPY_MAX_CHARS,
-    PASTE_MAILBOX_WORD as STUDIO_MEM_PASTE_MAILBOX_WORD, SYS_FONT_METRICS_BYTE_OFFSET,
+    CLIPBOARD_MAX_CHARS as ABI_CLIPBOARD_MAX_CHARS, GPU_CLIPS_BYTE_OFFSET, GPU_CMD_BYTE_OFFSET,
+    IFW_ABI_VERSION, INPUT_MAX_CHARS as ABI_INPUT_MAX_CHARS,
+    LARGE_COPY_MAX_CHARS as ABI_LARGE_COPY_MAX_CHARS, SYS_CLIPBOARD_MAILBOX_WORD,
+    SYS_FONT_METRICS_BYTE_OFFSET, SYS_FONT_METRICS_FLAG_WORD, SYS_FONT_METRICS_TABLE_WORD,
     SYS_INPUT_BYTE_OFFSET,
 };
 use bytemuck::{Pod, Zeroable};
@@ -59,7 +57,7 @@ pub fn load_core_axw(file_name: &str, embedded: &[u8]) -> (Engine, Module) {
 
 /// Linear memory word address used as the host <-> capsule UTF-32 clipboard mailbox (`len`, `cp0..`).
 #[cfg(not(target_arch = "wasm32"))]
-pub const CLIPBOARD_MAILBOX_WORD: usize = STUDIO_MEM_PASTE_MAILBOX_WORD;
+pub const CLIPBOARD_MAILBOX_WORD: usize = SYS_CLIPBOARD_MAILBOX_WORD as usize;
 #[cfg(not(target_arch = "wasm32"))]
 const CLIPBOARD_MAX_CHARS: usize = ABI_CLIPBOARD_MAX_CHARS as usize;
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,10 +66,10 @@ const LARGE_COPY_MAX_CHARS: usize = ABI_LARGE_COPY_MAX_CHARS as usize;
 /// Linear memory word address where host writes exact TrueType advance widths (`3 * 176` words).
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
-pub const FONT_METRICS_FLAG_WORD: usize = STUDIO_MEM_FONT_METRICS_FLAG_WORD;
+pub const FONT_METRICS_FLAG_WORD: usize = SYS_FONT_METRICS_FLAG_WORD as usize;
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
-pub const FONT_METRICS_TABLE_WORD: usize = STUDIO_MEM_FONT_METRICS_TABLE_WORD;
+pub const FONT_METRICS_TABLE_WORD: usize = SYS_FONT_METRICS_TABLE_WORD as usize;
 
 /// Single GPU primitive matching `infimum-ui` / `studio_core.ifm` 8 x i32 layout (32 bytes).
 #[repr(C)]
@@ -115,10 +113,6 @@ pub struct FrameInput {
 }
 
 pub const MESH3D_MAGIC: i32 = 1_028_866_894; // 0x3D53434E ("3SCN")
-pub const MESH3D_HDR_WORD: usize = 720_000;
-pub const MESH3D_LIGHTS_WORD: usize = 720_100;
-pub const MESH3D_VBO_WORD: usize = 721_000;
-pub const MESH3D_VM_VBO_WORD: usize = 1_700_000;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -262,6 +256,17 @@ impl CapsuleRuntime {
             .and_then(|f| f.call(&mut store, ()).ok())
             .map(|v| v.max(0) as usize)
             .unwrap_or(GPU_CLIPS_BYTE_OFFSET as usize);
+
+        if let Ok(abi_fn) = instance.get_typed_func::<(), i32>(&store, "ifw_abi_version") {
+            let v = abi_fn
+                .call(&mut store, ())
+                .map_err(|e| format!("Capsule `ifw_abi_version` trapped: {e}"))?;
+            if v != IFW_ABI_VERSION as i32 {
+                return Err(format!(
+                    "Capsule ABI version mismatch: host expects {IFW_ABI_VERSION}, capsule exports {v}"
+                ));
+            }
+        }
 
         let font_metrics_byte_offset = instance
             .get_typed_func::<(), i32>(&store, "get_font_metrics_byte_offset")
@@ -584,13 +589,9 @@ fn extract_mesh3d_verts(mem: &[u8], base_word: usize, count: usize) -> Vec<MeshV
 
 #[cfg(not(target_arch = "wasm32"))]
 fn extract_mesh3d_scene(mem: &[u8], mesh3d_byte_offset: Option<usize>) -> Option<Mesh3DScene> {
-    let (hdr_word, lights_word, vbo_word, vm_vbo_word) = match mesh3d_byte_offset {
-        Some(byte_off) => {
-            let base = byte_off / 4;
-            (base, base + 100, base + 1000, base + 961_000)
-        }
-        None => (MESH3D_HDR_WORD, MESH3D_LIGHTS_WORD, MESH3D_VBO_WORD, MESH3D_VM_VBO_WORD),
-    };
+    let base = mesh3d_byte_offset? / 4;
+    let (hdr_word, lights_word, vbo_word, vm_vbo_word) =
+        (base, base + 100, base + 1000, base + 961_000);
     if read_i32_word(mem, hdr_word) != MESH3D_MAGIC {
         return None;
     }

@@ -17,6 +17,9 @@ pub(super) fn resolve_embedded_std(spec: &str) -> Option<(&'static str, &'static
         "std/sys_mem" | "std/sys_mem.ifm" => {
             Some(("__std__/sys_mem.ifm", include_str!("../../std/sys_mem.ifm")))
         }
+        "std/host_abi" | "std/host_abi.ifm" => {
+            Some(("__std__/host_abi.ifm", include_str!("../../std/host_abi.ifm")))
+        }
         "std/mem" | "std/mem.ifm" => Some(("__std__/mem.ifm", include_str!("../../std/mem.ifm"))),
         "std/gfx" | "std/gfx.ifm" => Some(("__std__/gfx.ifm", include_str!("../../std/gfx.ifm"))),
         "std/mesh3d" | "std/mesh3d.ifm" => Some(("__std__/mesh3d.ifm", include_str!("../../std/mesh3d.ifm"))),

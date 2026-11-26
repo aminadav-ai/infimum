@@ -56,9 +56,13 @@ pub const SYS_FONT_METRICS_FLAG_WORD: i64 = 256;
 pub const SYS_FONT_METRICS_TABLE_WORD: i64 = 257;
 pub const SYS_FONT_METRICS_BYTE_OFFSET: i64 = 1024;
 
-// --- Per-Frame Scratch Bump Arena (words 4096..65535, ~240 KiB) ---
+// --- Per-Frame Scratch Bump Arena (words 4096..49151, ~176 KiB) ---
 pub const SYS_SCRATCH_BASE_WORD: i64 = 4096;
-pub const SYS_SCRATCH_CAP_WORDS: i64 = 61440;
+pub const SYS_SCRATCH_CAP_WORDS: i64 = 45056;
+
+// --- Default Host <-> Capsule Clipboard Mailbox (words 49152..65535, 64 KiB) ---
+// Safely separated from FrameScratch (4096..49151) and GPU Stream (65536+).
+pub const SYS_CLIPBOARD_MAILBOX_WORD: i64 = 49152;
 
 // --- Unified 1-Draw-Call GPU Primitive Stream (words 65536..705535, 2.5 MiB) ---
 pub const SYS_GPU_PRIMS_WORD: i64 = 65536;

@@ -72,6 +72,13 @@ if [[ -d "$MONOREPO_ROOT/crates/infimum-web/capsules" ]]; then
   check_ifm "web-cores/passport_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/passport_core.ifm" 1 1
   check_ifm "web-cores/sanitizer_core.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/core/sanitizer_core.ifm" 1 1
   check_ifm "web-cores/text_demo.ifm" "$MONOREPO_ROOT/crates/infimum-web/capsules/m2_text_demo/src/text_demo.ifm" 1 1
+
+  if [[ -f "$MONOREPO_ROOT/crates/infimum-web/src/browser_abi.rs" ]]; then
+    "$INF_BIN" export-abi "$REPO_ROOT/std/host_abi.ifm" --rust -o "$TMP_DIR/browser_abi.rs" >/dev/null
+    cmp -s "$TMP_DIR/browser_abi.rs" "$MONOREPO_ROOT/crates/infimum-web/src/browser_abi.rs" \
+      || { echo "ERROR: crates/infimum-web/src/browser_abi.rs is out of sync with std/host_abi.ifm!"; exit 1; }
+    echo "  [sync]   crates/infimum-web/src/browser_abi.rs matches canonical std/host_abi.ifm"
+  fi
 fi
 
 INFIMUM_CODE_DIR=""
@@ -104,6 +111,13 @@ if [[ -n "$SITE_DIR" ]]; then
   cmp -s "$REPO_ROOT/docs/INFIMUM_LANG_GUIDE.md" "$SITE_DIR/public/code/INFIMUM_LANG_GUIDE.md" \
     || { echo "ERROR: infimum-site/public/code/INFIMUM_LANG_GUIDE.md is out of sync!"; exit 1; }
   echo "  [sync]   infimum-site/public/code/INFIMUM_LANG_GUIDE.md matches canonical guide"
+
+  if [[ -f "$SITE_DIR/public/player/browser_abi.js" ]]; then
+    "$INF_BIN" export-abi "$REPO_ROOT/std/host_abi.ifm" --js -o "$TMP_DIR/browser_abi.js" >/dev/null
+    cmp -s "$TMP_DIR/browser_abi.js" "$SITE_DIR/public/player/browser_abi.js" \
+      || { echo "ERROR: infimum-site/public/player/browser_abi.js is out of sync with std/host_abi.ifm!"; exit 1; }
+    echo "  [sync]   infimum-site/public/player/browser_abi.js matches canonical std/host_abi.ifm"
+  fi
 
   if [[ -n "$INFIMUM_CODE_DIR" && -f "$SITE_DIR/public/code/studio_abi.js" ]]; then
     "$INF_BIN" export-abi "$INFIMUM_CODE_DIR/capsule/src/abi.ifm" --js -o "$TMP_DIR/studio_abi.js" >/dev/null

@@ -19,7 +19,7 @@ pub fn host_ret() -[Mem]-> i64 {
 }
 
 // ============================================================================
-// 1. FrameScratch (Per-Frame Bump Arena: words 4096..65535, ~240 KiB)
+// 1. FrameScratch (Per-Frame Bump Arena: words 4096..49151, ~176 KiB)
 // ============================================================================
 
 /// Reset the per-frame scratch arena cursor to 0 (called automatically by `gfx_begin_frame`).

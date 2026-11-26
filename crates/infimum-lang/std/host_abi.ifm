@@ -1,0 +1,44 @@
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
+//
+// Infimum Standard Library: std/host_abi.ifm
+// Single source of truth for the generic `.ifw` Browser/Desktop Host ABI.
+//
+// Generate host bindings with:
+//   infimum export-abi crates/infimum-lang/std/host_abi.ifm --rust -o crates/infimum-web/src/browser_abi.rs
+//   infimum export-abi crates/infimum-lang/std/host_abi.ifm --js   -o ../infimum-site/public/player/browser_abi.js
+
+pub use "std/sys_mem.ifm";
+pub use "std/input.ifm";
+
+// Canonical GPU capsule ABI version exported automatically by `ifw_abi_version()`.
+pub const IFW_ABI_VERSION: i64 = 4;
+
+// Standard host <-> capsule UTF-32 transfer limits.
+pub const CLIPBOARD_MAX_CHARS: i64 = 4096;
+pub const INPUT_MAX_CHARS: i64 = 8192;
+pub const LARGE_COPY_MAX_CHARS: i64 = 32768;
+
+// Standard pointer cursor shapes written to `SYS_CURSOR_KIND_WORD` (word 11).
+pub enum CursorKind {
+  Default = 0,
+  Pointer = 1,
+  Text = 2,
+  EwResize = 3,
+}
+
+// Generic host actions returned by `consume_host_action()`.
+pub enum HostAction {
+  None = 0,
+  Copy = 1,
+  Paste = 2,
+  Cut = 3,
+  PickImage = 4,
+  ClearImage = 5,
+  RemoveImage0 = 6,
+  RemoveImage1 = 7,
+  RemoveImage2 = 8,
+  RemoveImage3 = 9,
+  RemoveImage4 = 10,
+  RemoveImage5 = 11,
+}
