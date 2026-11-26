@@ -1,0 +1,144 @@
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
+//
+// Infimum v0.4 Memory Regions Demo: Pool + Arena + FrameScratch + Slices [T] + vec<T>[CAP]
+// Demonstrates a zero-heap, Z3-verified headless task & text-record manager using all 3
+// allocators from `std/mem.ifm` together with typed slices and selective module imports.
+
+use "std/math.ifm";
+use "std/mem.ifm";
+use "std/buf.ifm" { buf_set_str, buf_eq_str };
+use "std/slice.ifm" { slice_find, slice_eq_ascii_ci };
+
+const MAX_TASKS: i64 = 16;
+const ARENA_WORDS: i64 = 1024;
+
+struct TaskSlot {
+  priority: word inv 1..=5,
+  title_ptr: word,
+  title_len: word inv 0..=64,
+}
+
+layout TaskStore {
+  pool_flags: words[16],
+  tasks: TaskSlot[16],
+  active_ids: vec<word>[16],
+
+  arena_cur: word,
+  arena_buf: words[1024],
+  tmp_str: words[68],
+}
+
+export fn store_init() -[Mem]-> unit {
+  pool_init(TaskStore::pool_flags, MAX_TASKS);
+  arena_reset(TaskStore::arena_cur);
+  TaskStore.active_ids.clear();
+}
+
+/// Allocate a stable slot from `Pool`, pack the task title into `Arena`, and record the ID in `vec<word>[16]`.
+export fn task_add(title: str, priority: i64) -[Mem]-> i64 {
+  let slot = pool_alloc(TaskStore::pool_flags, MAX_TASKS);
+  if slot < 0 || slot >= MAX_TASKS {
+    -1
+  } else {
+    buf_set_str(TaskStore::tmp_str, 64, title);
+    let stored_ptr = arena_push_strbuf(
+      TaskStore::arena_buf,
+      ARENA_WORDS,
+      TaskStore::arena_cur,
+      TaskStore::tmp_str,
+      64,
+    );
+    if stored_ptr < 0 {
+      pool_free(TaskStore::pool_flags, slot, MAX_TASKS);
+      -1
+    } else {
+      let tlen = clamp_i64(mem_load(stored_ptr), 0, 64);
+      TaskStore.tasks[slot] = TaskSlot {
+        priority: clamp_i64(priority, 1, 5),
+        title_ptr: stored_ptr,
+        title_len: tlen,
+      };
+      let _ = TaskStore.active_ids.try_push(slot);
+      slot
+    }
+  }
+}
+
+/// Free a task slot back to `Pool` (O(1) reuse) and remove it from `active_ids` via `swap_remove`.
+export fn task_remove(slot: i64) -[Mem]-> bool {
+  let ids = TaskStore.active_ids.as_slice();
+  let pos = slice_find(ids, slot);
+  if pos >= 0 && pos < TaskStore.active_ids.len {
+    let _ = TaskStore.active_ids.swap_remove(pos);
+    pool_free(TaskStore::pool_flags, slot, MAX_TASKS);
+    true
+  } else {
+    false
+  }
+}
+
+/// Use `FrameScratch` to collect all active task IDs with `priority >= min_prio`,
+/// returning how many matched.
+export fn filter_high_priority_count(min_prio: i64) -[Mem]-> i64 {
+  scratch_reset();
+  let out_ptr = scratch_calloc(MAX_TASKS);
+  if out_ptr < 0 {
+    0
+  } else {
+    let out = slice_i64(out_ptr, MAX_TASKS);
+    let ids = TaskStore.active_ids.as_slice();
+    let mut matched = 0;
+    for i in 0..ids.len max 16 {
+      let sid = clamp_i64(ids[i], 0, 15);
+      if TaskStore.tasks[sid].priority >= min_prio && matched >= 0 && matched < MAX_TASKS {
+        out[matched] = sid;
+        matched += 1;
+      }
+    }
+    matched
+  }
+}
+
+/// Check if a task's title stored in `Arena` matches `query` (ASCII case-insensitive) via `[i64]` slice.
+export fn task_title_matches_ci(slot: i64, query: str) -[Mem]-> bool {
+  if slot < 0 || slot >= MAX_TASKS {
+    false
+  } else {
+    let ptr = TaskStore.tasks[slot].title_ptr;
+    let tlen = TaskStore.tasks[slot].title_len;
+    if ptr < 0 || ptr + 1 < 0 {
+      false
+    } else {
+      slice_eq_ascii_ci(slice_i64(ptr + 1, tlen), str_as_slice(query))
+    }
+  }
+}
+
+test "Pool, Arena, FrameScratch, slices, and vec work together end-to-end" {
+  store_init();
+  assert(pool_count(TaskStore::pool_flags, MAX_TASKS) == 0);
+
+  let id0 = task_add("Verify Z3", 5);
+  let id1 = task_add("Ship Wasm", 3);
+  let id2 = task_add("Write Docs", 2);
+  assert(id0 == 0 && id1 == 1 && id2 == 2);
+  assert(pool_count(TaskStore::pool_flags, MAX_TASKS) == 3);
+  assert(pool_is_alive(TaskStore::pool_flags, id1, MAX_TASKS));
+  assert(TaskStore.active_ids.len == 3);
+  assert(arena_used(TaskStore::arena_cur, ARENA_WORDS) > 20);
+  assert(buf_eq_str(TaskStore.tasks[id0].title_ptr, "Verify Z3"));
+  assert(task_title_matches_ci(id1, "ship wasm"));
+  assert(filter_high_priority_count(3) == 2);
+
+  // Free slot 1 and verify O(1) slot reuse on next allocation
+  assert(task_remove(id1));
+  assert(!pool_is_alive(TaskStore::pool_flags, id1, MAX_TASKS));
+  assert(pool_count(TaskStore::pool_flags, MAX_TASKS) == 2);
+  assert(filter_high_priority_count(3) == 1);
+
+  let reused = task_add("Audit ABI", 4);
+  assert(reused == id1);
+  assert(task_title_matches_ci(reused, "audit abi"));
+  assert(filter_high_priority_count(3) == 2);
+}

@@ -43,7 +43,7 @@ layout AppState {
   fast_mode: word inv 0..=1,
   temp_pct: word inv 0..=100,
   last_action: word,
-  query_buf: words[128],
+  query_buf: vec<word>[128],
 }
 
 fn draw_feed_cards(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
@@ -58,7 +58,7 @@ fn draw_feed_cards(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> un
       } else if i == 1 {
         "1-Draw-Call GPU primitive stream"
       } else if i == 2 {
-        "Reusable Forma 2.0 sub-components"
+        "Reusable Forma 2.1 sub-components"
       } else {
         "Deferred Overlay dropdowns & Scroll clipping"
       };
@@ -243,7 +243,7 @@ export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem]-> i64 {
   AppState.scroll_y = 0;
   AppState.fast_mode = 1;
   AppState.temp_pct = 50;
-  buf_clear(AppState::query_buf);
+  AppState.query_buf.clear();
   AppState.last_action = 0;
   0
 }
