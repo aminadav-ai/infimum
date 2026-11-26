@@ -64,3 +64,83 @@ pub fn slice_copy(dst: [i64], src: [i64]) -[Mem]-> i64 {
   }
   n
 }
+
+/// Return `true` if `haystack` ends with all elements of `suffix`.
+pub fn slice_ends_with(haystack: [i64], suffix: [i64]) -[Mem]-> bool {
+  if suffix.len > haystack.len {
+    false
+  } else {
+    let off = haystack.len - suffix.len;
+    let mut ok = true;
+    for i in 0..suffix.len max 4096 {
+      if haystack[off + i] != suffix[i] {
+        ok = false;
+        break;
+      }
+    }
+    ok
+  }
+}
+
+/// Find the first starting index `pos` where `haystack[pos..pos+needle.len]` equals `needle`,
+/// or `-1` if not found. Returns `0` when `needle.len == 0`.
+pub fn slice_find_slice(haystack: [i64], needle: [i64]) -[Mem]-> i64 {
+  if needle.len == 0 {
+    0
+  } else if needle.len > haystack.len {
+    -1
+  } else {
+    let limit = haystack.len - needle.len + 1;
+    let mut found = -1;
+    for pos in 0..limit max 4096 {
+      let mut eq = true;
+      for j in 0..needle.len max 256 {
+        if haystack[pos + j] != needle[j] {
+          eq = false;
+          break;
+        }
+      }
+      if eq {
+        found = pos;
+        break;
+      }
+    }
+    found
+  }
+}
+
+fn ascii_lower(cp: i64) -> i64 {
+  if cp >= 'A' && cp <= 'Z' { cp + 32 } else { cp }
+}
+
+/// Compare two UTF-32 codepoint slices for ASCII case-insensitive equality.
+pub fn slice_eq_ascii_ci(a: [i64], b: [i64]) -[Mem]-> bool {
+  if a.len != b.len {
+    false
+  } else {
+    let mut eq = true;
+    for i in 0..a.len max 4096 {
+      if ascii_lower(a[i]) != ascii_lower(b[i]) {
+        eq = false;
+        break;
+      }
+    }
+    eq
+  }
+}
+
+/// Return `true` if `haystack` starts with `prefix` using ASCII case-insensitive comparison.
+pub fn slice_starts_with_ascii_ci(haystack: [i64], prefix: [i64]) -[Mem]-> bool {
+  if prefix.len > haystack.len {
+    false
+  } else {
+    let mut ok = true;
+    for i in 0..prefix.len max 4096 {
+      if ascii_lower(haystack[i]) != ascii_lower(prefix[i]) {
+        ok = false;
+        break;
+      }
+    }
+    ok
+  }
+}

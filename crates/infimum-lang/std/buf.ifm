@@ -6,7 +6,7 @@
 // Convention: `mem_load(buf_ptr)` stores current length; elements at `buf_ptr + 1 + i`.
 
 use "std/math.ifm";
-use "std/sys_mem.ifm";
+use "std/slice.ifm";
 
 pub fn buf_len(buf_ptr: i64, max_len: i64) -[Mem]-> i64 {
   clamp_i64(mem_load(buf_ptr), 0, max_i64(max_len, 0))
@@ -77,31 +77,25 @@ pub fn buf_push_json_escaped(dst_ptr: i64, dst_max: i64, src_ptr: i64, src_start
 }
 
 pub fn buf_eq_slice(a_ptr: i64, a_start: i64, a_len: i64, b_ptr: i64, b_start: i64, b_len: i64) -[Mem]-> bool {
-  if a_len != b_len || a_len < 0 {
+  let ap = a_ptr + 1 + a_start;
+  let bp = b_ptr + 1 + b_start;
+  if a_len != b_len || a_len < 0 || ap < 0 || bp < 0 {
     false
   } else {
     let lim = clamp_i64(a_len, 0, 4096);
-    let mut eq = true;
-    for i in 0..lim max 4096 {
-      if mem_load(a_ptr + 1 + a_start + i) != mem_load(b_ptr + 1 + b_start + i) {
-        eq = false;
-        break;
-      }
-    }
-    eq
+    slice_eq(slice_i64(ap, lim), slice_i64(bp, lim))
   }
 }
 
 pub fn buf_find_cp(buf_ptr: i64, start: i64, end: i64, cp: i64) -[Mem]-> i64 {
   let s = max_i64(start, 0);
-  let mut found = -1;
-  for i in s..end max 16384 {
-    if mem_load(buf_ptr + 1 + i) == cp {
-      found = i;
-      break;
-    }
+  let p = buf_ptr + 1 + s;
+  if end <= s || p < 0 {
+    -1
+  } else {
+    let idx = slice_find(slice_i64(p, end - s), cp);
+    if idx >= 0 { s + idx } else { -1 }
   }
-  found
 }
 
 // ============================================================================
@@ -112,18 +106,15 @@ pub fn buf_find_cp(buf_ptr: i64, start: i64, end: i64, cp: i64) -[Mem]-> i64 {
 pub fn str_len(s: str) -[Mem]-> i64
   ens result >= 0 && result <= 4096
 {
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-  let ptr = mem_load(SYS_STR_SCRATCH_WORD);
-  clamp_i64(mem_load(ptr), 0, 4096)
+  let ss = str_as_slice(s);
+  clamp_i64(ss.len, 0, 4096)
 }
 
 /// Read the `idx`-th Unicode codepoint of `s` (returns `0` if out of bounds).
 pub fn str_char(s: str, idx: i64) -[Mem]-> i64 {
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-  let ptr = mem_load(SYS_STR_SCRATCH_WORD);
-  let n = clamp_i64(mem_load(ptr), 0, 4096);
-  if idx >= 0 && idx < n {
-    mem_load(ptr + 1 + idx)
+  let ss = str_as_slice(s);
+  if idx >= 0 && idx < ss.len {
+    ss[idx]
   } else {
     0
   }
@@ -131,17 +122,14 @@ pub fn str_char(s: str, idx: i64) -[Mem]-> i64 {
 
 /// Append a `str` into a length-prefixed UTF-32 buffer (clamped to `max_len`).
 pub fn buf_push_str(buf_ptr: i64, max_len: i64, s: str) -[Mem]-> unit {
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-  let s_ptr = mem_load(SYS_STR_SCRATCH_WORD);
-  let sn = clamp_i64(mem_load(s_ptr), 0, 4096);
   let cap = max_i64(max_len, 0);
-  let mut cur = clamp_i64(mem_load(buf_ptr), 0, cap);
-  for i in 0..sn max 4096 {
-    if cur >= cap { break; }
-    mem_store(buf_ptr + 1 + cur, mem_load(s_ptr + 1 + i));
-    cur += 1;
+  let cur = clamp_i64(mem_load(buf_ptr), 0, cap);
+  let rem = cap - cur;
+  let dst_p = buf_ptr + 1 + cur;
+  if rem > 0 && dst_p >= 0 {
+    let copied = slice_copy(slice_i64(dst_p, rem), str_as_slice(s));
+    mem_store(buf_ptr, cur + copied);
   }
-  mem_store(buf_ptr, cur);
 }
 
 /// Clear a UTF-32 buffer and copy `s` into it.
@@ -152,110 +140,53 @@ pub fn buf_set_str(buf_ptr: i64, max_len: i64, s: str) -[Mem]-> unit {
 
 /// Exact equality check between a length-prefixed UTF-32 buffer and a `str`.
 pub fn buf_eq_str(buf_ptr: i64, s: str) -[Mem]-> bool {
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-  let s_ptr = mem_load(SYS_STR_SCRATCH_WORD);
-  let sn = clamp_i64(mem_load(s_ptr), 0, 4096);
   let bn = mem_load(buf_ptr);
-  if bn != sn {
+  let p = buf_ptr + 1;
+  if bn < 0 || p < 0 {
     false
   } else {
-    let mut ok = true;
-    for i in 0..sn max 4096 {
-      if mem_load(buf_ptr + 1 + i) != mem_load(s_ptr + 1 + i) {
-        ok = false;
-        break;
-      }
-    }
-    ok
+    slice_eq(slice_i64(p, bn), str_as_slice(s))
   }
 }
 
 /// Exact equality check between a raw UTF-32 slice (`mem[raw_ptr .. raw_ptr + len)`) and a `str`.
 pub fn slice_eq_str(raw_ptr: i64, len: i64, s: str) -[Mem]-> bool {
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-  let s_ptr = mem_load(SYS_STR_SCRATCH_WORD);
-  let sn = clamp_i64(mem_load(s_ptr), 0, 4096);
-  if len != sn || len < 0 {
+  if len < 0 || raw_ptr < 0 {
     false
   } else {
-    let mut ok = true;
-    for i in 0..sn max 4096 {
-      if mem_load(raw_ptr + i) != mem_load(s_ptr + 1 + i) {
-        ok = false;
-        break;
-      }
-    }
-    ok
+    slice_eq(slice_i64(raw_ptr, len), str_as_slice(s))
   }
 }
 
 /// Check whether a length-prefixed UTF-32 buffer starts with `s`.
 pub fn buf_starts_with(buf_ptr: i64, s: str) -[Mem]-> bool {
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-  let s_ptr = mem_load(SYS_STR_SCRATCH_WORD);
-  let sn = clamp_i64(mem_load(s_ptr), 0, 4096);
-  let bn = clamp_i64(mem_load(buf_ptr), 0, 16384);
-  if bn < sn {
+  let p = buf_ptr + 1;
+  if p < 0 {
     false
   } else {
-    let mut ok = true;
-    for i in 0..sn max 4096 {
-      if mem_load(buf_ptr + 1 + i) != mem_load(s_ptr + 1 + i) {
-        ok = false;
-        break;
-      }
-    }
-    ok
+    let bn = clamp_i64(mem_load(buf_ptr), 0, 16384);
+    slice_starts_with(slice_i64(p, bn), str_as_slice(s))
   }
 }
 
 /// Check whether a length-prefixed UTF-32 buffer ends with `s`.
 pub fn buf_ends_with(buf_ptr: i64, s: str) -[Mem]-> bool {
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-  let s_ptr = mem_load(SYS_STR_SCRATCH_WORD);
-  let sn = clamp_i64(mem_load(s_ptr), 0, 4096);
-  let bn = clamp_i64(mem_load(buf_ptr), 0, 16384);
-  if bn < sn {
+  let p = buf_ptr + 1;
+  if p < 0 {
     false
   } else {
-    let off = bn - sn;
-    let mut ok = true;
-    for i in 0..sn max 4096 {
-      if mem_load(buf_ptr + 1 + off + i) != mem_load(s_ptr + 1 + i) {
-        ok = false;
-        break;
-      }
-    }
-    ok
+    let bn = clamp_i64(mem_load(buf_ptr), 0, 16384);
+    slice_ends_with(slice_i64(p, bn), str_as_slice(s))
   }
 }
 
 /// Check whether a length-prefixed UTF-32 buffer contains substring `s`.
 pub fn buf_has_str(buf_ptr: i64, s: str) -[Mem]-> bool {
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-  let s_ptr = mem_load(SYS_STR_SCRATCH_WORD);
-  let sn = clamp_i64(mem_load(s_ptr), 0, 256);
-  let bn = clamp_i64(mem_load(buf_ptr), 0, 4096);
-  if sn == 0 {
-    true
-  } else if bn < sn {
+  let p = buf_ptr + 1;
+  if p < 0 {
     false
   } else {
-    let limit = bn - sn + 1;
-    let mut found = false;
-    for pos in 0..limit max 4096 {
-      let mut eq = true;
-      for j in 0..sn max 256 {
-        if mem_load(buf_ptr + 1 + pos + j) != mem_load(s_ptr + 1 + j) {
-          eq = false;
-          break;
-        }
-      }
-      if eq {
-        found = true;
-        break;
-      }
-    }
-    found
+    let bn = clamp_i64(mem_load(buf_ptr), 0, 4096);
+    slice_find_slice(slice_i64(p, bn), str_as_slice(s)) >= 0
   }
 }

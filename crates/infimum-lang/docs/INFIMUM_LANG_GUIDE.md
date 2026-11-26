@@ -291,7 +291,7 @@ layout AppState {
   counter: word inv 0..=999999,
   turbo: word inv 0..=1,
   intensity: word inv 0..=100,
-  name_buf: words[40],
+  name_buf: vec<word>[64],
   copy_mb: words[128],
   paste_mb: words[128],
 }
@@ -331,7 +331,7 @@ export fn init_app() -[Mem]-> i64 {
   AppState.counter = 0;
   AppState.turbo = 1;
   AppState.intensity = 60;
-  buf_clear(AppState::name_buf);
+  AppState.name_buf.clear();
   1
 }
 
@@ -354,7 +354,7 @@ export fn step_ui(
   } else if act == Action::Reset {
     AppState.counter = 0;
     AppState.intensity = 60;
-    buf_clear(AppState::name_buf);
+    AppState.name_buf.clear();
     sfx_clack();
   } else if act == Action::ToggleTurbo {
     AppState.turbo = 1 - AppState.turbo;

@@ -586,7 +586,7 @@ layout AppState {
   active_tab: word inv 0..=2,
   turbo: word inv 0..=1,
   intensity: word inv 0..=100,
-  name_buf: words[40],
+  name_buf: vec<word>[64],
 }
 
 forma ActionBtn(label: str, act_id: i64, bg_col: i64, hov_col: i64) -[Mem]-> i64 {
@@ -648,7 +648,7 @@ export fn init_app() -[Mem]-> i64 {
   AppState.active_tab = 0;
   AppState.turbo = 1;
   AppState.intensity = 60;
-  buf_clear(AppState::name_buf);
+  AppState.name_buf.clear();
   1
 }
 
@@ -667,7 +667,7 @@ export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, m_down: i64, m_clicked: i6
   } else if act == Action::Reset {
     AppState.counter = 0;
     AppState.intensity = 60;
-    buf_clear(AppState::name_buf);
+    AppState.name_buf.clear();
     sfx_clack();
   } else if act == Action::ToggleTurbo {
     AppState.turbo = 1 - AppState.turbo;
@@ -677,7 +677,7 @@ export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, m_down: i64, m_clicked: i6
     sfx_click();
   }
   gfx_set_cursor(forma_cursor());
-  ui_fmt_centered(w / 2, h / 2 + 228, "Clicks: {AppState.counter}  |  Intensity: {AppState.intensity}%  |  Tab #{AppState.active_tab + 1}", 15, 1, pack_rgba(200, 214, 238, 255), 0);
+  ui_fmt_centered(w / 2, h / 2 + 228, "Clicks: {AppState.counter}  |  Intensity: {AppState.intensity}%  |  Name len: {AppState.name_buf.len}", 15, 1, pack_rgba(200, 214, 238, 255), 0);
   gfx_end_frame()
 }
 
@@ -687,11 +687,12 @@ test "init resets app state" {
   assert(AppState.active_tab == 0);
   assert(AppState.turbo == 1);
   assert(AppState.intensity == 60);
+  assert(AppState.name_buf.len == 0);
 }
 "#,
         )),
         "game2d" => Some((
-            "2D GPU Game Starter (auto-placed layout + struct array + for + ui_fmt + test)",
+            "2D GPU Game Starter (auto-placed layout + vec<Orb>[24] + [Orb] slice + for + ui_fmt + test)",
             r#"use "std/prelude.ifm";
 
 pub(super) struct Orb {
@@ -705,18 +706,40 @@ pub(super) struct Orb {
 layout GameState {
   tick: word,
   score: word inv 0..=999999,
-  orbs: Orb[12],
+  orbs: vec<Orb>[24],
+}
+
+fn step_orbs(orbs: [Orb], w: i64, h: i64) -[Mem, Gpu]-> i64 {
+  let mut bounces = 0;
+  for i in 0..orbs.len max 24 {
+    let mut o = orbs[i];
+    o.x += o.vx;
+    o.y += o.vy;
+    if o.x < 32 || o.x > w - 32 {
+      o.vx = 0 - o.vx;
+      bounces += 1;
+    }
+    if o.y < 64 || o.y > h - 32 {
+      o.vy = 0 - o.vy;
+    }
+    orbs[i] = o;
+    ui_orb(o.x, o.y, 22, o.col, 0);
+  }
+  bounces
 }
 
 export fn init_app() -[Mem]-> i64 {
   GameState.tick = 0;
   GameState.score = 0;
+  GameState.orbs.clear();
   for i in 0..12 {
-    GameState.orbs[i].x = 120 + i * 80;
-    GameState.orbs[i].y = 200 + (i % 4) * 90;
-    GameState.orbs[i].vx = if i % 2 == 0 { 3 } else { -3 };
-    GameState.orbs[i].vy = if i % 3 == 0 { 2 } else { -2 };
-    GameState.orbs[i].col = pack_rgba(60 + i * 15, 190 - i * 8, 240, 255);
+    let _ = GameState.orbs.try_push(Orb {
+      x: 120 + i * 80,
+      y: 200 + (i % 4) * 90,
+      vx: if i % 2 == 0 { 3 } else { -3 },
+      vy: if i % 3 == 0 { 2 } else { -2 },
+      col: pack_rgba(60 + i * 15, 190 - i * 8, 240, 255),
+    });
   }
   1
 }
@@ -728,32 +751,55 @@ export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, m_down: i64, m_clicked: i6
   gfx_begin_frame(w, h);
   ui_grad_rect(0, 0, w, h, 0, 0, 0, pack_rgba(14, 18, 28, 255), pack_rgba(24, 30, 46, 255), 0);
 
-  for i in 0..12 {
-    GameState.orbs[i].x += GameState.orbs[i].vx;
-    GameState.orbs[i].y += GameState.orbs[i].vy;
-    let ox = GameState.orbs[i].x;
-    let oy = GameState.orbs[i].y;
-    if ox < 32 || ox > w - 32 {
-      GameState.orbs[i].vx = 0 - GameState.orbs[i].vx;
-      GameState.score = clamp_i64(GameState.score + 1, 0, 999999);
-      sfx_hop();
+  if m_clicked == 1 {
+    let orbs = GameState.orbs.as_slice();
+    let mut hit_idx = -1;
+    for i in 0..orbs.len max 24 {
+      let dx = orbs[i].x - mx;
+      let dy = orbs[i].y - my;
+      if dx * dx + dy * dy <= 28 * 28 {
+        hit_idx = i;
+        break;
+      }
     }
-    if oy < 64 || oy > h - 32 { GameState.orbs[i].vy = 0 - GameState.orbs[i].vy; }
-    ui_orb(ox, oy, 22, GameState.orbs[i].col, 0);
+    if hit_idx >= 0 && hit_idx < GameState.orbs.len {
+      let _ = GameState.orbs.swap_remove(hit_idx);
+      sfx_clack();
+    } else {
+      let _ = GameState.orbs.try_push(Orb {
+        x: clamp_i64(mx, 40, w - 40),
+        y: clamp_i64(my, 72, h - 40),
+        vx: if GameState.tick % 2 == 0 { 4 } else { -4 },
+        vy: -3,
+        col: pack_rgba(120, 210, 255, 255),
+      });
+      sfx_click();
+    }
   }
-  ui_fmt(20, 18, "2D Infimum Game — Bounces: {GameState.score}", 20, 1, pack_rgba(245, 248, 255, 255), 0);
+
+  let bounces = step_orbs(GameState.orbs.as_slice(), w, h);
+  if bounces > 0 {
+    GameState.score = clamp_i64(GameState.score + bounces, 0, 999999);
+    sfx_hop();
+  }
+  ui_fmt(20, 18, "2D Infimum Game — Orbs: {GameState.orbs.len} | Bounces: {GameState.score} | Click: Spawn/Remove", 18, 1, pack_rgba(245, 248, 255, 255), 0);
   gfx_end_frame()
 }
 
 test "init populates all 12 orbs" {
   let _ = init_app();
-  assert(GameState.orbs[0].x == 120);
-  assert(GameState.orbs[11].x == 1000);
+  assert(GameState.orbs.len == 12);
+  let ok = if GameState.orbs.len == 12 {
+    GameState.orbs[0].x == 120 && GameState.orbs[11].x == 1000
+  } else {
+    false
+  };
+  assert(ok);
 }
 "#,
         )),
         "game3d" => Some((
-            "3D Vulkan Mesh Starter (auto-placed layout + value struct Vec3 + Q16.16 fixed + std/mesh3d + PBR + dynamic lights + ui_fmt)",
+            "3D Vulkan Mesh Starter (auto-placed layout + value struct Vec3 + vec<Pillar>[16] + [Pillar] slice + std/mesh3d + ui_fmt)",
             r#"use "std/prelude.ifm";
 use "std/mesh3d.ifm";
 
@@ -774,11 +820,18 @@ layout WorldState {
   pos: Vec3,
   yaw: word,
   pitch: word inv -220..=220,
-  pillars: Pillar[8],
+  pillars: vec<Pillar>[16],
 }
 
 pub(super) fn vec3_add(a: Vec3, b: Vec3) -> Vec3 {
   Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+}
+
+fn draw_pillars(pillars: [Pillar]) -[Mem, Gpu]-> unit {
+  for i in 0..pillars.len max 16 {
+    let p = pillars[i];
+    mesh3d_box(0, p.x - 450, 0, p.z - 450, p.x + 450, p.h, p.z + 450, 2, pack_rgba(220, 210, 195, 255), 235, 0, 1400);
+  }
 }
 
 export fn init_app() -[Mem]-> i64 {
@@ -786,11 +839,14 @@ export fn init_app() -[Mem]-> i64 {
   WorldState.pos = Vec3 { x: 0.0, y: 1.7, z: -4.5 };
   WorldState.yaw = 0;
   WorldState.pitch = 0;
+  WorldState.pillars.clear();
   for i in 0..8 {
     let side = if i % 2 == 0 { -3200 } else { 3200 };
-    WorldState.pillars[i].x = side;
-    WorldState.pillars[i].z = -2000 + (i / 2) * 2600;
-    WorldState.pillars[i].h = 4200;
+    let _ = WorldState.pillars.try_push(Pillar {
+      x: side,
+      z: -2000 + (i / 2) * 2600,
+      h: 4200,
+    });
   }
   1
 }
@@ -823,12 +879,7 @@ export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, m_down: i64, m_clicked: i6
   mesh3d_begin(cam_x, cam_y, cam_z, WorldState.yaw, WorldState.pitch, 75, 2, 0);
   mesh3d_add_light(0, 3600, 1500, 12000, 255, 220, 175, 260);
   mesh3d_box(0, -10000, -200, -10000, 10000, 0, 10000, 6, pack_rgba(190, 185, 175, 255), 220, 0, 2000);
-  for i in 0..8 {
-    let x = WorldState.pillars[i].x;
-    let z = WorldState.pillars[i].z;
-    let ph = WorldState.pillars[i].h;
-    mesh3d_box(0, x - 450, 0, z - 450, x + 450, ph, z + 450, 2, pack_rgba(220, 210, 195, 255), 235, 0, 1400);
-  }
+  draw_pillars(WorldState.pillars.as_slice());
 
   ui_fmt(18, 16, "Pos: ({pos.x:.1}, {pos.z:.1}) m | WASD: Move | Click: Look", 15, 1, pack_rgba(255, 255, 255, 230), 0);
   gfx_end_frame()
@@ -836,8 +887,13 @@ export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, m_down: i64, m_clicked: i6
 
 test "init places 8 pillars and Vec3 camera in meters" {
   let _ = init_app();
-  assert(WorldState.pillars[0].x == -3200);
-  assert(WorldState.pillars[1].x == 3200);
+  assert(WorldState.pillars.len == 8);
+  let ok = if WorldState.pillars.len == 8 {
+    WorldState.pillars[0].x == -3200 && WorldState.pillars[1].x == 3200
+  } else {
+    false
+  };
+  assert(ok);
   let p = WorldState.pos;
   assert(p.y == 1.7);
   assert(vec3_add(p, Vec3 { x: 1.0, y: 0.3, z: 0.5 }).y == 2.0);
