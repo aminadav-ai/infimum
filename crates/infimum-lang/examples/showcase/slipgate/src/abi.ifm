@@ -105,22 +105,20 @@ pub layout FpsMem {
   game_state: word inv 0..=2,
   on_ground: word inv 0..=1,
   rng_state: word,
-  wall_cnt: word,
-  sector_cnt: word,
   has_key: word inv 0..=1,
   gate_y: word,
   prev_r_key: word,
   prev_sp_key: word,
   msg_timer: word,
 
-  // Walkable sectors: 40 typed Sector structs
-  sectors: Sector[40],
-  // Solid 3D box colliders/pillars/walls: 112 typed Wall structs
-  walls: Wall[112],
+  // Walkable sectors: dynamic vec of up to 40 typed Sector structs
+  sectors: vec<Sector>[40],
+  // Solid 3D box colliders/pillars/walls: dynamic vec of up to 112 typed Wall structs
+  walls: vec<Wall>[112],
   // 16 typed Enemy structs
   enemies: Enemy[16],
   // 16 typed Item structs
   items: Item[16],
   // 32 typed Particle structs
-  particles: Particle[32],
+  particles: vec<Particle>[32],
 }

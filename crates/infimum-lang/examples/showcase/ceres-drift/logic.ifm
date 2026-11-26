@@ -48,50 +48,57 @@ pub fn exit_center_xyz() -[Mem]-> (i64, i64, i64) {
   maze::room_center_xyz(ROOM_START)
 }
 
-// --- 3D Particles ---
+// --- 3D Particles (vec<Particle>[48]) ---
 
 fn spawn_explosion(wx: i64, wy: i64, wz: i64, count: i64, kind: i64) -[Mem]-> unit {
   let lim = clamp_i64(count, 1, 18);
-  let mut spawned = 0;
-  for i in 0..48 {
-    if spawned >= lim { break; }
-    if GameMem.particles[i].life <= 0 {
-      let r1 = maze::next_rand();
-      let r2 = maze::next_rand();
-      let r3 = maze::next_rand();
-      GameMem.particles[i].x = wx;
-      GameMem.particles[i].y = wy;
-      GameMem.particles[i].z = wz;
-      let spread = if kind == 2 { 5 } else if kind == 1 { 3 } else { 2 };
-      GameMem.particles[i].vx = ((r1 & 127) - 64) * spread;
-      GameMem.particles[i].vy = ((r2 & 127) - 64) * spread;
-      GameMem.particles[i].vz = ((r3 & 127) - 64) * spread;
-      let col = if kind == 0 {
-        pack_rgba(88, 245, 255, 255)
-      } else if kind == 1 {
-        if (r1 & 1) == 0 { pack_rgba(255, 198, 64, 255) } else { pack_rgba(255, 92, 38, 255) }
-      } else {
-        if (r1 & 1) == 0 { pack_rgba(255, 232, 118, 255) } else { pack_rgba(255, 64, 148, 255) }
-      };
-      GameMem.particles[i].col = col;
-      GameMem.particles[i].life = (if kind == 2 { 28 } else { 16 }) + (r3 & 11);
-      GameMem.particles[i].size = if kind == 2 { 110 } else if kind == 1 { 72 } else { 42 };
-      spawned += 1;
-    }
+  let spread = if kind == 2 { 5 } else if kind == 1 { 3 } else { 2 };
+  for _s in 0..lim max 18 {
+    let r1 = maze::next_rand();
+    let r2 = maze::next_rand();
+    let r3 = maze::next_rand();
+    let col = if kind == 0 {
+      pack_rgba(88, 245, 255, 255)
+    } else if kind == 1 {
+      if (r1 & 1) == 0 { pack_rgba(255, 198, 64, 255) } else { pack_rgba(255, 92, 38, 255) }
+    } else {
+      if (r1 & 1) == 0 { pack_rgba(255, 232, 118, 255) } else { pack_rgba(255, 64, 148, 255) }
+    };
+    let ok = GameMem.particles.try_push(Particle {
+      x: wx,
+      y: wy,
+      z: wz,
+      vx: ((r1 & 127) - 64) * spread,
+      vy: ((r2 & 127) - 64) * spread,
+      vz: ((r3 & 127) - 64) * spread,
+      col: col,
+      life: (if kind == 2 { 28 } else { 16 }) + (r3 & 11),
+      size: if kind == 2 { 110 } else if kind == 1 { 72 } else { 42 },
+    });
+    if !ok { break; }
   }
 }
 
 fn step_particles() -[Mem]-> unit {
-  for i in 0..48 {
-    let lf = GameMem.particles[i].life;
-    if lf > 0 {
-      GameMem.particles[i].x += GameMem.particles[i].vx;
-      GameMem.particles[i].y += GameMem.particles[i].vy;
-      GameMem.particles[i].z += GameMem.particles[i].vz;
-      GameMem.particles[i].vx = (GameMem.particles[i].vx * 92) / 100;
-      GameMem.particles[i].vy = (GameMem.particles[i].vy * 92) / 100;
-      GameMem.particles[i].vz = (GameMem.particles[i].vz * 92) / 100;
-      GameMem.particles[i].life = lf - 1;
+  let mut i = 0;
+  while i < GameMem.particles.len max 48 {
+    if i >= 0 && i < GameMem.particles.len {
+      let mut pt = GameMem.particles[i];
+      if pt.life <= 1 {
+        let _ = GameMem.particles.swap_remove(i);
+      } else {
+        pt.x += pt.vx;
+        pt.y += pt.vy;
+        pt.z += pt.vz;
+        pt.vx = (pt.vx * 92) / 100;
+        pt.vy = (pt.vy * 92) / 100;
+        pt.vz = (pt.vz * 92) / 100;
+        pt.life -= 1;
+        GameMem.particles[i] = pt;
+        i += 1;
+      }
+    } else {
+      break;
     }
   }
 }
@@ -178,9 +185,7 @@ pub fn reset_ceres() -[Mem]-> unit {
   GameMem.lock_dist = 0;
 
   GameMem.bolts.clear();
-  for p in 0..48 {
-    GameMem.particles[p].life = 0;
-  }
+  GameMem.particles.clear();
   for pk in 0..16 {
     GameMem.pickups[pk].active = 0;
   }

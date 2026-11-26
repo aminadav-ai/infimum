@@ -220,13 +220,9 @@ pub layout GameMem {
   rooms: Room[11],
   tubes: Tube[13],
 
-  // BFS scratch buffers for room-graph reachability tests
-  visited: words[16],
-  queue: words[16],
-
   // World entities
   drones: Drone[18],
   bolts: vec<Bolt>[40],
   pickups: Pickup[16],
-  particles: Particle[48],
+  particles: vec<Particle>[48],
 }

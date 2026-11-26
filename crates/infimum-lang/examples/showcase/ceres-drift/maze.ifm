@@ -141,38 +141,44 @@ pub fn build_ceres_mine() -[Mem]-> unit {
   set_tube(12, AXIS_Y, 0, 0, -2000, 12700, 15900, ROOM_REACTOR, ROOM_DOME, 6);
 }
 
-// Verify room-graph connectivity via BFS (used in built-in unit tests)
+// Verify room-graph connectivity via BFS using FrameScratch (zero persistent layout buffers)
 pub fn mine_rooms_reachable(src: i64, dst: i64) -[Mem]-> bool {
-  for i in 0..16 {
-    GameMem.visited[i] = 0;
-    GameMem.queue[i] = 0;
-  }
-  let s = clamp_i64(src, 0, 10);
-  let t = clamp_i64(dst, 0, 10);
-  GameMem.visited[s] = 1;
-  GameMem.queue[0] = s;
-  let mut head = 0;
-  let mut tail = 1;
+  scratch_reset();
+  let vis_ptr = scratch_calloc(16);
+  let q_ptr = scratch_calloc(16);
+  if vis_ptr < 0 || q_ptr < 0 {
+    false
+  } else {
+    let vis = slice_i64(vis_ptr, 16);
+    let q = slice_i64(q_ptr, 16);
+    let tubes = GameMem.tubes[..];
+    let s = clamp_i64(src, 0, 10);
+    let t = clamp_i64(dst, 0, 10);
+    vis[s] = 1;
+    q[0] = s;
+    let mut head = 0;
+    let mut tail = 1;
 
-  for _iter in 0..24 {
-    if head >= tail { break; }
-    let cur = clamp_i64(GameMem.queue[clamp_i64(head, 0, 15)], 0, 10);
-    head += 1;
-    if cur == t { break; }
-    for k in 0..13 {
-      let ra = GameMem.tubes[k].room_a;
-      let rb = GameMem.tubes[k].room_b;
-      let nxt = if ra == cur { rb } else if rb == cur { ra } else { -1 };
-      if nxt >= 0 && nxt < 11 && GameMem.visited[nxt] == 0 {
-        GameMem.visited[nxt] = 1;
-        if tail < 16 {
-          GameMem.queue[tail] = nxt;
-          tail += 1;
+    for _iter in 0..24 {
+      if head >= tail { break; }
+      let cur = clamp_i64(q[clamp_i64(head, 0, 15)], 0, 10);
+      head += 1;
+      if cur == t { break; }
+      for k in 0..tubes.len max 13 {
+        let ra = tubes[k].room_a;
+        let rb = tubes[k].room_b;
+        let nxt = if ra == cur { rb } else if rb == cur { ra } else { -1 };
+        if nxt >= 0 && nxt < 11 && vis[nxt] == 0 {
+          vis[nxt] = 1;
+          if tail >= 0 && tail < 16 {
+            q[tail] = nxt;
+            tail += 1;
+          }
         }
       }
     }
+    vis[t] == 1
   }
-  GameMem.visited[t] == 1
 }
 
 // Query current vertical deck (0=Lower P1, 1=Main P2, 2=Upper P3)
@@ -188,14 +194,11 @@ pub fn world_to_deck(py: i64) -> i64
   }
 }
 
-// Returns Room ID (0..10) if point is inside a chamber, or -1 if flying inside a tube
-pub fn find_current_room(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
+fn find_room_in_slice(rooms: [Room], px: i64, py: i64, pz: i64) -[Mem]-> i64 {
   let mut found = -1;
-  for r in 0..11 {
-    if px >= GameMem.rooms[r].x0 && px <= GameMem.rooms[r].x1
-      && py >= GameMem.rooms[r].y0 && py <= GameMem.rooms[r].y1
-      && pz >= GameMem.rooms[r].z0 && pz <= GameMem.rooms[r].z1
-    {
+  for r in 0..rooms.len max 11 {
+    let rm = rooms[r];
+    if px >= rm.x0 && px <= rm.x1 && py >= rm.y0 && py <= rm.y1 && pz >= rm.z0 && pz <= rm.z1 {
       found = r;
       break;
     }
@@ -203,33 +206,35 @@ pub fn find_current_room(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
   found
 }
 
-// Returns Tube ID (0..12) if point is inside a tube, or -1
-pub fn find_current_tube(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
+// Returns Room ID (0..10) if point is inside a chamber, or -1 if flying inside a tube
+pub fn find_current_room(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
+  find_room_in_slice(GameMem.rooms[..], px, py, pz)
+}
+
+fn find_tube_in_slice(tubes: [Tube], px: i64, py: i64, pz: i64) -[Mem]-> i64 {
   let mut found = -1;
-  for t in 0..13 {
-    let ax = GameMem.tubes[t].axis;
-    let a0 = GameMem.tubes[t].a0;
-    let a1 = GameMem.tubes[t].a1;
-    if ax == AXIS_X {
-      if px >= a0 && px <= a1
-        && abs_i64(py - GameMem.tubes[t].cy) <= TUBE_HALF
-        && abs_i64(pz - GameMem.tubes[t].cz) <= TUBE_HALF
+  for t in 0..tubes.len max 13 {
+    let tb = tubes[t];
+    if tb.axis == AXIS_X {
+      if px >= tb.a0 && px <= tb.a1
+        && abs_i64(py - tb.cy) <= TUBE_HALF
+        && abs_i64(pz - tb.cz) <= TUBE_HALF
       {
         found = t;
         break;
       }
-    } else if ax == AXIS_Y {
-      if py >= a0 && py <= a1
-        && abs_i64(px - GameMem.tubes[t].cx) <= TUBE_HALF
-        && abs_i64(pz - GameMem.tubes[t].cz) <= TUBE_HALF
+    } else if tb.axis == AXIS_Y {
+      if py >= tb.a0 && py <= tb.a1
+        && abs_i64(px - tb.cx) <= TUBE_HALF
+        && abs_i64(pz - tb.cz) <= TUBE_HALF
       {
         found = t;
         break;
       }
     } else {
-      if pz >= a0 && pz <= a1
-        && abs_i64(px - GameMem.tubes[t].cx) <= TUBE_HALF
-        && abs_i64(py - GameMem.tubes[t].cy) <= TUBE_HALF
+      if pz >= tb.a0 && pz <= tb.a1
+        && abs_i64(px - tb.cx) <= TUBE_HALF
+        && abs_i64(py - tb.cy) <= TUBE_HALF
       {
         found = t;
         break;
@@ -237,6 +242,11 @@ pub fn find_current_tube(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
     }
   }
   found
+}
+
+// Returns Tube ID (0..12) if point is inside a tube, or -1
+pub fn find_current_tube(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
+  find_tube_in_slice(GameMem.tubes[..], px, py, pz)
 }
 
 // Exact O(1) CSG Union Collision against 11 Rooms + 13 Octagonal Tubes

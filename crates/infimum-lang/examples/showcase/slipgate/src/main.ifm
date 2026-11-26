@@ -5,14 +5,13 @@
 // 100% Clean-Room Infimum Lang (Telos + Flux + Strata) • Zero JS / Zero Chromium
 
 use "abi.ifm";
-use "world.ifm";
-use "logic.ifm";
-use "render.ifm";
+use "logic.ifm" as logic;
+use "render.ifm" as render;
 
 export fn init_app(seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu]-> i64 {
   FpsMem.prev_r_key = 0;
   FpsMem.prev_sp_key = 0;
-  reset_slipgate(seed);
+  logic::reset_slipgate(seed);
   1
 }
 
@@ -29,7 +28,7 @@ export fn step_ui(
   // Instant restart [R]
   let r_now = if key_held(KEY_R) || key_char == 'r' || key_char == 'R' { 1 } else { 0 };
   if r_now == 1 && FpsMem.prev_r_key == 0 {
-    reset_slipgate(FpsMem.rng_state + FpsMem.tick + 9973);
+    logic::reset_slipgate(FpsMem.rng_state + FpsMem.tick + 9973);
     sfx_play(SFX_CLICK, 110, 75);
   }
   FpsMem.prev_r_key = r_now;
@@ -55,7 +54,7 @@ export fn step_ui(
       let rdx = mouse_dx();
       let rdy = mouse_dy();
       turn += rdx * 5;
-      FpsMem.pitch = clamp_pitch(FpsMem.pitch - rdy);
+      FpsMem.pitch = logic::clamp_pitch(FpsMem.pitch - rdy);
       if m_clicked == 1 || m_down == 1 || key_held(KEY_E) { fire = 1; }
     } else if key_held(KEY_E) {
       fire = 1;
@@ -68,8 +67,8 @@ export fn step_ui(
   let jump = if sp_now == 1 && FpsMem.prev_sp_key == 0 { 1 } else { 0 };
   FpsMem.prev_sp_key = sp_now;
 
-  step_fps_sim(fwd, strafe, turn, jump, fire);
-  render_slipgate_frame(w, h, mx, my, m_clicked);
+  logic::step_fps_sim(fwd, strafe, turn, jump, fire);
+  render::render_slipgate_frame(w, h, mx, my, m_clicked);
   gfx_end_frame()
 }
 
@@ -78,14 +77,14 @@ test "init builds 6-zone citadel and spawns player" {
   assert(FpsMem.game_state == GameState::Playing);
   assert(FpsMem.health == 100);
   assert(FpsMem.ammo > 0);
-  assert(FpsMem.wall_cnt > 20);
-  assert(FpsMem.sector_cnt > 5);
+  assert(FpsMem.walls.len > 20);
+  assert(FpsMem.sectors.len > 5);
 }
 
 test "clamp_pitch stays within vertical look bounds" {
-  assert(clamp_pitch(999) == 260);
-  assert(clamp_pitch(-999) == -260);
-  assert(clamp_pitch(45) == 45);
+  assert(logic::clamp_pitch(999) == 260);
+  assert(logic::clamp_pitch(-999) == -260);
+  assert(logic::clamp_pitch(45) == 45);
 }
 
 test "player cannot walk through living enemy" {
@@ -93,9 +92,9 @@ test "player cannot walk through living enemy" {
   let ex = FpsMem.enemies[0].x;
   let ey = FpsMem.enemies[0].y;
   let ez = FpsMem.enemies[0].z;
-  assert(hits_enemy_3d(ex, ey, ez, 280, -1));
-  assert(hits_enemy_3d(ex + 200, ey, ez, 280, -1));
+  assert(logic::hits_enemy_3d(ex, ey, ez, 280, -1));
+  assert(logic::hits_enemy_3d(ex + 200, ey, ez, 280, -1));
   // Dead monster does not block passage
   FpsMem.enemies[0].state = 2;
-  assert(!hits_enemy_3d(ex, ey, ez, 280, -1));
+  assert(!logic::hits_enemy_3d(ex, ey, ez, 280, -1));
 }

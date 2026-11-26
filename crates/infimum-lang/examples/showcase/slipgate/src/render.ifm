@@ -6,8 +6,7 @@
 // iron sanctum gate, 16 articulated 3D monsters, 16 rotating pickups & Gold Key, 3D super-shotgun).
 
 use "abi.ifm";
-use "world.ifm";
-use "logic.ifm";
+use "logic.ifm" as logic;
 
 // --- Articulated 3D Polygon Monsters (Grunt=1, Knight=2, Boss Shambler=3) ---
 
@@ -137,12 +136,13 @@ pub fn draw_radar_minimap(vw: i64) -[Mem]-> unit {
   let my0 = 16;
   ui_rect(mx0, my0, mw, mh, 10, 2, 6, pack_rgba(16, 14, 20, 224), pack_rgba(128, 102, 72, 225), 0);
 
-  let wc = clamp_i64(FpsMem.wall_cnt, 0, 112);
-  for wi in 4..wc max 112 {
-    let wx0 = mx0 + ((FpsMem.walls[wi].x0 + 10900) * (mw - 12)) / 21800 + 6;
-    let wz0 = my0 + ((FpsMem.walls[wi].z0 + 20900) * (mh - 12)) / 29800 + 6;
-    let wx1 = mx0 + ((FpsMem.walls[wi].x1 + 10900) * (mw - 12)) / 21800 + 6;
-    let wz1 = my0 + ((FpsMem.walls[wi].z1 + 20900) * (mh - 12)) / 29800 + 6;
+  let walls = FpsMem.walls.as_slice();
+  for wi in 4..walls.len max 112 {
+    let w = walls[wi];
+    let wx0 = mx0 + ((w.x0 + 10900) * (mw - 12)) / 21800 + 6;
+    let wz0 = my0 + ((w.z0 + 20900) * (mh - 12)) / 29800 + 6;
+    let wx1 = mx0 + ((w.x1 + 10900) * (mw - 12)) / 21800 + 6;
+    let wz1 = my0 + ((w.z1 + 20900) * (mh - 12)) / 29800 + 6;
     ui_rect(wx0, wz0, clamp_i64(wx1 - wx0, 2, mw), clamp_i64(wz1 - wz0, 2, mh), 1, 0, 0, pack_rgba(116, 98, 82, 215), 0, 0);
   }
 
@@ -176,6 +176,35 @@ pub fn draw_radar_minimap(vw: i64) -[Mem]-> unit {
   ui_rect(px - 3, py - 3, 6, 6, 3, 1, 0, pack_rgba(88, 244, 148, 255), pack_rgba(255, 255, 255, 220), 0);
 }
 
+fn draw_sectors(sectors: [Sector]) -[Mem]-> unit {
+  for si in 0..sectors.len max 40 {
+    let s = sectors[si];
+    if s.fy == 0 {
+      let ux = ((s.x1 - s.x0) * 1024) / 1800;
+      let uz = ((s.z1 - s.z0) * 1024) / 1800;
+      mesh3d_quad(0, s.x0, 0, s.z0, 0, 0, s.x1, 0, s.z0, ux, 0, s.x1, 0, s.z1, ux, uz, s.x0, 0, s.z1, 0, uz, 0, 127, 0, s.mat, s.col, 240, 0);
+    } else {
+      mesh3d_box(0, s.x0, 0, s.z0, s.x1, s.fy, s.z1, s.mat, s.col, 240, 0, 1400);
+    }
+  }
+}
+
+fn draw_walls(walls: [Wall]) -[Mem]-> unit {
+  for wi in 0..walls.len max 112 {
+    let w = walls[wi];
+    mesh3d_box(0, w.x0, w.y0, w.z0, w.x1, w.y1, w.z1, w.mat, w.col, 240, 0, 1300);
+  }
+}
+
+fn draw_particles(particles: [Particle]) -[Mem]-> unit {
+  for p in 0..particles.len max 32 {
+    let pt = particles[p];
+    if pt.life > 0 {
+      mesh3d_box(0, pt.x - 38, pt.y - 38, pt.z - 38, pt.x + 38, pt.y + 38, pt.z + 38, MAT_GLOW, pt.col, 255, 1, 200);
+    }
+  }
+}
+
 // --- Full Frame Renderer (Pass 1: Vulkan 3D Mesh + PBR Normal Maps + 24 Lights, Pass 2: 2D HUD) ---
 
 pub fn render_slipgate_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64) -[Mem, Gpu]-> unit
@@ -187,23 +216,7 @@ pub fn render_slipgate_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64)
   mesh3d_begin(FpsMem.cam_x, FpsMem.cam_y, FpsMem.cam_z, FpsMem.yaw, FpsMem.pitch, 78, 1, FOG_RED);
 
   // 2. Walkable 3D Floors, Steps & Sanctum Dais (100% hardware frustum-clipped -> zero floor holes!)
-  let sc = clamp_i64(FpsMem.sector_cnt, 0, 40);
-  for si in 0..sc max 40 {
-    let sx0 = FpsMem.sectors[si].x0;
-    let sz0 = FpsMem.sectors[si].z0;
-    let sx1 = FpsMem.sectors[si].x1;
-    let sz1 = FpsMem.sectors[si].z1;
-    let fy = FpsMem.sectors[si].fy;
-    let mat = FpsMem.sectors[si].mat;
-    let col = FpsMem.sectors[si].col;
-    if fy == 0 {
-      let ux = ((sx1 - sx0) * 1024) / 1800;
-      let uz = ((sz1 - sz0) * 1024) / 1800;
-      mesh3d_quad(0, sx0, 0, sz0, 0, 0, sx1, 0, sz0, ux, 0, sx1, 0, sz1, ux, uz, sx0, 0, sz1, 0, uz, 0, 127, 0, mat, col, 240, 0);
-    } else {
-      mesh3d_box(0, sx0, 0, sz0, sx1, fy, sz1, mat, col, 240, 0, 1400);
-    }
-  }
+  draw_sectors(FpsMem.sectors.as_slice());
 
   // 3. Zone 5 Glowing Molten Lava Trenches flanking the Lava Bridge + Dynamic Orange Glow!
   let lava_c = pack_rgba(255, 118, 36, 255);
@@ -213,15 +226,7 @@ pub fn render_slipgate_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64)
   mesh3d_add_light(3400, 750, -10600, 6800, 255, 108, 32, 300);
 
   // 4. Solid 3D Walls, Canyon Cliffs, Columns & Archways
-  let wc = clamp_i64(FpsMem.wall_cnt, 0, 112);
-  for wi in 0..wc max 112 {
-    mesh3d_box(
-      0,
-      FpsMem.walls[wi].x0, FpsMem.walls[wi].y0, FpsMem.walls[wi].z0,
-      FpsMem.walls[wi].x1, FpsMem.walls[wi].y1, FpsMem.walls[wi].z1,
-      FpsMem.walls[wi].mat, FpsMem.walls[wi].col, 240, 0, 1300
-    );
-  }
+  draw_walls(FpsMem.walls.as_slice());
 
   // 5. Overhead Wooden Plank Bridge across Zone 1 Canyon (individual weathered planks with crimson sky gaps!)
   let plank_c = pack_rgba(176, 154, 126, 255);
@@ -317,14 +322,7 @@ pub fn render_slipgate_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64)
   }
 
   // 12. 3D Blood & Ricochet Spark Particles
-  for p in 0..32 {
-    if FpsMem.particles[p].life > 0 {
-      let px = FpsMem.particles[p].x;
-      let py = FpsMem.particles[p].y;
-      let pz = FpsMem.particles[p].z;
-      mesh3d_box(0, px - 38, py - 38, pz - 38, px + 38, py + 38, pz + 38, MAT_GLOW, FpsMem.particles[p].col, 255, 1, 200);
-    }
-  }
+  draw_particles(FpsMem.particles.as_slice());
 
   // 13. True 3D Twin-Barrel Super-Shotgun Viewmodel
   draw_shotgun_mesh_vm();
@@ -391,7 +389,7 @@ pub fn render_slipgate_frame(vw: i64, vh: i64, mx: i64, my: i64, m_clicked: i64)
   ui_rect(rst_x, rst_y, 112, 34, 8, 1, 2, if hov_r { pack_rgba(64, 46, 36, 255) } else { pack_rgba(40, 30, 26, 255) }, pack_rgba(176, 132, 84, 240), 0);
   ui_text(rst_x + 14, rst_y + 10, "Restart [R]", 13, 1, pack_rgba(246, 228, 198, 255), 0);
   if hov_r && m_clicked == 1 {
-    reset_slipgate(FpsMem.rng_state + FpsMem.tick + 7919);
+    logic::reset_slipgate(FpsMem.rng_state + FpsMem.tick + 7919);
     sfx_play(SFX_CLICK, 110, 75);
   }
 

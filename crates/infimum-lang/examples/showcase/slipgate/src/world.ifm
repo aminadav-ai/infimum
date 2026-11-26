@@ -11,37 +11,33 @@
 
 use "abi.ifm";
 
-pub fn add_sector(x0: i64, z0: i64, x1: i64, z1: i64, fy: i64, mat: i64, col: i64) -[Mem]-> unit {
-  let n = FpsMem.sector_cnt;
-  if n >= 0 && n < 40 {
-    FpsMem.sectors[n].x0 = x0;
-    FpsMem.sectors[n].z0 = z0;
-    FpsMem.sectors[n].x1 = x1;
-    FpsMem.sectors[n].z1 = z1;
-    FpsMem.sectors[n].fy = fy;
-    FpsMem.sectors[n].mat = mat;
-    FpsMem.sectors[n].col = col;
-    FpsMem.sectors[n].pad = 0;
-    FpsMem.sector_cnt = n + 1;
-  }
+fn add_sector(x0: i64, z0: i64, x1: i64, z1: i64, fy: i64, mat: i64, col: i64) -[Mem]-> unit {
+  let _ = FpsMem.sectors.try_push(Sector {
+    x0: x0,
+    z0: z0,
+    x1: x1,
+    z1: z1,
+    fy: fy,
+    mat: mat,
+    col: col,
+    pad: 0,
+  });
 }
 
-pub fn add_wall_box(x0: i64, z0: i64, x1: i64, z1: i64, y0: i64, y1: i64, mat: i64, col: i64) -[Mem]-> unit {
-  let n = FpsMem.wall_cnt;
-  if n >= 0 && n < 112 {
-    FpsMem.walls[n].x0 = x0;
-    FpsMem.walls[n].z0 = z0;
-    FpsMem.walls[n].x1 = x1;
-    FpsMem.walls[n].z1 = z1;
-    FpsMem.walls[n].y0 = y0;
-    FpsMem.walls[n].y1 = y1;
-    FpsMem.walls[n].mat = mat;
-    FpsMem.walls[n].col = col;
-    FpsMem.wall_cnt = n + 1;
-  }
+fn add_wall_box(x0: i64, z0: i64, x1: i64, z1: i64, y0: i64, y1: i64, mat: i64, col: i64) -[Mem]-> unit {
+  let _ = FpsMem.walls.try_push(Wall {
+    x0: x0,
+    z0: z0,
+    x1: x1,
+    z1: z1,
+    y0: y0,
+    y1: y1,
+    mat: mat,
+    col: col,
+  });
 }
 
-pub fn spawn_enemy(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
+fn spawn_enemy(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
   req idx >= 0 && idx < 16
 {
   let hp = if kind == 3 { 210 } else if kind == 2 { 115 } else { 70 };
@@ -59,7 +55,7 @@ pub fn spawn_enemy(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
   FpsMem.enemies[idx].spawn_z = z;
 }
 
-pub fn spawn_item(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
+fn spawn_item(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
   req idx >= 0 && idx < 16
 {
   FpsMem.items[idx].x = x;
@@ -71,8 +67,8 @@ pub fn spawn_item(idx: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit
 }
 
 pub fn build_citadel_world() -[Mem]-> unit {
-  FpsMem.sector_cnt = 0;
-  FpsMem.wall_cnt = 0;
+  FpsMem.sectors.clear();
+  FpsMem.walls.clear();
 
   let floor_terra = pack_rgba(176, 152, 134, 255);
   let floor_step = pack_rgba(186, 174, 156, 255);

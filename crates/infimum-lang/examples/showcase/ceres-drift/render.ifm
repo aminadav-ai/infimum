@@ -632,20 +632,17 @@ fn draw_drone_3d(idx: i64) -[Mem]-> unit {
 
 // --- 5. Pickups, Energy Bolts, Particles & Dynamic Point Lights ---
 
-fn emit_pickups_bolts_particles() -[Mem]-> unit {
-  let spin = (GameMem.tick * 36) & 4095;
-
-  // Rotating 3D Powerups
-  for pk in 0..16 {
-    if GameMem.pickups[pk].active == 1 {
-      let ix = GameMem.pickups[pk].x;
-      let iy = GameMem.pickups[pk].y + (sin_1024(GameMem.tick * 48 + pk * 256) * 55) / 1024;
-      let iz = GameMem.pickups[pk].z;
-      let k = GameMem.pickups[pk].kind;
-      if k == PickupKind::Shield {
+fn draw_pickups(pickups: [Pickup], tick: i64, spin: i64) -[Mem]-> unit {
+  for pk in 0..pickups.len max 16 {
+    let it = pickups[pk];
+    if it.active == 1 {
+      let ix = it.x;
+      let iy = it.y + (sin_1024(tick * 48 + pk * 256) * 55) / 1024;
+      let iz = it.z;
+      if it.kind == PickupKind::Shield {
         mesh3d_limb(ix, iy, iz, spin, -170, -170, -170, 170, 170, 170, PBR_WEAPON_METAL, pack_rgba(92, 186, 255, 255), 245, 0);
         mesh3d_limb(ix, iy, iz, spin, -210, -55, -55, 210, 55, 55, MAT_GLOW, pack_rgba(72, 234, 255, 255), 255, 1);
-      } else if k == PickupKind::Energy {
+      } else if it.kind == PickupKind::Energy {
         mesh3d_limb(ix, iy, iz, spin, -150, -190, -150, 150, 190, 150, MAT_GLOW, pack_rgba(255, 214, 62, 255), 255, 1);
         mesh3d_limb(ix, iy, iz, spin, -180, -45, -180, 180, 45, 180, PBR_WEAPON_METAL, pack_rgba(142, 152, 168, 255), 240, 0);
       } else {
@@ -654,6 +651,21 @@ fn emit_pickups_bolts_particles() -[Mem]-> unit {
       }
     }
   }
+}
+
+fn draw_particles(particles: [Particle]) -[Mem]-> unit {
+  for p in 0..particles.len max 48 {
+    let pt = particles[p];
+    if pt.life > 0 {
+      let sz = clamp_i64(pt.size, 24, 140);
+      mesh3d_box(0, pt.x - sz, pt.y - sz, pt.z - sz, pt.x + sz, pt.y + sz, pt.z + sz, MAT_GLOW, pt.col, 255, 1, 200);
+    }
+  }
+}
+
+fn emit_pickups_bolts_particles() -[Mem]-> unit {
+  let spin = (GameMem.tick * 36) & 4095;
+  draw_pickups(GameMem.pickups[..], GameMem.tick, spin);
 
   // Flying Plasma Lasers, Homing Missiles & Enemy Bolts (+ dynamic point lights)
   let mut bolt_lights = 0;
@@ -688,15 +700,7 @@ fn emit_pickups_bolts_particles() -[Mem]-> unit {
   }
 
   // 3D Explosion Spark Particles
-  for p in 0..48 {
-    if GameMem.particles[p].life > 0 {
-      let px = GameMem.particles[p].x;
-      let py = GameMem.particles[p].y;
-      let pz = GameMem.particles[p].z;
-      let sz = clamp_i64(GameMem.particles[p].size, 24, 140);
-      mesh3d_box(0, px - sz, py - sz, pz - sz, px + sz, py + sz, pz + sz, MAT_GLOW, GameMem.particles[p].col, 255, 1, 200);
-    }
-  }
+  draw_particles(GameMem.particles.as_slice());
 }
 
 fn emit_station_lights() -[Mem]-> unit {

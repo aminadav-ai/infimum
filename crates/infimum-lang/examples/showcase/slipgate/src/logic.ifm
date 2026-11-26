@@ -4,7 +4,7 @@
 // INFIMUM SLIPGATE — Z3-Verified FPS Combat, 3D Collision, Gold Key Gate, Enemy AI & Audio
 
 use "abi.ifm";
-use "world.ifm";
+use "world.ifm" as world;
 
 // --- Z3-Verified Pure Telos Kernels ---
 
@@ -38,17 +38,12 @@ pub fn next_rand() -[Mem]-> i64 {
 
 // --- 3D Collision & Elevation Helpers ---
 
-pub fn hits_wall_3d(px: i64, foot_y: i64, pz: i64, rad: i64) -[Mem]-> bool {
-  let n = clamp_i64(FpsMem.wall_cnt, 0, 112);
+fn hits_wall_3d(px: i64, foot_y: i64, pz: i64, rad: i64) -[Mem]-> bool {
+  let walls = FpsMem.walls.as_slice();
   let mut hit = false;
-  for i in 0..n max 112 {
-    let x0 = FpsMem.walls[i].x0 - rad;
-    let z0 = FpsMem.walls[i].z0 - rad;
-    let x1 = FpsMem.walls[i].x1 + rad;
-    let z1 = FpsMem.walls[i].z1 + rad;
-    let y0 = FpsMem.walls[i].y0;
-    let y1 = FpsMem.walls[i].y1;
-    if px >= x0 && px <= x1 && pz >= z0 && pz <= z1 && foot_y + 1100 > y0 && foot_y < y1 - 60 {
+  for i in 0..walls.len max 112 {
+    let w = walls[i];
+    if px >= w.x0 - rad && px <= w.x1 + rad && pz >= w.z0 - rad && pz <= w.z1 + rad && foot_y + 1100 > w.y0 && foot_y < w.y1 - 60 {
       hit = true;
       break;
     }
@@ -87,24 +82,20 @@ pub fn hits_enemy_3d(px: i64, foot_y: i64, pz: i64, rad: i64, skip_idx: i64) -[M
   hit
 }
 
-pub fn find_floor_below(px: i64, foot_y: i64, pz: i64) -[Mem]-> i64 {
-  let n = clamp_i64(FpsMem.sector_cnt, 0, 40);
+fn find_floor_below(px: i64, foot_y: i64, pz: i64) -[Mem]-> i64 {
+  let sectors = FpsMem.sectors.as_slice();
   let mut best = 0;
-  for i in 0..n max 40 {
-    let x0 = FpsMem.sectors[i].x0;
-    let z0 = FpsMem.sectors[i].z0;
-    let x1 = FpsMem.sectors[i].x1;
-    let z1 = FpsMem.sectors[i].z1;
-    let fy = FpsMem.sectors[i].fy;
-    if px >= x0 && px <= x1 && pz >= z0 && pz <= z1 && fy <= foot_y + 320 && fy > best {
-      best = fy;
+  for i in 0..sectors.len max 40 {
+    let s = sectors[i];
+    if px >= s.x0 && px <= s.x1 && pz >= s.z0 && pz <= s.z1 && s.fy <= foot_y + 320 && s.fy > best {
+      best = s.fy;
     }
   }
   best
 }
 
 // 16-step 3D line-of-sight ray check against solid wall boxes
-pub fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> bool {
+fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> bool {
   let mut clear = true;
   for s in 1..16 {
     let px = x0 + ((x1 - x0) * s) / 16;
@@ -118,38 +109,45 @@ pub fn has_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]->
   clear
 }
 
-// --- 3D Particles ---
+// --- 3D Particles (vec<Particle>[32]) ---
 
-pub fn spawn_particles(wx: i64, wy: i64, wz: i64, is_blood: i64) -[Mem]-> unit {
-  let mut spawned = 0;
-  for i in 0..32 {
-    if spawned >= 6 { break; }
-    if FpsMem.particles[i].life <= 0 {
-      let r1 = next_rand();
-      let r2 = next_rand();
-      FpsMem.particles[i].x = wx;
-      FpsMem.particles[i].y = wy;
-      FpsMem.particles[i].z = wz;
-      FpsMem.particles[i].vx = ((r1 & 127) - 64) * 2;
-      FpsMem.particles[i].vy = 45 + ((r1 >> 7) & 63);
-      FpsMem.particles[i].vz = ((r2 & 127) - 64) * 2;
-      let col = if is_blood == 1 { pack_rgba(220, 28, 32, 255) } else { pack_rgba(255, 206, 88, 255) };
-      FpsMem.particles[i].col = col;
-      FpsMem.particles[i].life = 18 + (r2 & 7);
-      spawned += 1;
-    }
+fn spawn_particles(wx: i64, wy: i64, wz: i64, is_blood: i64) -[Mem]-> unit {
+  let col = if is_blood == 1 { pack_rgba(220, 28, 32, 255) } else { pack_rgba(255, 206, 88, 255) };
+  for _s in 0..6 {
+    let r1 = next_rand();
+    let r2 = next_rand();
+    let ok = FpsMem.particles.try_push(Particle {
+      x: wx,
+      y: wy,
+      z: wz,
+      vx: ((r1 & 127) - 64) * 2,
+      vy: 45 + ((r1 >> 7) & 63),
+      vz: ((r2 & 127) - 64) * 2,
+      col: col,
+      life: 18 + (r2 & 7),
+    });
+    if !ok { break; }
   }
 }
 
-pub fn step_particles() -[Mem]-> unit {
-  for i in 0..32 {
-    let life = FpsMem.particles[i].life;
-    if life > 0 {
-      FpsMem.particles[i].x += FpsMem.particles[i].vx;
-      FpsMem.particles[i].y += FpsMem.particles[i].vy;
-      FpsMem.particles[i].z += FpsMem.particles[i].vz;
-      FpsMem.particles[i].vy -= 8;
-      FpsMem.particles[i].life = life - 1;
+fn step_particles() -[Mem]-> unit {
+  let mut i = 0;
+  while i < FpsMem.particles.len max 32 {
+    if i >= 0 && i < FpsMem.particles.len {
+      let mut p = FpsMem.particles[i];
+      if p.life <= 1 {
+        let _ = FpsMem.particles.swap_remove(i);
+      } else {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.z += p.vz;
+        p.vy -= 8;
+        p.life -= 1;
+        FpsMem.particles[i] = p;
+        i += 1;
+      }
+    } else {
+      break;
     }
   }
 }
@@ -182,10 +180,8 @@ pub fn reset_slipgate(seed: i64) -[Mem]-> unit {
   FpsMem.msg_timer = 0;
   FpsMem.rng_state = if seed == 0 { 19960622 } else { abs_i64(seed) };
 
-  for p in 0..32 {
-    FpsMem.particles[p].life = 0;
-  }
-  build_citadel_world();
+  FpsMem.particles.clear();
+  world::build_citadel_world();
 }
 
 pub fn damage_player(raw_dmg: i64) -[Mem, Gpu]-> unit {
