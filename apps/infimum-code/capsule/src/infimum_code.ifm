@@ -11,11 +11,11 @@ use "theme.ifm";
 use "icons.ifm";
 use "daemon_client.ifm";
 use "text_buf.ifm";
-use "sidebar.ifm";
-use "feed.ifm";
-use "composer.ifm";
-use "modals.ifm";
-use "file_viewer.ifm";
+use "sidebar.ifm" as sidebar;
+use "feed.ifm" as feed;
+use "composer.ifm" as composer;
+use "modals.ifm" as modals;
+use "file_viewer.ifm" as viewer;
 
 // --- Keyboard Dispatcher ---
 
@@ -274,7 +274,7 @@ export fn step_ui(
   ui_rect(0, 0, w, h, 0, 0, 0, col_bg(th), 0, ClipId::Root);
 
   // 3. Left Sidebar (Infimum.Forma) + Interactive Splitter Line
-  render_sidebar(side_w, h, foot_h);
+  sidebar::render_sidebar(side_w, h, foot_h);
   if splitter_hov || StudioMem.drag_sb == DragScrollbar::SidebarResize {
     ui_rect(side_w - 1, 0, 2, h, 0, 0, 0, col_accent(), 0, ClipId::Root);
     gfx_set_cursor(CursorKind::EwResize);
@@ -284,9 +284,9 @@ export fn step_ui(
   let main_x = side_w;
   let main_w = w - side_w;
   if StudioMem.file_view_open == 1 {
-    render_file_viewer(main_x, main_w, h, top_h, key_special);
+    viewer::render_file_viewer(main_x, main_w, h, top_h, key_special);
   } else {
-    render_main_header(main_x, main_w, w, top_h);
+    feed::render_main_header(main_x, main_w, w, top_h);
 
     let feed_y = top_h + 10;
     let col_w = clamp_i64(main_w - 56, 360, 820);
@@ -318,17 +318,17 @@ export fn step_ui(
     let in_scroll_capture = in_composer_hover && in_max_scroll > 0;
 
     // 5. Scrollable Dialogue Feed & Clean-Reader
-    render_feed(w, side_w, main_x, col_x, col_w, feed_y, feed_h, in_scroll_capture);
+    feed::render_feed(w, side_w, main_x, col_x, col_w, feed_y, feed_h, in_scroll_capture);
 
     // 6. Multiline Composer Card + Model Dropdown Overlay (Infimum.Forma)
-    render_composer(col_x, box_y, col_w, box_h, img_bar_h, h, key_special);
+    composer::render_composer(col_x, box_y, col_w, box_h, img_bar_h, h, key_special);
   }
 
   // 7. Native Modals & Context Menu Overlays (Infimum.Forma)
-  render_settings_modal(w, h);
-  render_confirm_delete_modal(w, h);
-  render_image_preview_modal(w, h, key_special);
-  render_context_menu(w, h, key_special);
+  modals::render_settings_modal(w, h);
+  modals::render_confirm_delete_modal(w, h);
+  modals::render_image_preview_modal(w, h, key_special);
+  modals::render_context_menu(w, h, key_special);
 
   gfx_end_frame()
 }

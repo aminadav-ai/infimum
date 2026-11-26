@@ -15,7 +15,7 @@ pub enum SideAct {
   Settings = 104,
 }
 
-pub fn handle_sidebar_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
+fn handle_sidebar_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i64) -[Mem]-> unit {
   if StudioMem.frame_modal_blocked == 0 {
     let side_max = clamp_i64(StudioMem.side_max_scroll, 0, 4000);
     let dy = forma_wheel_dy();
@@ -23,7 +23,7 @@ pub fn handle_sidebar_wheel(_rx: i64, _ry: i64, _rw: i64, _rh: i64, _clip_id: i6
   }
 }
 
-pub fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Net]-> unit {
+fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Net]-> unit {
   let th = StudioMem.theme;
   let scale = StudioMem.font_scale_pct;
   let ui_sz = sf(13);
@@ -408,7 +408,7 @@ pub fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem
   StudioMem.side_max_scroll = if total_proj_h > p_view_h { total_proj_h - p_view_h } else { 0 };
 }
 
-pub forma SidebarShell(
+forma SidebarShell(
   side_w: i64,
   vh: i64,
   foot_h: i64,

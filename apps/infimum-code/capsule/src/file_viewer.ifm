@@ -12,23 +12,23 @@ use "theme.ifm";
 use "icons.ifm";
 use "daemon_client.ifm";
 
-pub fn fv_is_alpha(ch: i64) -> bool {
+fn fv_is_alpha(ch: i64) -> bool {
   (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
 }
 
-pub fn fv_is_digit(ch: i64) -> bool {
+fn fv_is_digit(ch: i64) -> bool {
   ch >= '0' && ch <= '9'
 }
 
-pub fn fv_is_ident_cont(ch: i64) -> bool {
+fn fv_is_ident_cont(ch: i64) -> bool {
   fv_is_alpha(ch) || fv_is_digit(ch)
 }
 
-pub fn fv_is_hex(ch: i64) -> bool {
+fn fv_is_hex(ch: i64) -> bool {
   fv_is_digit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
-pub fn fv_is_keyword(ptr: i64, len: i64) -[Mem]-> bool {
+fn fv_is_keyword(ptr: i64, len: i64) -[Mem]-> bool {
   if len == 2 {
     slice_eq_str(ptr, len, "fn")
       || slice_eq_str(ptr, len, "if")
@@ -75,7 +75,7 @@ pub fn fv_is_keyword(ptr: i64, len: i64) -[Mem]-> bool {
   }
 }
 
-pub fn fv_is_builtin_type(ptr: i64, len: i64) -[Mem]-> bool {
+fn fv_is_builtin_type(ptr: i64, len: i64) -[Mem]-> bool {
   let c0 = mem_load(ptr);
   if c0 >= 'A' && c0 <= 'Z' {
     true

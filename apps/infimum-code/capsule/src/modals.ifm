@@ -43,13 +43,13 @@ pub enum DelAct {
 
 // --- Settings Modal Slot Renderers (only dynamic numeric/icon slots; static labels use Forma 2.0 Text!) ---
 
-pub fn draw_settings_scale_val(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+fn draw_settings_scale_val(rx: i64, ry: i64, _rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let scale = StudioMem.font_scale_pct;
   let s_l = 15;
   ui_fmt(rx + 2, ry + (rh - s_l) / 2, "{scale}%", s_l, 1, col_accent(), clip_id);
 }
 
-pub fn draw_settings_row_currency(rx: i64, ry: i64, _rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+fn draw_settings_row_currency(rx: i64, ry: i64, _rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let s_l = sf(14);
   let s_s = sf(12);
@@ -59,7 +59,7 @@ pub fn draw_settings_row_currency(rx: i64, ry: i64, _rw: i64, _rh: i64, clip_id:
   emit_cost_in_currency(rx + 2 + cw, ry + s_l + 6, StudioMem.total_milli_ils, cur_id, s_s, 2, col_emerald(), clip_id);
 }
 
-pub fn draw_settings_cur_btn(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
+fn draw_settings_cur_btn(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let s_l = sf(14);
   let cur_id = StudioMem.currency_id;
@@ -67,7 +67,7 @@ pub fn draw_settings_cur_btn(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -
   icon_chevron_down(rx + rw - 14, ry + rh / 2 + 1, s_l, if StudioMem.cur_dd_open == 1 { col_accent() } else { col_muted(th) }, clip_id);
 }
 
-pub forma CurOpt(
+forma CurOpt(
   w: i64, h: i64, lbl: str, is_sel: bool, act: i64,
   bg_surf: i64, bg_surf2: i64, col_txt: i64, col_acc: i64, col_ok: i64, s_l: i64
 )
@@ -82,7 +82,7 @@ pub forma CurOpt(
   }
 }
 
-pub fn draw_settings_api_keys_header(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+fn draw_settings_api_keys_header(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let s_l = sf(13);
   let s_s = sf(12);
@@ -138,7 +138,7 @@ pub fn draw_settings_api_keys_header(rx: i64, ry: i64, rw: i64, _rh: i64, clip_i
   }
 }
 
-pub fn draw_settings_api_keys_status(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
+fn draw_settings_api_keys_status(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i64) -[Mem]-> unit {
   let th = StudioMem.theme;
   let s_s = sf(12);
   let sel_p = clamp_i64(StudioMem.keys_sel_prov, 0, 6);
@@ -167,7 +167,7 @@ pub fn draw_settings_api_keys_status(rx: i64, ry: i64, rw: i64, _rh: i64, clip_i
   }
 }
 
-pub forma SettingsModal(
+forma SettingsModal(
   vw: i64,
   vh: i64,
   mx0: i64,
@@ -391,7 +391,7 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
 
 // --- Confirm Delete Modal (Infimum.Forma 2.0 — for Project Folders & Individual Dialogs) ---
 
-pub forma ConfirmDeleteModal(
+forma ConfirmDeleteModal(
   vw: i64, vh: i64, mx0: i64, my0: i64, mw: i64, mh: i64,
   bw: i64, bh: i64, s_h: i64, s_l: i64,
   title: str, desc: str,
@@ -603,7 +603,7 @@ pub fn render_image_preview_modal(w: i64, h: i64, key_special: i64) -[Mem]-> uni
 
 // --- Right-Click Context Menu Overlay (Infimum.Forma 2.0 — 0 Slot callbacks!) ---
 
-pub forma ContextMenuOverlay(cm_x: i64, cm_y: i64, bg_surf: i64, bg_surf2: i64, col_brd: i64, col_txt: i64)
+forma ContextMenuOverlay(cm_x: i64, cm_y: i64, bg_surf: i64, bg_surf2: i64, col_brd: i64, col_txt: i64)
   -[Mem]-> i64
 {
   Overlay(x: cm_x, y: cm_y, w: 200, h: 140, radius: 10, bg: bg_surf, border: 1, border_col: col_brd, shadow: 14, pad_x: 4, pad_y: 6, visible: true) {
