@@ -307,8 +307,8 @@ fn estimate_str_pool_words(nodes: &[CanonicalNode]) -> u32 {
     total as u32
 }
 
-/// Select the smallest power-of-two Wasm memory page count in `{128, 256, 512, 1024}` (8..64 MiB)
-/// covering `required_words`, returning `(pages, word_index_mask)`.
+/// Select the smallest power-of-two Wasm memory page count in `{8, 16, 32, 64, 128, 256, 512, 1024}`
+/// (512 KiB..64 MiB) covering `required_words`, returning `(pages, word_index_mask)`.
 fn select_wasm_mem_pages(required_words: u32) -> (u32, i32) {
     // 1 Wasm page = 65,536 bytes = 16,384 32-bit words
     const CANDIDATES: &[(u32, u32)] = &[
@@ -419,10 +419,15 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
     passport_json: &[u8],
     layout_end_word: u32,
 ) -> Result<Vec<u8>, InfimumDiagnostic> {
+    let has_gpu_exports = exports.iter().any(|(name, _)| {
+        name == "get_cmd_byte_offset" || name == "step_ui" || name == "ifw_abi_version"
+    });
     let str_word_base = if layout_end_word > 0 {
         layout_end_word.max(HEADLESS_LAYOUT_SEGMENT_START)
-    } else {
+    } else if has_gpu_exports {
         DEFAULT_STRATA_STR_WORD_BASE
+    } else {
+        HEADLESS_LAYOUT_SEGMENT_START
     };
     let est_str_words = estimate_str_pool_words(nodes);
     let required_words = str_word_base.saturating_add(est_str_words).saturating_add(64);
@@ -588,7 +593,7 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
     }
     push_section(&mut wasm, 3, &sec_func);
 
-    // Section 5: Linear Memory section (auto-sized power-of-two pages: 128=8MiB .. 1024=64MiB)
+    // Section 5: Linear Memory section (auto-sized power-of-two pages: 8=512KiB .. 1024=64MiB)
     let mut sec_mem = Vec::new();
     push_u32_leb(&mut sec_mem, 1); // 1 memory
     sec_mem.push(0x00); // flags: min only

@@ -42,7 +42,7 @@ pub fn scratch_remaining() -[Mem]-> i64
 }
 
 /// Allocate `words` temporary words from the per-frame scratch arena.
-/// Returns a valid word address in `4096..65535`, or `-1` on invalid size / exhaustion.
+/// Returns a valid word address in `4096..49151`, or `-1` on invalid size / exhaustion.
 pub fn scratch_alloc(words: i64) -[Mem]-> i64
   ens result == -1 || (result >= SYS_SCRATCH_BASE_WORD && result < SYS_SCRATCH_BASE_WORD + SYS_SCRATCH_CAP_WORDS)
 {
