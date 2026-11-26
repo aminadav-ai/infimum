@@ -134,6 +134,7 @@ pub struct GpuRenderer {
     mesh_textures_loading: bool,
     mesh_textures_progress: Arc<std::sync::atomic::AtomicU32>,
     mesh_textures_rx: Option<std::sync::mpsc::Receiver<crate::textures3d::PreparedPbrTextures>>,
+    #[cfg(not(target_arch = "wasm32"))]
     textures_dir: Option<std::path::PathBuf>,
     splash_title: String,
     font_advances: [[i32; 176]; 3],
@@ -545,7 +546,10 @@ impl GpuRenderer {
         // --- Native Vulkan 3D Mesh + Dynamic Point Lights + Procedural Sky Pipelines ---
         let mesh_textures = crate::textures3d::create_placeholder_textures_3d(&device, &queue);
         let mesh_textures_progress = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        #[cfg(not(target_arch = "wasm32"))]
         let textures_dir_owned = textures_dir.map(|p| p.to_path_buf());
+        #[cfg(target_arch = "wasm32")]
+        let _ = textures_dir;
         #[cfg(not(target_arch = "wasm32"))]
         let (mesh_textures_loading, mesh_textures_rx) = if textures_dir_owned.is_some() {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -786,6 +790,7 @@ impl GpuRenderer {
             mesh_textures_loading,
             mesh_textures_progress,
             mesh_textures_rx,
+            #[cfg(not(target_arch = "wasm32"))]
             textures_dir: textures_dir_owned,
             splash_title,
             font_advances: atlas.advances_256,

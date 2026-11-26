@@ -391,6 +391,7 @@ fn downsample_rgba(src: &[u8], w: u32, h: u32, is_normal: bool) -> Vec<u8> {
     dst
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn decode_image_rgba(path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
     let ext = path
         .extension()
