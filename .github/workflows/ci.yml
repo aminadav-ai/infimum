@@ -70,7 +70,8 @@ jobs:
       - name: Run cargo deny (licenses, advisories, bans)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          arguments: --all-features check licenses advisories bans
+          command: check
+          command-arguments: licenses advisories bans
 
   publish-repo-snapshot:
     needs: workspace-verify-and-test

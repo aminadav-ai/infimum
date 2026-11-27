@@ -6,6 +6,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license-file = "../../LICENSE"
+publish = false
 description = "Native zero-Chromium .ifw capsule runtime and browser with infimum.passport gatekeeper, 1-Draw-Call wgpu SDF + 3D PBR renderer, and wasmi fuel sandbox"
 
 [lib]
