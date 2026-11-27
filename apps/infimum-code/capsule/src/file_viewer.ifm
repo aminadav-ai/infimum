@@ -84,7 +84,9 @@ fn fv_is_builtin_type(ptr: i64, len: i64) -[Mem]-> bool {
   } else if len == 4 {
     slice_eq_str(ptr, len, "bool") || slice_eq_str(ptr, len, "unit") || slice_eq_str(ptr, len, "word")
   } else if len == 5 {
-    slice_eq_str(ptr, len, "fixed") || slice_eq_str(ptr, len, "words")
+    slice_eq_str(ptr, len, "fixed")
+      || slice_eq_str(ptr, len, "dec64")
+      || slice_eq_str(ptr, len, "words")
   } else {
     false
   }

@@ -1,0 +1,204 @@
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
+//
+// Infimum Standard Library: std/dec.ifm
+// Exact decimal fixed-point money helpers for `dec64` (scale 10^-4, 4 fractional digits).
+// Pure Z3-verified rounding (half-away-from-zero and banker's half-even), clamping,
+// and zero-allocation UTF-8 `[u8]` formatting and parsing.
+
+pub const DEC64_SCALE: i64 = 10000;
+
+/// Absolute value of a `dec64`.
+pub fn dec64_abs(v: dec64) -> dec64
+  ens result >= 0.0d
+{
+  if v < 0.0d { -v } else { v }
+}
+
+/// Minimum of two `dec64` values.
+pub fn dec64_min(a: dec64, b: dec64) -> dec64
+  ens result <= a && result <= b
+{
+  if a < b { a } else { b }
+}
+
+/// Maximum of two `dec64` values.
+pub fn dec64_max(a: dec64, b: dec64) -> dec64
+  ens result >= a && result >= b
+{
+  if a > b { a } else { b }
+}
+
+/// Clamp `v` into the inclusive range `[lo, hi]`.
+pub fn dec64_clamp(v: dec64, lo: dec64, hi: dec64) -> dec64
+  req lo <= hi
+  ens result >= lo && result <= hi
+{
+  if v < lo { lo } else if v > hi { hi } else { v }
+}
+
+/// Round a `dec64` to the nearest cent (`0.01d`) using half-away-from-zero rounding.
+/// Example: `1.0050d -> 1.0100d`, `-1.0050d -> -1.0100d`, `1.0049d -> 1.0000d`.
+pub fn dec64_round_cents(v: dec64) -> dec64 {
+  let r = dec64_raw(v);
+  let rem = r % 100;
+  let base = r - rem;
+  if r >= 0 {
+    if rem >= 50 { dec64_from_raw(base + 100) } else { dec64_from_raw(base) }
+  } else {
+    if rem <= -50 { dec64_from_raw(base - 100) } else { dec64_from_raw(base) }
+  }
+}
+
+/// Round a `dec64` to the nearest cent (`0.01d`) using banker's rounding (half-to-even).
+/// Example: `0.0050d -> 0.0000d`, `0.0150d -> 0.0200d`, `0.0250d -> 0.0200d`.
+pub fn dec64_round_half_even_cents(v: dec64) -> dec64 {
+  let r = dec64_raw(v);
+  let cents = r / 100;
+  let rem = r % 100;
+  if r >= 0 {
+    if rem > 50 {
+      dec64_from_raw((cents + 1) * 100)
+    } else if rem < 50 {
+      dec64_from_raw(cents * 100)
+    } else if (cents % 2) != 0 {
+      dec64_from_raw((cents + 1) * 100)
+    } else {
+      dec64_from_raw(cents * 100)
+    }
+  } else {
+    if rem < -50 {
+      dec64_from_raw((cents - 1) * 100)
+    } else if rem > -50 {
+      dec64_from_raw(cents * 100)
+    } else if (cents % 2) != 0 {
+      dec64_from_raw((cents - 1) * 100)
+    } else {
+      dec64_from_raw(cents * 100)
+    }
+  }
+}
+
+/// Convert a `dec64` to an integer number of cents, rounding half-away-from-zero.
+pub fn dec64_to_cents(v: dec64) -> i64 {
+  dec64_raw(dec64_round_cents(v)) / 100
+}
+
+/// Format `v` as exact ASCII decimal with 4 fractional digits (e.g. `"-12345.6789"`, `"0.0000"`)
+/// into `dst`. Returns the number of bytes written (`0` if `dst` is too small).
+pub fn dec64_format(v: dec64, dst: [u8]) -[Mem]-> i64
+  ens result >= 0 && result <= dst.len
+{
+  let r = dec64_raw(v);
+  let neg = r < 0;
+  let whole = if neg { -(r / 10000) } else { r / 10000 };
+  let frac = if neg { -(r % 10000) } else { r % 10000 };
+  let mut pos = 0;
+  let mut ok = true;
+  if neg {
+    if pos < dst.len {
+      dst[pos] = u8(45);
+      pos += 1;
+    } else {
+      ok = false;
+    }
+  }
+  let mut div = 1;
+  while div <= whole / 10 max 16 {
+    div = div * 10;
+  }
+  while div > 0 max 16 {
+    let digit = (whole / div) % 10;
+    if ok && pos >= 0 && pos < dst.len {
+      dst[pos] = u8(48 + digit);
+      pos += 1;
+    } else {
+      ok = false;
+    }
+    div = div / 10;
+  }
+  if ok && pos >= 0 && pos < dst.len {
+    dst[pos] = u8(46);
+    pos += 1;
+  } else {
+    ok = false;
+  }
+  let f0 = (frac / 1000) % 10;
+  let f1 = (frac / 100) % 10;
+  let f2 = (frac / 10) % 10;
+  let f3 = frac % 10;
+  if ok && pos >= 0 && pos + 3 < dst.len {
+    dst[pos] = u8(48 + f0);
+    dst[pos + 1] = u8(48 + f1);
+    dst[pos + 2] = u8(48 + f2);
+    dst[pos + 3] = u8(48 + f3);
+    pos += 4;
+  } else {
+    ok = false;
+  }
+  if ok && pos >= 0 && pos <= dst.len { pos } else { 0 }
+}
+
+/// Parse an ASCII decimal string (e.g. `"19.99"`, `"-12345.6789"`, `"100"`) from `src: [u8]`.
+/// Returns `(ok, value)`. Rejects empty input, invalid characters, >4 fractional digits, or overflow.
+pub fn dec64_parse(src: [u8]) -[Mem]-> (bool, dec64) {
+  if src.len <= 0 || src.len > 64 {
+    (false, 0.0d)
+  } else {
+    let mut neg = false;
+    let mut seen_dot = false;
+    let mut seen_digit = false;
+    let mut ok = true;
+    let mut whole = 0;
+    let mut frac = 0;
+    let mut frac_digits = 0;
+    for i in 0..src.len max 64 {
+      let b = src[i];
+      if i == 0 && (b == 45 || b == 43) {
+        neg = b == 45;
+      } else if b == 46 {
+        if seen_dot {
+          ok = false;
+        } else {
+          seen_dot = true;
+        }
+      } else if b >= 48 && b <= 57 {
+        let d = b - 48;
+        seen_digit = true;
+        if seen_dot {
+          if frac_digits >= 4 {
+            ok = false;
+          } else {
+            frac = frac * 10 + d;
+            frac_digits += 1;
+          }
+        } else {
+          if whole > 92233720368547 || (whole == 92233720368547 && d > 7) {
+            ok = false;
+          } else {
+            whole = whole * 10 + d;
+          }
+        }
+      } else {
+        ok = false;
+      }
+    }
+    if !ok || !seen_digit {
+      (false, 0.0d)
+    } else {
+      let mut scaled_frac = frac;
+      let mut k = frac_digits;
+      while k < 4 max 4 {
+        scaled_frac = scaled_frac * 10;
+        k += 1;
+      }
+      if whole == 922337203685477 && ((!neg && scaled_frac > 5807) || (neg && scaled_frac > 5808)) {
+        (false, 0.0d)
+      } else if neg {
+        (true, dec64_from_raw(-(whole * 10000) - scaled_frac))
+      } else {
+        (true, dec64_from_raw(whole * 10000 + scaled_frac))
+      }
+    }
+  }
+}

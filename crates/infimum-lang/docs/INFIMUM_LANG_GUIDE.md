@@ -13,6 +13,7 @@ use "std/prelude.ifm";
 This gives you all of the following immediately (or import individual modules `std/math.ifm`, `std/color.ifm`, `std/sys_mem.ifm`, `std/mem.ifm`, `std/gfx.ifm`, `std/text.ifm`, `std/audio.ifm`, `std/input.ifm`, `std/fmt.ifm`, `std/theme.ifm`, `std/icons.ifm`, `std/ui.ifm`):
 
 - **`std/math.ifm`:** `clamp_i64(v, lo, hi)`, `clamp_byte(v)`, `min_i64(a, b)`, `max_i64(a, b)`, `abs_i64(v)`, `point_in_rect(px, py, rx, ry, rw, rh)`, `lerp_i64(a, b, t1000)`, `ease_out_quad(t1000)`, `ease_out_cubic(t1000)`, `ease_in_out_quad(t1000)`, `rng_next(seed)`, `rng_range(seed, bound)`, **`isqrt(n)`**, **`sin_1024(ang_4096)`** (`-1024..1024`), **`cos_1024(ang_4096)`** (`-1024..1024`), plus Q16.16 `fixed` helpers (`fixed`, `fixed_to_int`, `fixed_raw`, `fixed_from_raw`, `fixed_abs`, `fixed_min`, `fixed_max`, `fixed_clamp`, `fixed_lerp`, `fixed_sin`, `fixed_cos`).
+- **`std/dec.ifm`:** Exact financial decimal (`dec64`, scale `10^-4`, range `±900 trillion`) helpers: `DEC64_SCALE (10000)`, `dec64_abs(v)`, `dec64_min(a, b)`, `dec64_max(a, b)`, `dec64_clamp(v, lo, hi)`, `dec64_round_cents(v)` (half-away-from-zero to `0.01d`), `dec64_round_half_even_cents(v)` (banker's rounding), `dec64_to_cents(v)`, `dec64_format(v, dst: [u8]) -> i64`, `dec64_parse(src: [u8]) -> (bool, dec64)`.
 - **`std/color.ifm`:** `pack_rgba(r, g, b, a)`, `rgba_r/g/b/a(c)`, `with_alpha(c, a)`, `lerp_rgba(c1, c2, t1000)`, `darken_rgba(c, pct)`, `lighten_rgba(c, pct)`.
 - **`std/sys_mem.ifm`:** Single source of truth for the segmented linear memory map (System ABI `0..65535`, GPU stream `65536..705535`, auto-placed user & module layouts `705536+`). Key constants: `SYS_CURSOR_KIND_WORD (11)`, `SYS_PRIM_COUNT_WORD (12)`, `SYS_SCRATCH_CURSOR_WORD (16)`, `SYS_STR_SCRATCH_WORD (17)`, `SYS_HOST_RET_WORD (62)`, `SYS_CLIP_RECTS_WORD (64)`, `SYS_FORMA_MAILBOX_WORD (128)`, `SYS_INPUT_BASE_WORD (192)`, `SYS_FONT_METRICS_FLAG_WORD (256)`, `SYS_SCRATCH_BASE_WORD (4096)`, `SYS_GPU_PRIMS_WORD (65536)`, `SYS_USER_LAYOUT_START_WORD (705536)`.
 - **`std/mem.ifm`:** Deterministic zero-GC memory allocators & host return register (Z3-verified contracts; unified error return `-1`):
@@ -160,12 +161,18 @@ Inside `forma Name(...) { ... }`, containers (`Box`, `Col`, `Row`, `Stack`, `Scr
 
 ## 2. Core Infimum Syntax Notes
 
-- Types: `i64`, **`fixed` (deterministic Q16.16 fixed-point, scale = 65536)**, `bool`, `str`, `unit`, **value `struct`s** (zero-heap stack/register structs), and **tuples** `(i64, i64)` / `(i64, i64, bool)`:
+- Types: `i64`, **`fixed` (deterministic Q16.16 fixed-point, scale = 65536)**, **`dec64` (exact financial decimal, scale = `10^-4`, 4 decimal places, 64-bit storage)**, `u8`, `bool`, `str`, `unit`, **value `struct`s** (zero-heap stack/register structs), and **tuples** `(i64, i64)` / `(bool, dec64)`:
   - **Value `struct`s (Zero-Heap, Wasm Multi-Value, Z3-Verified):**
-    - Any declared `struct` (`struct Vec3 { x: fixed, y: fixed, z: fixed }`) works both inside `layout` AND by value on the stack/registers.
+    - Any declared `struct` (`struct Vec3 { x: fixed, y: fixed, z: fixed }`, `struct InvoiceLine { id: word, amount: dec64, qty: word }`) works both inside `layout` AND by value on the stack/registers.
     - Construct: `let mut v = Vec3 { x: 1.0, y: 2.0, z: 3.0 };`.
     - Pass & return by value: `fn vec_add(a: Vec3, b: Vec3) -> Vec3 { Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z } }`.
     - Field access & mutation: `v.x`, `vec_add(a, b).y`, `v.x += 0.5;`, Z3 contracts on fields (`req v.y != 0.0`), and whole-struct `layout` copy (`let h = World.hero; World.hero = h;`).
+  - **Exact Financial `dec64` (Scale `10^-4`, Full 64-Bit Storage, Z3 Overflow & Div-by-Zero Verified):**
+    - Literals with `d` suffix (up to 4 fractional digits; >4 digits rejected with `E003_DEC64_PRECISION`): `19.99d`, `0.0825d`, `100d`, `0.0d`, `-0.0001d`; constants: `const VAT: dec64 = 0.17d;`.
+    - Arithmetic: `+`, `-`, `*`, `/` (overflow-free 128-bit Wasm scaling by `10_000`, works up to ±900 trillion), unary `-`, comparisons `== != < <= > >=`. Strict typing: no implicit mixing with `i64` (`E060_TYPE_MISMATCH`).
+    - Conversions: `dec64(n)` (integer -> `dec64`), `dec64_to_int(d)`, `dec64_raw(d)`, `dec64_from_raw(raw)`, `dec64_from_cents(cents)`, plus `use "std/dec.ifm";` for `dec64_round_cents`, `dec64_round_half_even_cents`, `dec64_to_cents`, `dec64_format`, `dec64_parse`.
+    - Full 64-bit storage (`i64.load`/`i64.store`, 8 bytes / 2 words, never truncated to `i32`) in `layout` (`balance: dec64 inv 0.0d..=1000000.0d`, `prices: dec64[16]`, `history: vec<dec64>[64]`), `struct`, and `[dec64]` slices (`slice_dec64(ptr, len)`).
+    - Z3 proves divisor `!= 0.0d` (`E053_POSSIBLE_DIV_BY_ZERO`), signed 64-bit non-overflow (`E057_DEC64_OVERFLOW`), and `inv` field bounds (`E054_FIELD_INVARIANT_VIOLATED`).
   - **Deterministic `fixed` (Q16.16, Z3-compatible, zero float drift):**
     - Decimal literals: `1.5`, `0.25`, `9.81`, `-0.5`; constants: `const GRAVITY: fixed = 9.81;`.
     - Fields in `struct` / `layout`: `y: fixed inv 0.0..=1000.0`, `vels: fixed[16]`.
@@ -173,8 +180,8 @@ Inside `forma Name(...) { ... }`, containers (`Box`, `Col`, `Row`, `Stack`, `Scr
     - Zero-heap formatting via `ui_fixed(x, y, val, decimals, ...)` or directly inside `ui_fmt(x, y, "Y: {y} | V: {vy:.1}", ...)`.
   - Return multiple values with zero heap overhead: `fn divmod(n: i64) -> (i64, i64) { (n / 18, n % 18) }`; destructure with `let (r, c) = divmod(idx);`.
   - **Zero-Overhead Slices `[T]` & Native UTF-8 `str` (2-register fat pointer `(ptr, len)`, 0 runtime bounds checks in Wasm):**
-    - Element `T`: `i64` (or `word`), `u8` (byte, `0..=255` Z3-verified), `fixed`, or any `struct` (including qualified `[m::Drone]`). `Secret<T>` inside `[T]` and `[T]`/`str` on `export fn` boundaries are rejected (`E062_SECRET_IN_SLICE` / `E082_NON_SCALAR_EXPORT`).
-    - Zero-copy construction: `Layout.arr[..]`, `Layout.arr[lo..hi]`, `s[lo..hi]`, `slice_i64(ptr, count)`, `slice_u8(byte_ptr, count)`, `slice_fixed(ptr, count)`, `s.as_bytes()`, `b.as_str()`.
+    - Element `T`: `i64` (or `word`), `u8` (byte, `0..=255` Z3-verified), `fixed`, `dec64`, or any `struct` (including qualified `[m::Drone]`). `Secret<T>` inside `[T]` and `[T]`/`str` on `export fn` boundaries are rejected (`E062_SECRET_IN_SLICE` / `E082_NON_SCALAR_EXPORT`).
+    - Zero-copy construction: `Layout.arr[..]`, `Layout.arr[lo..hi]`, `s[lo..hi]`, `slice_i64(ptr, count)`, `slice_u8(byte_ptr, count)`, `slice_fixed(ptr, count)`, `slice_dec64(ptr, count)`, `s.as_bytes()`, `b.as_str()`.
     - Native UTF-8 `str`: read-only `(byte_ptr, byte_len)` view over the compact UTF-8 static pool (4x less RAM). Supports O(1) `s.len` (bytes), `s[i]` (byte), `s[lo..hi]` (`[u8]` subslice), `s.as_bytes()`, and `std/utf8.ifm` (`utf8_decode_next`, `utf8_encode`, `utf8_prev_char_pos`, `utf8_next_char_pos`) + `std/slice.ifm` (`bytes_eq`, `bytes_starts_with`, `bytes_ends_with`, `bytes_find`, `bytes_find_bytes`, `bytes_eq_ascii_ci`, `bytes_starts_with_ascii_ci`, `bytes_copy`, `bytes_fill`).
     - Properties & indexing: `s.len`, `s.ptr`, `s[i]`, `s[i].field`, `s[i] = val` (including whole-struct read/write: `let d = drones[i]; drones[i] = d;`), `s[i].field += delta`. Mutating read-only `str` is rejected (`E060_TYPE_MISMATCH`).
     - Z3 proves every index `0 <= i < s.len`, subslice `0 <= lo <= hi <= s.len`, byte range `0 <= v <= 255` (use `u8(x)` to mask), and struct field invariant statically (`E056_SLICE_OUT_OF_BOUNDS`, `E054_FIELD_INVARIANT_VIOLATED`).

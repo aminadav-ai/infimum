@@ -13,6 +13,7 @@ use super::syntax::parse_raw_file;
 pub(super) fn resolve_embedded_std(spec: &str) -> Option<(&'static str, &'static str)> {
     match spec {
         "std/math" | "std/math.ifm" => Some(("__std__/math.ifm", include_str!("../../std/math.ifm"))),
+        "std/dec" | "std/dec.ifm" => Some(("__std__/dec.ifm", include_str!("../../std/dec.ifm"))),
         "std/color" | "std/color.ifm" => Some(("__std__/color.ifm", include_str!("../../std/color.ifm"))),
         "std/sys_mem" | "std/sys_mem.ifm" => {
             Some(("__std__/sys_mem.ifm", include_str!("../../std/sys_mem.ifm")))

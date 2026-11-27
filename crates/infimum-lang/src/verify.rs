@@ -118,7 +118,7 @@ where
         self.obligations.push(ProofObligation {
             guard_smt: guard.to_string(),
             goal_smt: format!(
-                "(and (>= {res_smt} (- 9223372036854775808)) (<= {res_smt} 9223372036854775807))"
+                "(and (>= {res_smt} (- 9000000000000000000)) (<= {res_smt} 9000000000000000000))"
             ),
             kind: ObligationKind::Dec64Overflow { op },
         });
@@ -168,7 +168,16 @@ where
                     .unwrap_or(Type::I64),
                 TargetRef::Named(_) => Type::I64,
             },
-            Expr::TupleLit(_) | Expr::TupleField { .. } => Type::I64,
+            Expr::TupleLit(elems) => Type::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.infer_expr_type(e, types))
+                    .collect(),
+            ),
+            Expr::TupleField { expr, index } => match self.infer_expr_type(expr, types) {
+                Type::Tuple(ts) => ts.get(*index).cloned().unwrap_or(Type::I64),
+                _ => Type::I64,
+            },
             Expr::SliceLit { elem_ty, .. } => Type::Slice(Box::new(elem_ty.clone())),
             Expr::StrToBytes(_) => Type::Slice(Box::new(Type::U8)),
             Expr::StrFromBytes(_) => Type::Str,
@@ -1040,7 +1049,11 @@ where
                     }
                 }
                 let _ = self.encode_expr(expr, env, types, guard, emit_checks)?;
-                Ok(self.fresh_sym("tup_fld", &Type::I64))
+                let fld_ty = match self.infer_expr_type(expr, types) {
+                    Type::Tuple(ts) => ts.get(*index).cloned().unwrap_or(Type::I64),
+                    _ => Type::I64,
+                };
+                Ok(self.fresh_sym("tup_fld", &fld_ty))
             }
             Expr::SliceLit { ptr, len, .. } => {
                 let p = self.encode_expr(ptr, env, types, guard, emit_checks)?;
@@ -1227,10 +1240,24 @@ where
                         }
                     } else {
                         let _ = self.encode_expr(value, local_env, local_types, guard, emit_checks)?;
-                        for (n, _) in names {
-                            let fresh = self.fresh_sym("tup_el", &Type::I64);
+                        let elem_tys = match self.infer_expr_type(value, local_types) {
+                            Type::Tuple(ts) => ts,
+                            _ => Vec::new(),
+                        };
+                        for (i, (n, _)) in names.iter().enumerate() {
+                            let ety = elem_tys.get(i).cloned().unwrap_or(Type::I64);
+                            let fresh = self.fresh_sym("tup_el", &ety);
+                            if ety == Type::Dec64 {
+                                self.assumptions.push(format!(
+                                    "(assert (and (>= {fresh} (- 9000000000000000000)) (<= {fresh} 9000000000000000000)))"
+                                ));
+                            } else if ety == Type::U8 {
+                                self.assumptions.push(format!(
+                                    "(assert (and (>= {fresh} 0) (<= {fresh} 255)))"
+                                ));
+                            }
                             local_env.insert(n.clone(), fresh);
-                            local_types.insert(n.clone(), Type::I64);
+                            local_types.insert(n.clone(), ety);
                         }
                     }
                 }
@@ -1473,7 +1500,7 @@ where
             param_decls.push(format!("(assert (and (>= {cname} 0) (<= {cname} 255)))"));
         } else if p.ty == Type::Dec64 {
             param_decls.push(format!(
-                "(assert (and (>= {cname} (- 9223372036854775808)) (<= {cname} 9223372036854775807)))"
+                "(assert (and (>= {cname} (- 9000000000000000000)) (<= {cname} 9000000000000000000)))"
             ));
         }
         base_env.insert(cname.clone(), cname.clone());
