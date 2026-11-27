@@ -203,7 +203,8 @@ forma SettingsModal(
   s_s: i64,
   theme_lbl: str,
   is_dark: bool,
-  key_ph: str
+  key_ph: str,
+  is_online: bool
 )
   req vw >= 680 && vh >= 460 && mw >= 460 && mh >= 480 && row_h >= 42 && row_h <= 58 && s_bh >= 28 && s_bh <= 42 && row_h >= s_bh && tbtn_w >= 110 && tbtn_w <= 170 && seg_w >= 120 && seg_w <= 210 && cur_w >= 86 && cur_w <= 130 && rst_w >= 76 && rst_w <= 110 && cdd_w >= 118 && cdd_rh >= 28 && cdd_rh <= 44 && s_h >= 12 && s_h <= 24 && s_l >= 10 && s_l <= 20 && s_s >= 10 && s_s <= 18 && mh >= 4 * row_h + 2 * s_s + 240
   -[Mem]-> i64
@@ -283,19 +284,21 @@ forma SettingsModal(
             }
           }
         }
-        Row(h: row_h, gap: 6, align: center) {
-          Col(grow: 1, gap: 2) {
-            Text("Хранилище (IndexedDB)", size: s_l, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
-            Text("Экспорт/импорт проектов и диалогов", size: s_s, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
-          }
-          Button(id: 330, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf2, hover_bg: col_acc, border: 1, border_col: col_brd, align: center, on_click: SetAct::ExportBackup) {
-            Text("Экспорт JSON", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
-          }
-          Button(id: 331, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf2, hover_bg: col_brd, border: 1, border_col: col_brd, align: center, on_click: SetAct::ImportBackup) {
-            Text("Импорт JSON", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
-          }
-          Button(id: 332, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf, hover_bg: bg_surf2, border: 1, border_col: col_brd, align: center, on_click: SetAct::ExportConvMd) {
-            Text("Диалог .md", size: s_s, style: 1, color: col_mut, align: center, shrink: 1, overflow: ellipsis)
+        if is_online {
+          Row(h: row_h, gap: 6, align: center) {
+            Col(grow: 1, gap: 2) {
+              Text("Хранилище (IndexedDB)", size: s_l, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
+              Text("Экспорт/импорт проектов и диалогов", size: s_s, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
+            }
+            Button(id: 330, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf2, hover_bg: col_acc, border: 1, border_col: col_brd, align: center, on_click: SetAct::ExportBackup) {
+              Text("Экспорт JSON", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
+            }
+            Button(id: 331, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf2, hover_bg: col_brd, border: 1, border_col: col_brd, align: center, on_click: SetAct::ImportBackup) {
+              Text("Импорт JSON", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
+            }
+            Button(id: 332, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf, hover_bg: bg_surf2, border: 1, border_col: col_brd, align: center, on_click: SetAct::ExportConvMd) {
+              Text("Диалог .md", size: s_s, style: 1, color: col_mut, align: center, shrink: 1, overflow: ellipsis)
+            }
           }
         }
       }
@@ -343,7 +346,7 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
       safe_w, safe_h, mx0, my0, mw, mh, row_h, s_bh, tbtn_w, seg_w, cur_w, rst_w,
       cdd_x, cdd_y, cdd_w, cdd_rh, cur_dd_open,
       pack_rgba(0, 0, 0, 150), col_surf(th), col_surf2(th), col_bg(th), col_border(th),
-      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph
+      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph, StudioMem.online_mode == 1
     );
     let fc = forma_cursor();
     if fc != 0 {
