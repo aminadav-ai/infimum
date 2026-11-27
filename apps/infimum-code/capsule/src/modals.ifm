@@ -288,16 +288,16 @@ forma SettingsModal(
           Row(h: row_h, gap: 6, align: center) {
             Col(grow: 1, gap: 2) {
               Text("Хранилище (IndexedDB)", size: s_l, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
-              Text("Экспорт/импорт проектов и диалогов", size: s_s, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
+              Text("Экспорт/импорт JSON и Markdown", size: s_s, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
             }
             Button(id: 330, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf2, hover_bg: col_acc, border: 1, border_col: col_brd, align: center, on_click: SetAct::ExportBackup) {
-              Text("Экспорт JSON", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
+              Text("Экспорт", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
             }
             Button(id: 331, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf2, hover_bg: col_brd, border: 1, border_col: col_brd, align: center, on_click: SetAct::ImportBackup) {
-              Text("Импорт JSON", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
+              Text("Импорт", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
             }
-            Button(id: 332, w: rst_w, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf, hover_bg: bg_surf2, border: 1, border_col: col_brd, align: center, on_click: SetAct::ExportConvMd) {
-              Text("Диалог .md", size: s_s, style: 1, color: col_mut, align: center, shrink: 1, overflow: ellipsis)
+            Button(id: 332, w: 62, h: s_bh, pad_x: 6, radius: 7, bg: bg_surf, hover_bg: bg_surf2, border: 1, border_col: col_brd, align: center, on_click: SetAct::ExportConvMd) {
+              Text(".md", size: s_s, style: 1, color: col_mut, align: center, shrink: 1, overflow: ellipsis)
             }
           }
         }
