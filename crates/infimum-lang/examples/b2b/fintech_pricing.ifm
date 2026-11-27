@@ -48,7 +48,8 @@ fn handle_pricing(input: [u8], out: [u8]) -[Mem]-> Result<i64, i64> {
     let discount = dec64_round_half_even_cents(amount * discount_pct);
     let net = amount - discount;
     let tax = dec64_round_half_even_cents(net * tax_rate);
-    let total = dec64_round_half_even_cents(calc_total_with_tax(amount, discount_pct, tax_rate));
+    // Accounting invariant: rounded line items sum cleanly (`net + tax == total`)
+    let total = net + tax;
 
     let w = jw_begin_obj(out);
     let w = jw_kv_str(out, w, "status", "ok");

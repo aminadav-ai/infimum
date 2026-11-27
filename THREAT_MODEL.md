@@ -1,6 +1,6 @@
 # Infimum Security Threat Model
 
-> **Scope:** Infimum Language compiler & Z3 verifier (`crates/infimum-lang`), `.ifw` WebAssembly capsule artifacts + Passport v2 (`blake3` + `Ed25519`), and the sandboxed capsule runtime (`crates/infimum-web`, and future `crates/infimum-rt`).
+> **Scope:** Infimum Language compiler & Z3 verifier (`crates/infimum-lang`), `.ifw` WebAssembly capsule artifacts + Passport v2 (`blake3` + `Ed25519`), and the sandboxed capsule runtimes (`crates/infimum-web` and `crates/infimum-rt`).
 
 ---
 

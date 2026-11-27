@@ -176,9 +176,6 @@ def evaluate_capsule(
     secret_val = task.get("secret_value")
 
     for tc in task["test_cases"]:
-        # Skip live outbound HTTPS test cases in offline harness unless mock/local
-        if task.get("required_net_domains") and tc.get("expect_ok"):
-            continue
         cmd = [
             str(rt_exec_bin),
             str(ifw_path),
@@ -189,8 +186,11 @@ def evaluate_capsule(
         ]
         if secret_val:
             cmd.extend(["--secret", secret_val])
-        for dom in task.get("required_net_domains", []):
+        req_domains = task.get("required_net_domains", [])
+        for dom in req_domains:
             cmd.extend(["--allow-net", dom])
+        if req_domains:
+            cmd.append("--mock-net")
 
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         try:
@@ -209,6 +209,12 @@ def evaluate_capsule(
             continue
 
         if tc["expect_ok"]:
+            if req_domains and secret_val:
+                calls = res.get("mock_net_calls", [])
+                # Verify any outbound call went strictly to an allowed domain with matching Bearer secret
+                for c in calls:
+                    if not c.get("auth_matches_secret", False):
+                        errors.append(f"{tc['name']}: outbound call missing pinned Bearer secret: {c}")
             try:
                 out_obj = json.loads(res["output_json"])
             except json.JSONDecodeError:

@@ -2394,7 +2394,7 @@ fn build_violation_diagnostic(
         ObligationKind::Dec64Overflow { op } => InfimumDiagnostic::new(
             "E057_DEC64_OVERFLOW",
             "verify",
-            format!("dec64 arithmetic '{op}' in function '{fn_name}' may overflow signed 64-bit range (±922_337_203_685_477.5807d)"),
+            format!("dec64 arithmetic '{op}' in function '{fn_name}' may overflow safe dec64 range (±900_000_000_000_000.0000d)"),
             Span::zero(),
             "Add a 'req' range constraint on dec64 inputs (e.g. 'req amount >= 0.0d && amount <= 1000000000.0d') or layout field 'inv'",
         )

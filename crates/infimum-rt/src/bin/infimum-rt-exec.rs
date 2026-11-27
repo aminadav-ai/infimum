@@ -5,18 +5,20 @@ use infimum_rt::{CapsuleEngine, ExecutionPolicy};
 use std::env;
 use std::fs;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
         eprintln!(
-            "Usage: infimum-rt-exec <capsule.ifw> --input <json> [--secret <val>] [--fuel <n>] [--pubkey <hex>]"
+            "Usage: infimum-rt-exec <capsule.ifw> --input <json> [--secret <val>] [--fuel <n>] [--pubkey <hex|path>] [--allow-net <domain>] [--mock-net]"
         );
         return ExitCode::FAILURE;
     }
     let ifw_path = &args[0];
     let mut input_json = String::from("{}");
     let mut secret_val: Option<String> = None;
+    let mut mock_net = false;
     let mut policy = ExecutionPolicy::default();
 
     let mut i = 1usize;
@@ -50,6 +52,10 @@ fn main() -> ExitCode {
                     .insert(args[i + 1].to_ascii_lowercase());
                 i += 2;
             }
+            "--mock-net" => {
+                mock_net = true;
+                i += 1;
+            }
             _ => {
                 i += 1;
             }
@@ -75,9 +81,51 @@ fn main() -> ExitCode {
         }
     };
 
-    match CapsuleEngine::execute_json(&capsule, &input_json, secret_val.as_deref(), &policy) {
+    let observed_calls: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let exec_res = if mock_net {
+        let obs = Arc::clone(&observed_calls);
+        let expected_auth = secret_val
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("Bearer {s}"));
+        CapsuleEngine::execute_json_with_http(
+            &capsule,
+            &input_json,
+            secret_val.as_deref(),
+            &policy,
+            Some(&move |method, url, auth, _body| {
+                let auth_matches_secret = match (&expected_auth, auth) {
+                    (Some(exp), Some(got)) => exp == got,
+                    _ => false,
+                };
+                if let Ok(mut g) = obs.lock() {
+                    g.push(serde_json::json!({
+                        "method": method,
+                        "url": url,
+                        "has_auth": auth.is_some(),
+                        "auth_matches_secret": auth_matches_secret,
+                    }));
+                }
+                Ok(b"{\"mock\":true}".to_vec())
+            }),
+        )
+    } else {
+        CapsuleEngine::execute_json(&capsule, &input_json, secret_val.as_deref(), &policy)
+    };
+
+    match exec_res {
         Ok(res) => {
-            println!("{}", serde_json::to_string(&res).unwrap_or_default());
+            let mut v = serde_json::to_value(&res).unwrap_or_default();
+            if mock_net {
+                if let Some(obj) = v.as_object_mut() {
+                    let calls = observed_calls
+                        .lock()
+                        .map(|g| g.clone())
+                        .unwrap_or_default();
+                    obj.insert("mock_net_calls".to_string(), serde_json::Value::Array(calls));
+                }
+            }
+            println!("{}", serde_json::to_string(&v).unwrap_or_default());
             if res.ok {
                 ExitCode::SUCCESS
             } else {
