@@ -24,6 +24,8 @@ pub enum Type {
     Secret(Box<Type>),
     Tuple(Vec<Type>),
     Slice(Box<Type>),
+    Option(Box<Type>),
+    Result(Box<Type>),
 }
 
 impl fmt::Display for Type {
@@ -48,6 +50,8 @@ impl fmt::Display for Type {
                 write!(f, ")")
             }
             Type::Slice(inner) => write!(f, "[{inner}]"),
+            Type::Option(inner) => write!(f, "Option<{inner}>"),
+            Type::Result(inner) => write!(f, "Result<{inner}, i64>"),
         }
     }
 }
@@ -308,6 +312,29 @@ pub enum Expr {
         hi: Box<Expr>,
         len: Box<Expr>,
     },
+    OptionSome {
+        value: Box<Expr>,
+        inner_ty: Type,
+    },
+    OptionNone {
+        inner_ty: Type,
+    },
+    ResultOk {
+        value: Box<Expr>,
+        ok_ty: Type,
+    },
+    ResultErr {
+        code: Box<Expr>,
+        ok_ty: Type,
+    },
+    MatchTagged {
+        scrutinee: Box<Expr>,
+        ok_binding: Option<String>,
+        ok_body: Box<Expr>,
+        err_binding: Option<String>,
+        err_body: Box<Expr>,
+    },
+    Return(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

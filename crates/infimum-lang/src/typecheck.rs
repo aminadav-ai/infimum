@@ -48,6 +48,56 @@ impl TypeEnv {
     }
 }
 
+fn validate_tagged_type(ty: &Type, fn_name: &str) -> Result<(), InfimumDiagnostic> {
+    fn contains_secret(t: &Type) -> bool {
+        match t {
+            Type::Secret(_) => true,
+            Type::Tuple(ts) => ts.iter().any(contains_secret),
+            Type::Slice(inner) | Type::Option(inner) | Type::Result(inner) => contains_secret(inner),
+            _ => false,
+        }
+    }
+    match ty {
+        Type::Option(inner) | Type::Result(inner) => {
+            if matches!(inner.as_ref(), Type::Option(_) | Type::Result(_)) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Nested tagged type '{ty}' is not supported in '{fn_name}'"),
+                    Span::zero(),
+                    "Use a flat Option<T> or Result<T, i64> where T is a scalar, struct, tuple, str, or slice",
+                ));
+            }
+            if contains_secret(inner) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Secret<T> cannot be wrapped inside '{ty}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Keep Secret<T> outside Option/Result to preserve strict taint tracking",
+                ));
+            }
+            Ok(())
+        }
+        Type::Tuple(ts) => {
+            for t in ts {
+                validate_tagged_type(t, fn_name)?;
+            }
+            Ok(())
+        }
+        Type::Slice(inner) | Type::Secret(inner) => validate_tagged_type(inner, fn_name),
+        _ => Ok(()),
+    }
+}
+
+fn expr_diverges(e: &Expr) -> bool {
+    match e {
+        Expr::Return(_) => true,
+        Expr::Block { tail, .. } => expr_diverges(tail),
+        _ => false,
+    }
+}
+
 pub fn typecheck_node<F>(
     raw_name: &str,
     canon_node: &CanonicalNode,
@@ -57,31 +107,41 @@ where
     F: Fn(&str) -> Result<CanonicalNode, InfimumDiagnostic>,
 {
     let f = &canon_node.ast;
+    for p in &f.params {
+        validate_tagged_type(&p.ty, raw_name)?;
+    }
+    validate_tagged_type(&f.ret_type, raw_name)?;
     if f.exported {
         for p in &f.params {
-            if matches!(p.ty, Type::Slice(_) | Type::Str) {
+            if matches!(
+                p.ty,
+                Type::Slice(_) | Type::Str | Type::Option(_) | Type::Result(_)
+            ) {
                 return Err(InfimumDiagnostic::new(
                     "E082_NON_SCALAR_EXPORT",
                     "typecheck",
                     format!(
-                        "Exported function '{}' cannot take slice/str parameter '{}: {}'",
+                        "Exported function '{}' cannot take non-scalar parameter '{}: {}'",
                         raw_name, p.name, p.ty
                     ),
                     Span::zero(),
-                    "Pass scalar '(ptr: i64, len: i64)' or write bytes into a layout 'bytes[N]' / 'vec<u8>[N]' buffer across the Wasm export boundary",
+                    "Pass scalar i64/u8/fixed/dec64/bool across the Wasm export boundary and use slices/str/Option/Result internally",
                 ));
             }
         }
-        if matches!(f.ret_type, Type::Slice(_) | Type::Str) {
+        if matches!(
+            f.ret_type,
+            Type::Slice(_) | Type::Str | Type::Option(_) | Type::Result(_)
+        ) {
             return Err(InfimumDiagnostic::new(
                 "E082_NON_SCALAR_EXPORT",
                 "typecheck",
                 format!(
-                    "Exported function '{}' cannot return slice/str type '{}'",
+                    "Exported function '{}' cannot return non-scalar type '{}'",
                     raw_name, f.ret_type
                 ),
                 Span::zero(),
-                "Return a scalar i64/u8/bool/unit from 'export fn' and use slices/str internally",
+                "Return a scalar i64/u8/fixed/dec64/bool/unit from 'export fn' and use slices/str/Option/Result internally",
             ));
         }
     }
@@ -519,8 +579,12 @@ where
                 sinks,
                 in_contract,
             )?;
-            if !types_compatible(&tt, &et) {
-                return Err(InfimumDiagnostic::new(
+            if expr_diverges(then_branch) {
+                Ok(et)
+            } else if expr_diverges(else_branch) {
+                Ok(tt)
+            } else if !types_compatible(&tt, &et) {
+                Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
                     format!(
@@ -528,9 +592,8 @@ where
                     ),
                     Span::zero(),
                     "Ensure both 'if' and 'else' branches return the exact same type",
-                ));
-            }
-            if tt == Type::U8 && et == Type::I64 {
+                ))
+            } else if tt == Type::U8 && et == Type::I64 {
                 Ok(Type::I64)
             } else {
                 Ok(tt)
@@ -1093,6 +1156,157 @@ where
             }
             Ok(Type::I64)
         }
+        Expr::OptionSome { value, inner_ty } => {
+            let opt_ty = Type::Option(Box::new(inner_ty.clone()));
+            validate_tagged_type(&opt_ty, fn_name)?;
+            let vt = check_expr(value, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if vt != *inner_ty && !(vt == Type::U8 && *inner_ty == Type::I64) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Some(...) payload type mismatch in '{fn_name}': expected '{inner_ty}', found '{vt}'"),
+                    Span::zero(),
+                    "Ensure the value passed to Some(...) matches Option<T>",
+                ));
+            }
+            Ok(opt_ty)
+        }
+        Expr::OptionNone { inner_ty } => {
+            let opt_ty = Type::Option(Box::new(inner_ty.clone()));
+            validate_tagged_type(&opt_ty, fn_name)?;
+            Ok(opt_ty)
+        }
+        Expr::ResultOk { value, ok_ty } => {
+            let res_ty = Type::Result(Box::new(ok_ty.clone()));
+            validate_tagged_type(&res_ty, fn_name)?;
+            let vt = check_expr(value, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if vt != *ok_ty && !(vt == Type::U8 && *ok_ty == Type::I64) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Ok(...) payload type mismatch in '{fn_name}': expected '{ok_ty}', found '{vt}'"),
+                    Span::zero(),
+                    "Ensure the value passed to Ok(...) matches Result<T, i64>",
+                ));
+            }
+            Ok(res_ty)
+        }
+        Expr::ResultErr { code, ok_ty } => {
+            let res_ty = Type::Result(Box::new(ok_ty.clone()));
+            validate_tagged_type(&res_ty, fn_name)?;
+            let ct = check_expr(code, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if ct != Type::I64 && ct != Type::U8 {
+                return Err(InfimumDiagnostic::new(
+                    "E077_RESULT_ERR_MUST_BE_I64",
+                    "typecheck",
+                    format!("Err(...) error code must be 'i64', found '{ct}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Pass an i64 integer or enum code to Err(code)",
+                ));
+            }
+            Ok(res_ty)
+        }
+        Expr::MatchTagged {
+            scrutinee,
+            ok_binding,
+            ok_body,
+            err_binding,
+            err_body,
+        } => {
+            let st = check_expr(
+                scrutinee,
+                fn_name,
+                self_node,
+                env,
+                load_callee,
+                sinks,
+                in_contract,
+            )?;
+            let (ok_ty, err_ty) = match st {
+                Type::Option(inner) => (*inner, None),
+                Type::Result(inner) => (*inner, Some(Type::I64)),
+                other => {
+                    return Err(InfimumDiagnostic::new(
+                        "E060_TYPE_MISMATCH",
+                        "typecheck",
+                        format!("Tagged match requires Option<T> or Result<T, i64>, found '{other}' in '{fn_name}'"),
+                        Span::zero(),
+                        "Match Some/None on Option<T> or Ok/Err on Result<T, i64>",
+                    ));
+                }
+            };
+            env.push();
+            if let Some(b) = ok_binding {
+                env.bind(b.clone(), ok_ty);
+            }
+            let t_ok = check_expr(
+                ok_body,
+                fn_name,
+                self_node,
+                env,
+                load_callee,
+                sinks,
+                in_contract,
+            )?;
+            env.pop();
+
+            env.push();
+            if let Some(b) = err_binding {
+                if let Some(et) = err_ty {
+                    env.bind(b.clone(), et);
+                } else {
+                    return Err(InfimumDiagnostic::new(
+                        "E060_TYPE_MISMATCH",
+                        "typecheck",
+                        format!("Option None arm cannot bind a value '{b}' in '{fn_name}'"),
+                        Span::zero(),
+                        "Use 'None => ...' without a binding",
+                    ));
+                }
+            }
+            let t_err = check_expr(
+                err_body,
+                fn_name,
+                self_node,
+                env,
+                load_callee,
+                sinks,
+                in_contract,
+            )?;
+            env.pop();
+
+            if expr_diverges(err_body) {
+                Ok(t_ok)
+            } else if expr_diverges(ok_body) {
+                Ok(t_err)
+            } else if t_ok == t_err {
+                Ok(t_ok)
+            } else if matches!((&t_ok, &t_err), (Type::U8, Type::I64) | (Type::I64, Type::U8)) {
+                Ok(Type::I64)
+            } else {
+                Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Match arms have incompatible types '{t_ok}' and '{t_err}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Ensure both match arms return the same type",
+                ))
+            }
+        }
+        Expr::Return(inner) => {
+            let rt = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            let expected = &self_node.ast.ret_type;
+            if rt != *expected && !(rt == Type::U8 && *expected == Type::I64) {
+                return Err(InfimumDiagnostic::new(
+                    "E080_TRY_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Early return / '?' produces '{rt}', but function '{fn_name}' returns '{expected}'"),
+                    Span::zero(),
+                    "Use '?' on Option<T> only inside functions returning Option<_>, and on Result<T, i64> only inside functions returning Result<_, i64>",
+                ));
+            }
+            Ok(expected.clone())
+        }
     }
 }
 
@@ -1330,7 +1544,9 @@ pub fn type_contains_secret(ty: &Type) -> bool {
     match ty {
         Type::Secret(_) => true,
         Type::Tuple(ts) => ts.iter().any(type_contains_secret),
-        Type::Slice(inner) => type_contains_secret(inner),
+        Type::Slice(inner) | Type::Option(inner) | Type::Result(inner) => {
+            type_contains_secret(inner)
+        }
         Type::I64 | Type::U8 | Type::Fixed | Type::Dec64 | Type::Bool | Type::Str | Type::Unit => {
             false
         }

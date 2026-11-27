@@ -82,7 +82,7 @@ impl FormaSmtBuilder {
                     Type::Str => "String",
                     _ => "Int",
                 },
-                Type::Tuple(_) | Type::Slice(_) => "Int",
+                Type::Tuple(_) | Type::Slice(_) | Type::Option(_) | Type::Result(_) => "Int",
             };
             decls.push(format!("(declare-const {smt_name} {sort})"));
             param_env.insert(p.name.clone(), smt_name.clone());
@@ -391,7 +391,13 @@ impl FormaSmtBuilder {
             | Expr::SlicePtr(_)
             | Expr::StrToBytes(_)
             | Expr::StrFromBytes(_)
-            | Expr::SliceLen(_) => self.fresh_int("blk"),
+            | Expr::SliceLen(_)
+            | Expr::OptionSome { .. }
+            | Expr::OptionNone { .. }
+            | Expr::ResultOk { .. }
+            | Expr::ResultErr { .. }
+            | Expr::MatchTagged { .. }
+            | Expr::Return(_) => self.fresh_int("blk"),
             Expr::BoundsCheck { index, .. } => self.encode_expr(index),
             Expr::RangeCheck { lo, .. } => self.encode_expr(lo),
         }

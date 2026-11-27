@@ -862,6 +862,30 @@ impl Parser {
                 self.expect(&TokenKind::Gt, "Expected '>' to close Secret<T>")?;
                 Ok(RawType::Secret(Box::new(inner)))
             }
+            "Option" => {
+                self.expect(&TokenKind::Lt, "Expected '<' after Option")?;
+                let inner = self.parse_raw_type()?;
+                self.expect(&TokenKind::Gt, "Expected '>' to close Option<T>")?;
+                Ok(RawType::Option(Box::new(inner)))
+            }
+            "Result" => {
+                self.expect(&TokenKind::Lt, "Expected '<' after Result")?;
+                let ok_ty = self.parse_raw_type()?;
+                self.expect(&TokenKind::Comma, "Expected ',' in Result<T, i64>")?;
+                let err_span = self.peek().span;
+                let err_ty = self.parse_raw_type()?;
+                if !matches!(err_ty, RawType::Builtin(Type::I64)) {
+                    return Err(InfimumDiagnostic::new(
+                        "E077_RESULT_ERR_MUST_BE_I64",
+                        "parse",
+                        "Result error type must be 'i64' (e.g. Result<T, i64>)",
+                        err_span,
+                        "Use 'Result<T, i64>' with an integer or enum error code",
+                    ));
+                }
+                self.expect(&TokenKind::Gt, "Expected '>' to close Result<T, i64>")?;
+                Ok(RawType::Result(Box::new(ok_ty)))
+            }
             _ => {
                 if matches!(self.peek().kind, TokenKind::ColonColon) {
                     self.advance();
@@ -1225,6 +1249,8 @@ impl Parser {
                             span: tok.span,
                         })
                     }
+                } else if name == "None" {
+                    Ok(RawExpr::OptionNone(tok.span))
                 } else {
                     Ok(RawExpr::Var(name))
                 }
@@ -1673,6 +1699,24 @@ impl Parser {
                 if name == "_" {
                     return Ok(RawMatchPattern::Wildcard(tok.span));
                 }
+                if name == "None" && !matches!(self.peek().kind, TokenKind::ColonColon) {
+                    return Ok(RawMatchPattern::None(tok.span));
+                }
+                if matches!(name.as_str(), "Some" | "Ok" | "Err")
+                    && matches!(self.peek().kind, TokenKind::LParen)
+                {
+                    self.advance(); // '('
+                    let (bname, _) = self.expect_ident(&format!(
+                        "Expected binding identifier or '_' inside '{name}(...)' pattern"
+                    ))?;
+                    self.expect(&TokenKind::RParen, &format!("Expected ')' to close '{name}(...)' pattern"))?;
+                    let binding = if bname == "_" { None } else { Some(bname) };
+                    return Ok(match name.as_str() {
+                        "Some" => RawMatchPattern::Some(binding, tok.span),
+                        "Ok" => RawMatchPattern::Ok(binding, tok.span),
+                        _ => RawMatchPattern::Err(binding, tok.span),
+                    });
+                }
                 if matches!(self.peek().kind, TokenKind::ColonColon) {
                     let mut segs = vec![name];
                     while matches!(self.peek().kind, TokenKind::ColonColon) {
@@ -1987,6 +2031,33 @@ impl Parser {
                         };
                         return self.parse_postfix_chain(base, tok.span);
                     }
+                    if matches!(
+                        field.as_str(),
+                        "is_some" | "is_none" | "is_ok" | "is_err" | "unwrap_or"
+                    ) && matches!(self.peek().kind, TokenKind::LParen)
+                    {
+                        let mut args = self.parse_arg_list()?;
+                        let expected_arity = if field == "unwrap_or" { 1 } else { 0 };
+                        if args.len() != expected_arity {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "parse",
+                                format!(
+                                    "Method '.{field}(...)' expects {expected_arity} argument(s), got {}",
+                                    args.len()
+                                ),
+                                tok.span,
+                                "Use '.is_some()' / '.is_none()' / '.is_ok()' / '.is_err()' with 0 args, or '.unwrap_or(default)' with 1 arg",
+                            ));
+                        }
+                        let base = RawExpr::TaggedMethod {
+                            base: Box::new(RawExpr::Var(name)),
+                            method: field,
+                            arg: args.pop().map(Box::new),
+                            span: tok.span,
+                        };
+                        return self.parse_postfix_chain(base, tok.span);
+                    }
                     let base = RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
                         module: None,
                         layout: name,
@@ -1996,10 +2067,33 @@ impl Parser {
                         span: tok.span,
                     }));
                     self.parse_postfix_chain(base, tok.span)
-                } else if matches!(self.peek().kind, TokenKind::LBracket) {
-                    self.parse_postfix_chain(RawExpr::Var(name), tok.span)
+                } else if matches!(self.peek().kind, TokenKind::LBracket | TokenKind::Question) {
+                    let base = if name == "None" {
+                        RawExpr::OptionNone(tok.span)
+                    } else {
+                        RawExpr::Var(name)
+                    };
+                    self.parse_postfix_chain(base, tok.span)
                 } else if matches!(self.peek().kind, TokenKind::LParen) {
-                    let args = self.parse_arg_list()?;
+                    let mut args = self.parse_arg_list()?;
+                    if matches!(name.as_str(), "Some" | "Ok" | "Err") {
+                        if args.len() != 1 {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "parse",
+                                format!("'{name}(...)' expects exactly 1 argument, got {}", args.len()),
+                                tok.span,
+                                format!("Pass a single value to '{name}(value)'"),
+                            ));
+                        }
+                        let inner = Box::new(args.remove(0));
+                        let expr = match name.as_str() {
+                            "Some" => RawExpr::OptionSome(inner),
+                            "Ok" => RawExpr::ResultOk(inner),
+                            _ => RawExpr::ResultErr(inner, tok.span),
+                        };
+                        return self.parse_postfix_chain(expr, tok.span);
+                    }
                     let target = if name == "$self" {
                         TargetRef::SelfRec
                     } else {
@@ -2057,6 +2151,8 @@ impl Parser {
                         }
                     }
                     Ok(expr)
+                } else if name == "None" {
+                    Ok(RawExpr::OptionNone(tok.span))
                 } else {
                     Ok(RawExpr::Var(name))
                 }
@@ -2176,6 +2272,33 @@ impl Parser {
                             };
                             continue;
                         }
+                        if matches!(
+                            field.as_str(),
+                            "is_some" | "is_none" | "is_ok" | "is_err" | "unwrap_or"
+                        ) && matches!(self.peek().kind, TokenKind::LParen)
+                        {
+                            let mut args = self.parse_arg_list()?;
+                            let expected_arity = if field == "unwrap_or" { 1 } else { 0 };
+                            if args.len() != expected_arity {
+                                return Err(InfimumDiagnostic::new(
+                                    "E060_TYPE_MISMATCH",
+                                    "parse",
+                                    format!(
+                                        "Method '.{field}(...)' expects {expected_arity} argument(s), got {}",
+                                        args.len()
+                                    ),
+                                    if dot_span.line > 0 { dot_span } else { origin_span },
+                                    "Use '.is_some()' / '.is_none()' / '.is_ok()' / '.is_err()' with 0 args, or '.unwrap_or(default)' with 1 arg",
+                                ));
+                            }
+                            expr = RawExpr::TaggedMethod {
+                                base: Box::new(expr),
+                                method: field,
+                                arg: args.pop().map(Box::new),
+                                span: if dot_span.line > 0 { dot_span } else { origin_span },
+                            };
+                            continue;
+                        }
                         if let RawExpr::LayoutLoad(ref mut ll) = expr {
                             if ll.subfield.is_none() {
                                 ll.subfield = Some(field);
@@ -2196,6 +2319,9 @@ impl Parser {
                     }
                     _ => {}
                 }
+            } else if matches!(self.peek().kind, TokenKind::Question) {
+                let qspan = self.advance().span;
+                expr = RawExpr::Try(Box::new(expr), qspan);
             } else {
                 break;
             }

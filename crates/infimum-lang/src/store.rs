@@ -975,7 +975,7 @@ fn type_has_secret(ty: &Type) -> bool {
     match ty {
         Type::Secret(_) => true,
         Type::Tuple(ts) => ts.iter().any(type_has_secret),
-        Type::Slice(inner) => type_has_secret(inner),
+        Type::Slice(inner) | Type::Option(inner) | Type::Result(inner) => type_has_secret(inner),
         Type::I64 | Type::U8 | Type::Fixed | Type::Dec64 | Type::Bool | Type::Str | Type::Unit => {
             false
         }
@@ -1034,6 +1034,17 @@ fn expr_uses_secret(e: &Expr) -> bool {
         Expr::RangeCheck { lo, hi, len } => {
             expr_uses_secret(lo) || expr_uses_secret(hi) || expr_uses_secret(len)
         }
+        Expr::OptionSome { value, inner_ty } => type_has_secret(inner_ty) || expr_uses_secret(value),
+        Expr::OptionNone { inner_ty } => type_has_secret(inner_ty),
+        Expr::ResultOk { value, ok_ty } => type_has_secret(ok_ty) || expr_uses_secret(value),
+        Expr::ResultErr { code, ok_ty } => type_has_secret(ok_ty) || expr_uses_secret(code),
+        Expr::MatchTagged {
+            scrutinee,
+            ok_body,
+            err_body,
+            ..
+        } => expr_uses_secret(scrutinee) || expr_uses_secret(ok_body) || expr_uses_secret(err_body),
+        Expr::Return(inner) => expr_uses_secret(inner),
         Expr::IntLit(_)
         | Expr::FixedLit(_)
         | Expr::DecLit(_)
@@ -1101,6 +1112,21 @@ fn collect_named_calls(expr: &Expr, self_name: &str, out: &mut BTreeSet<String>)
             collect_named_calls(lo, self_name, out);
             collect_named_calls(hi, self_name, out);
             collect_named_calls(len, self_name, out);
+        }
+        Expr::OptionSome { value, .. }
+        | Expr::ResultOk { value, .. }
+        | Expr::ResultErr { code: value, .. }
+        | Expr::Return(value) => collect_named_calls(value, self_name, out),
+        Expr::OptionNone { .. } => {}
+        Expr::MatchTagged {
+            scrutinee,
+            ok_body,
+            err_body,
+            ..
+        } => {
+            collect_named_calls(scrutinee, self_name, out);
+            collect_named_calls(ok_body, self_name, out);
+            collect_named_calls(err_body, self_name, out);
         }
         Expr::TupleLit(elems) => {
             for e in elems {

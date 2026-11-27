@@ -16,6 +16,19 @@ enum Val {
     Bool(bool),
     Unit,
     Tuple(Vec<Val>),
+    Option(Option<Box<Val>>),
+    Result(Result<Box<Val>, i64>),
+}
+
+enum EvalErr {
+    Return(Val),
+    Error(String),
+}
+
+impl From<String> for EvalErr {
+    fn from(s: String) -> Self {
+        EvalErr::Error(s)
+    }
 }
 
 impl Val {
@@ -182,7 +195,10 @@ impl<'a> Evaluator<'a> {
         for (p, v) in f.params.iter().zip(args) {
             scopes[0].insert(p.name.clone(), v);
         }
-        self.eval_expr(&f.body, &mut scopes, name)
+        match self.eval_expr(&f.body, &mut scopes, name) {
+            Ok(v) | Err(EvalErr::Return(v)) => Ok(v),
+            Err(EvalErr::Error(e)) => Err(e),
+        }
     }
 
     fn lookup(scopes: &[BTreeMap<String, Val>], name: &str) -> Result<Val, String> {
@@ -209,7 +225,7 @@ impl<'a> Evaluator<'a> {
         stmt: &Stmt,
         scopes: &mut Vec<BTreeMap<String, Val>>,
         cur_fn: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), EvalErr> {
         self.tick()?;
         match stmt {
             Stmt::Let { name, value, .. } => {
@@ -222,14 +238,15 @@ impl<'a> Evaluator<'a> {
             Stmt::LetTuple { names, value } => {
                 let v = self.eval_expr(value, scopes, cur_fn)?;
                 let Val::Tuple(elems) = v else {
-                    return Err(format!("Expected tuple value in let destructuring, got {v:?}"));
+                    return Err(format!("Expected tuple value in let destructuring, got {v:?}").into());
                 };
                 if elems.len() != names.len() {
                     return Err(format!(
                         "Tuple arity mismatch: expected {}, got {}",
                         names.len(),
                         elems.len()
-                    ));
+                    )
+                    .into());
                 }
                 if let Some(top) = scopes.last_mut() {
                     for ((n, _), ev) in names.iter().zip(elems) {
@@ -240,7 +257,7 @@ impl<'a> Evaluator<'a> {
             }
             Stmt::Assign { name, value } => {
                 let v = self.eval_expr(value, scopes, cur_fn)?;
-                Self::assign(scopes, name, v)
+                Self::assign(scopes, name, v).map_err(EvalErr::from)
             }
             Stmt::While {
                 cond,
@@ -276,7 +293,7 @@ impl<'a> Evaluator<'a> {
         expr: &Expr,
         scopes: &mut Vec<BTreeMap<String, Val>>,
         cur_fn: &str,
-    ) -> Result<Val, String> {
+    ) -> Result<Val, EvalErr> {
         self.tick()?;
         match expr {
             Expr::IntLit(v) | Expr::FixedLit(v) | Expr::DecLit(v) => Ok(Val::Int(*v)),
@@ -286,7 +303,7 @@ impl<'a> Evaluator<'a> {
                 Ok(Val::Tuple(vec![Val::Int(ptr), Val::Int(len)]))
             }
             Expr::UnitLit => Ok(Val::Unit),
-            Expr::Var(name) => Self::lookup(scopes, name),
+            Expr::Var(name) => Ok(Self::lookup(scopes, name)?),
             Expr::Unary { op, expr: inner } => {
                 let v = self.eval_expr(inner, scopes, cur_fn)?;
                 match op {
@@ -330,7 +347,7 @@ impl<'a> Evaluator<'a> {
                     BinOp::Div => {
                         let d = rv.as_int()?;
                         if d == 0 {
-                            return Err("Division by zero during test".to_string());
+                            return Err("Division by zero during test".to_string().into());
                         }
                         Ok(Val::Int(lv.as_int()?.wrapping_div(d)))
                     }
@@ -341,7 +358,7 @@ impl<'a> Evaluator<'a> {
                     BinOp::FixedDiv => {
                         let d = rv.as_int()?;
                         if d == 0 {
-                            return Err("Fixed-point division by zero during test".to_string());
+                            return Err("Fixed-point division by zero during test".to_string().into());
                         }
                         let q = ((lv.as_int()? as i128) * 65536) / (d as i128);
                         Ok(Val::Int(q as i64))
@@ -353,7 +370,7 @@ impl<'a> Evaluator<'a> {
                     BinOp::DecDiv => {
                         let d = rv.as_int()?;
                         if d == 0 {
-                            return Err("dec64 division by zero during test".to_string());
+                            return Err("dec64 division by zero during test".to_string().into());
                         }
                         let q = ((lv.as_int()? as i128) * 10_000) / (d as i128);
                         Ok(Val::Int(q as i64))
@@ -361,7 +378,7 @@ impl<'a> Evaluator<'a> {
                     BinOp::Mod => {
                         let d = rv.as_int()?;
                         if d == 0 {
-                            return Err("Modulo by zero during test".to_string());
+                            return Err("Modulo by zero during test".to_string().into());
                         }
                         Ok(Val::Int(lv.as_int()?.wrapping_rem(d)))
                     }
@@ -405,10 +422,10 @@ impl<'a> Evaluator<'a> {
                     TargetRef::Named(n) => n.as_str(),
                     TargetRef::SelfRec => cur_fn,
                     TargetRef::Hash(h) => {
-                        return Err(format!("Hash call #{h} is not supported in test evaluator"))
+                        return Err(format!("Hash call #{h} is not supported in test evaluator").into())
                     }
                 };
-                self.call_fn(callee, vals)
+                Ok(self.call_fn(callee, vals)?)
             }
             Expr::Perform { args, .. } => {
                 for a in args {
@@ -472,26 +489,31 @@ impl<'a> Evaluator<'a> {
                 let v = self.eval_expr(expr, scopes, cur_fn)?;
                 match v {
                     Val::Tuple(elems) => elems.get(*index).cloned().ok_or_else(|| {
-                        format!("Tuple index .{index} out of range (len {})", elems.len())
+                        EvalErr::Error(format!(
+                            "Tuple index .{index} out of range (len {})",
+                            elems.len()
+                        ))
                     }),
-                    other => Err(format!("Expected tuple for .{index}, got {other:?}")),
+                    other => Err(format!("Expected tuple for .{index}, got {other:?}").into()),
                 }
             }
             Expr::SliceLit { ptr, len, .. } => {
                 let p = self.eval_expr(ptr, scopes, cur_fn)?.as_int()?;
                 let l = self.eval_expr(len, scopes, cur_fn)?.as_int()?;
                 if p < 0 || l < 0 {
-                    return Err(format!("Invalid slice (ptr={p}, len={l}): negative ptr or len"));
+                    return Err(
+                        format!("Invalid slice (ptr={p}, len={l}): negative ptr or len").into(),
+                    );
                 }
                 Ok(Val::Tuple(vec![Val::Int(p), Val::Int(l)]))
             }
             Expr::SlicePtr(inner) => match self.eval_expr(inner, scopes, cur_fn)? {
                 Val::Tuple(elems) if elems.len() == 2 => Ok(elems[0].clone()),
-                other => Err(format!("Expected slice for .ptr, got {other:?}")),
+                other => Err(format!("Expected slice for .ptr, got {other:?}").into()),
             },
             Expr::SliceLen(inner) => match self.eval_expr(inner, scopes, cur_fn)? {
                 Val::Tuple(elems) if elems.len() == 2 => Ok(elems[1].clone()),
-                other => Err(format!("Expected slice for .len, got {other:?}")),
+                other => Err(format!("Expected slice for .len, got {other:?}").into()),
             },
             Expr::StrToBytes(inner) | Expr::StrFromBytes(inner) => {
                 self.eval_expr(inner, scopes, cur_fn)
@@ -511,7 +533,8 @@ impl<'a> Evaluator<'a> {
                 if !ok {
                     return Err(format!(
                         "Slice index {idx} out of bounds for length {l} (inclusive_hi={inclusive_hi})"
-                    ));
+                    )
+                    .into());
                 }
                 Ok(Val::Int(idx))
             }
@@ -522,9 +545,63 @@ impl<'a> Evaluator<'a> {
                 if lo_v < 0 || lo_v > hi_v || hi_v > l {
                     return Err(format!(
                         "Slice range [{lo_v}..{hi_v}] out of bounds for length {l}"
-                    ));
+                    )
+                    .into());
                 }
                 Ok(Val::Int(lo_v))
+            }
+            Expr::OptionSome { value, .. } => {
+                let v = self.eval_expr(value, scopes, cur_fn)?;
+                Ok(Val::Option(Some(Box::new(v))))
+            }
+            Expr::OptionNone { .. } => Ok(Val::Option(None)),
+            Expr::ResultOk { value, .. } => {
+                let v = self.eval_expr(value, scopes, cur_fn)?;
+                Ok(Val::Result(Ok(Box::new(v))))
+            }
+            Expr::ResultErr { code, .. } => {
+                let c = self.eval_expr(code, scopes, cur_fn)?.as_int()?;
+                Ok(Val::Result(Err(c)))
+            }
+            Expr::MatchTagged {
+                scrutinee,
+                ok_binding,
+                ok_body,
+                err_binding,
+                err_body,
+            } => {
+                let sv = self.eval_expr(scrutinee, scopes, cur_fn)?;
+                match sv {
+                    Val::Option(Some(inner)) | Val::Result(Ok(inner)) => {
+                        scopes.push(BTreeMap::new());
+                        if let Some(b) = ok_binding {
+                            scopes.last_mut().unwrap().insert(b.clone(), *inner);
+                        }
+                        let r = self.eval_expr(ok_body, scopes, cur_fn);
+                        scopes.pop();
+                        r
+                    }
+                    Val::Option(None) => {
+                        scopes.push(BTreeMap::new());
+                        let r = self.eval_expr(err_body, scopes, cur_fn);
+                        scopes.pop();
+                        r
+                    }
+                    Val::Result(Err(code)) => {
+                        scopes.push(BTreeMap::new());
+                        if let Some(b) = err_binding {
+                            scopes.last_mut().unwrap().insert(b.clone(), Val::Int(code));
+                        }
+                        let r = self.eval_expr(err_body, scopes, cur_fn);
+                        scopes.pop();
+                        r
+                    }
+                    other => Err(format!("Expected Option or Result in match, got {other:?}").into()),
+                }
+            }
+            Expr::Return(inner) => {
+                let v = self.eval_expr(inner, scopes, cur_fn)?;
+                Err(EvalErr::Return(v))
             }
         }
     }

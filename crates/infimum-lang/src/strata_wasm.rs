@@ -186,46 +186,8 @@ pub fn collect_multi_root_subgraph(
     Ok(visited.into_values().collect())
 }
 
-pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagnostic> {
-    let f = &node.ast;
-    for p in &f.params {
-        let param_ok = match &p.ty {
-            Type::I64
-            | Type::U8
-            | Type::Fixed
-            | Type::Dec64
-            | Type::Bool
-            | Type::Unit
-            | Type::Str
-            | Type::Slice(_) => true,
-            Type::Tuple(ts) => ts.iter().all(|t| {
-                matches!(
-                    t,
-                    Type::I64
-                    | Type::U8
-                    | Type::Fixed
-                    | Type::Dec64
-                    | Type::Bool
-                    | Type::Unit
-                    | Type::Str
-                )
-            }),
-            _ => false,
-        };
-        if !param_ok {
-            return Err(InfimumDiagnostic::new(
-                "E085_STRATA_UNSUPPORTED_TYPE",
-                "strata",
-                format!(
-                    "Node #{} uses high-level type '{}' not allowed in direct Strata silicon/Wasm mode",
-                    node.short_hash, p.ty
-                ),
-                Span::zero(),
-                "Strata direct machine/Wasm emitter operates on unboxed i64, fixed, bool, str, unit, structs/tuples, and linear memory (Mem)",
-            ));
-        }
-    }
-    let ret_ok = match &f.ret_type {
+fn strata_type_ok(ty: &Type) -> bool {
+    match ty {
         Type::I64
         | Type::U8
         | Type::Fixed
@@ -234,21 +196,39 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
         | Type::Unit
         | Type::Str
         | Type::Slice(_) => true,
-        Type::Tuple(ts) => ts.iter().all(|t| {
-            matches!(
-                t,
-                Type::I64
-                | Type::U8
-                | Type::Fixed
-                | Type::Dec64
-                | Type::Bool
-                | Type::Unit
-                | Type::Str
-            )
-        }),
-        _ => false,
-    };
-    if !ret_ok {
+        Type::Option(inner) | Type::Result(inner) => strata_type_ok(inner),
+        Type::Tuple(ts) => ts.iter().all(strata_type_ok),
+        Type::Secret(_) => false,
+    }
+}
+
+fn type_slot_count(ty: &Type) -> usize {
+    match ty {
+        Type::Tuple(ts) => ts.iter().map(type_slot_count).sum::<usize>().max(1),
+        Type::Slice(_) | Type::Str => 2,
+        Type::Option(inner) => 1 + type_slot_count(inner),
+        Type::Result(inner) => 2 + type_slot_count(inner),
+        _ => 1,
+    }
+}
+
+pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagnostic> {
+    let f = &node.ast;
+    for p in &f.params {
+        if !strata_type_ok(&p.ty) {
+            return Err(InfimumDiagnostic::new(
+                "E085_STRATA_UNSUPPORTED_TYPE",
+                "strata",
+                format!(
+                    "Node #{} uses high-level type '{}' not allowed in direct Strata silicon/Wasm mode",
+                    node.short_hash, p.ty
+                ),
+                Span::zero(),
+                "Strata direct machine/Wasm emitter operates on unboxed i64, u8, fixed, dec64, bool, str, unit, structs/tuples, slices, Option, Result, and linear memory (Mem)",
+            ));
+        }
+    }
+    if !strata_type_ok(&f.ret_type) {
         return Err(InfimumDiagnostic::new(
             "E085_STRATA_UNSUPPORTED_TYPE",
             "strata",
@@ -351,6 +331,20 @@ fn collect_str_lits_expr<'a>(expr: &'a Expr, out: &mut BTreeSet<&'a str>) {
             collect_str_lits_expr(lo, out);
             collect_str_lits_expr(hi, out);
             collect_str_lits_expr(len, out);
+        }
+        Expr::OptionSome { value, .. }
+        | Expr::ResultOk { value, .. }
+        | Expr::ResultErr { code: value, .. }
+        | Expr::Return(value) => collect_str_lits_expr(value, out),
+        Expr::MatchTagged {
+            scrutinee,
+            ok_body,
+            err_body,
+            ..
+        } => {
+            collect_str_lits_expr(scrutinee, out);
+            collect_str_lits_expr(ok_body, out);
+            collect_str_lits_expr(err_body, out);
         }
         _ => {}
     }
@@ -537,32 +531,26 @@ pub fn emit_strata_wasm_bytes_v2(
         None
     };
 
-    // 1. Internal functions (uniform i64 -> i64 or multi-value i64^N for tuples)
+    // 1. Internal functions (uniform i64 -> i64 or multi-value i64^N for tuples/slices/Option/Result)
     let mut hash_to_ret_arity: BTreeMap<String, usize> = BTreeMap::new();
+    let mut hash_to_ret_type: BTreeMap<String, Type> = BTreeMap::new();
     let mut multi_val_arities: BTreeSet<usize> = BTreeSet::new();
     for node in nodes {
         let mut arity = 0usize;
         for p in &node.ast.params {
-            let pa = match &p.ty {
-                Type::Tuple(ts) => ts.len().max(1),
-                Type::Slice(_) | Type::Str => 2,
-                _ => 1,
-            };
+            let pa = type_slot_count(&p.ty);
             if pa > 1 {
                 multi_val_arities.insert(pa);
             }
             arity += pa;
         }
-        let ret_arity = match &node.ast.ret_type {
-            Type::Tuple(ts) => ts.len(),
-            Type::Slice(_) | Type::Str => 2,
-            _ => 1,
-        };
+        let ret_arity = type_slot_count(&node.ast.ret_type);
         if ret_arity > 1 {
             multi_val_arities.insert(ret_arity);
         }
         collect_expr_tuple_arities(&node.ast.body, &mut multi_val_arities);
         hash_to_ret_arity.insert(node.hash.clone(), ret_arity);
+        hash_to_ret_type.insert(node.hash.clone(), node.ast.ret_type.clone());
         let mut sig = Vec::with_capacity(4 + arity + ret_arity);
         sig.push(0x60); // func
         push_u32_leb(&mut sig, arity as u32);
@@ -601,13 +589,16 @@ pub fn emit_strata_wasm_bytes_v2(
             )
         })?;
         let target_node = &nodes[(target_idx - import_offset) as usize];
-        let has_non_scalar_param = target_node
-            .ast
-            .params
-            .iter()
-            .any(|p| matches!(&p.ty, Type::Tuple(_) | Type::Slice(_) | Type::Str));
-        let has_non_scalar_ret =
-            matches!(&target_node.ast.ret_type, Type::Tuple(_) | Type::Slice(_) | Type::Str);
+        let has_non_scalar_param = target_node.ast.params.iter().any(|p| {
+            matches!(
+                &p.ty,
+                Type::Tuple(_) | Type::Slice(_) | Type::Str | Type::Option(_) | Type::Result(_)
+            )
+        });
+        let has_non_scalar_ret = matches!(
+            &target_node.ast.ret_type,
+            Type::Tuple(_) | Type::Slice(_) | Type::Str | Type::Option(_) | Type::Result(_)
+        );
         if has_non_scalar_param || has_non_scalar_ret {
             return Err(InfimumDiagnostic::new(
                 "E082_NON_SCALAR_EXPORT",
@@ -710,6 +701,7 @@ pub fn emit_strata_wasm_bytes_v2(
             import_offset + self_idx as u32,
             &hash_to_func_idx,
             &hash_to_ret_arity,
+            &hash_to_ret_type,
             &multi_val_block_types,
             &mut str_pool,
             mem_word_mask,
@@ -804,13 +796,16 @@ pub fn emit_strata_wasm_bytes_v2(
 struct FnCodegenCtx<'a> {
     self_idx: u32,
     self_ret_arity: usize,
+    self_ret_type: Type,
     hash_to_func_idx: &'a BTreeMap<String, u32>,
     hash_to_ret_arity: &'a BTreeMap<String, usize>,
+    hash_to_ret_type: &'a BTreeMap<String, Type>,
     multi_val_block_types: &'a BTreeMap<usize, u32>,
     str_pool: &'a mut StrataStrPool,
     mem_word_mask: i32,
     local_map: BTreeMap<String, u32>,
     tuple_locals: BTreeMap<String, Vec<u32>>,
+    var_types: BTreeMap<String, Type>,
     next_local_idx: u32,
     extra_i64_locals: u32,
 }
@@ -831,12 +826,11 @@ fn collect_stmt_tuple_arities(stmts: &[Stmt], out: &mut BTreeSet<usize>) {
     for s in stmts {
         match s {
             Stmt::Let { ty, value, .. } => {
-                if let Some(Type::Tuple(ts)) = ty {
-                    if ts.len() > 1 {
-                        out.insert(ts.len());
+                if let Some(t) = ty {
+                    let ar = type_slot_count(t);
+                    if ar > 1 {
+                        out.insert(ar);
                     }
-                } else if matches!(ty, Some(Type::Slice(_) | Type::Str)) {
-                    out.insert(2);
                 }
                 collect_expr_tuple_arities(value, out);
             }
@@ -899,6 +893,32 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
             collect_expr_tuple_arities(hi, out);
             collect_expr_tuple_arities(len, out);
         }
+        Expr::OptionSome { value, inner_ty } => {
+            out.insert(1 + type_slot_count(inner_ty));
+            collect_expr_tuple_arities(value, out);
+        }
+        Expr::OptionNone { inner_ty } => {
+            out.insert(1 + type_slot_count(inner_ty));
+        }
+        Expr::ResultOk { value, ok_ty } => {
+            out.insert(2 + type_slot_count(ok_ty));
+            collect_expr_tuple_arities(value, out);
+        }
+        Expr::ResultErr { code, ok_ty } => {
+            out.insert(2 + type_slot_count(ok_ty));
+            collect_expr_tuple_arities(code, out);
+        }
+        Expr::MatchTagged {
+            scrutinee,
+            ok_body,
+            err_body,
+            ..
+        } => {
+            collect_expr_tuple_arities(scrutinee, out);
+            collect_expr_tuple_arities(ok_body, out);
+            collect_expr_tuple_arities(err_body, out);
+        }
+        Expr::Return(inner) => collect_expr_tuple_arities(inner, out),
         Expr::MemStore { index, value, .. }
         | Expr::MemStore64 { index, value, .. }
         | Expr::ByteStore { index, value, .. } => {
@@ -922,72 +942,158 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
     }
 }
 
+fn is_diverging_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Return(_) => true,
+        Expr::Block { tail, .. } => is_diverging_expr(tail),
+        _ => false,
+    }
+}
+
+fn infer_codegen_expr_type(expr: &Expr, ctx: &FnCodegenCtx<'_>) -> Type {
+    match expr {
+        Expr::Var(n) => ctx.var_types.get(n).cloned().unwrap_or(Type::I64),
+        Expr::OptionSome { inner_ty, .. } | Expr::OptionNone { inner_ty } => {
+            Type::Option(Box::new(inner_ty.clone()))
+        }
+        Expr::ResultOk { ok_ty, .. } | Expr::ResultErr { ok_ty, .. } => {
+            Type::Result(Box::new(ok_ty.clone()))
+        }
+        Expr::SliceLit { elem_ty, .. } => Type::Slice(Box::new(elem_ty.clone())),
+        Expr::StrLit(_) | Expr::StrFromBytes(_) => Type::Str,
+        Expr::StrToBytes(_) => Type::Slice(Box::new(Type::U8)),
+        Expr::TupleLit(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|e| infer_codegen_expr_type(e, ctx))
+                .collect(),
+        ),
+        Expr::Block { tail, .. } => infer_codegen_expr_type(tail, ctx),
+        Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            if is_diverging_expr(then_branch) {
+                infer_codegen_expr_type(else_branch, ctx)
+            } else {
+                infer_codegen_expr_type(then_branch, ctx)
+            }
+        }
+        Expr::MatchTagged {
+            ok_body, err_body, ..
+        } => {
+            if is_diverging_expr(ok_body) {
+                infer_codegen_expr_type(err_body, ctx)
+            } else {
+                infer_codegen_expr_type(ok_body, ctx)
+            }
+        }
+        Expr::Call {
+            target: TargetRef::Hash(h),
+            ..
+        } => ctx.hash_to_ret_type.get(h).cloned().unwrap_or(Type::I64),
+        Expr::Call {
+            target: TargetRef::SelfRec,
+            ..
+        } => ctx.self_ret_type.clone(),
+        Expr::Return(_) => ctx.self_ret_type.clone(),
+        _ => Type::I64,
+    }
+}
+
 fn expr_result_arity(expr: &Expr, ctx: &FnCodegenCtx<'_>) -> usize {
     match expr {
-        Expr::TupleLit(elems) => elems.len().max(1),
+        Expr::TupleLit(elems) => elems
+            .iter()
+            .map(|e| expr_result_arity(e, ctx))
+            .sum::<usize>()
+            .max(1),
         Expr::SliceLit { .. }
         | Expr::StrLit(_)
         | Expr::StrToBytes(_)
         | Expr::StrFromBytes(_) => 2,
+        Expr::OptionSome { inner_ty, .. } | Expr::OptionNone { inner_ty } => {
+            1 + type_slot_count(inner_ty)
+        }
+        Expr::ResultOk { ok_ty, .. } | Expr::ResultErr { ok_ty, .. } => {
+            2 + type_slot_count(ok_ty)
+        }
         Expr::Var(name) => ctx.tuple_locals.get(name).map(|v| v.len()).unwrap_or(1),
         Expr::Block { tail, .. } => expr_result_arity(tail, ctx),
-        Expr::If { then_branch, .. } => expr_result_arity(then_branch, ctx),
+        Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            if is_diverging_expr(then_branch) {
+                expr_result_arity(else_branch, ctx)
+            } else {
+                expr_result_arity(then_branch, ctx)
+            }
+        }
+        Expr::MatchTagged {
+            ok_body, err_body, ..
+        } => {
+            if is_diverging_expr(ok_body) {
+                expr_result_arity(err_body, ctx)
+            } else {
+                expr_result_arity(ok_body, ctx)
+            }
+        }
         Expr::Call { target: TargetRef::Hash(h), .. } => *ctx.hash_to_ret_arity.get(h).unwrap_or(&1),
         Expr::Call { target: TargetRef::SelfRec, .. } => ctx.self_ret_arity,
+        Expr::Return(_) => ctx.self_ret_arity,
         _ => 1,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_node_body(
     node: &CanonicalNode,
     self_idx: u32,
     hash_to_func_idx: &BTreeMap<String, u32>,
     hash_to_ret_arity: &BTreeMap<String, usize>,
+    hash_to_ret_type: &BTreeMap<String, Type>,
     multi_val_block_types: &BTreeMap<usize, u32>,
     str_pool: &mut StrataStrPool,
     mem_word_mask: i32,
 ) -> Result<Vec<u8>, InfimumDiagnostic> {
     let f: &FnDef = &node.ast;
-    let self_ret_arity = match &f.ret_type {
-        Type::Tuple(ts) => ts.len(),
-        Type::Slice(_) | Type::Str => 2,
-        _ => 1,
-    };
+    let self_ret_arity = type_slot_count(&f.ret_type);
     let mut local_map = BTreeMap::new();
     let mut tuple_locals = BTreeMap::new();
+    let mut var_types = BTreeMap::new();
     let mut param_idx = 0u32;
     for p in &f.params {
-        match &p.ty {
-            Type::Tuple(ts) if ts.len() > 1 => {
-                let mut slots = Vec::with_capacity(ts.len());
-                for _ in 0..ts.len() {
-                    slots.push(param_idx);
-                    param_idx += 1;
-                }
-                tuple_locals.insert(p.name.clone(), slots);
-            }
-            Type::Slice(_) | Type::Str => {
-                let slots = vec![param_idx, param_idx + 1];
-                param_idx += 2;
-                tuple_locals.insert(p.name.clone(), slots);
-            }
-            _ => {
-                local_map.insert(p.name.clone(), param_idx);
+        var_types.insert(p.name.clone(), p.ty.clone());
+        let pa = type_slot_count(&p.ty);
+        if pa > 1 {
+            let mut slots = Vec::with_capacity(pa);
+            for _ in 0..pa {
+                slots.push(param_idx);
                 param_idx += 1;
             }
+            tuple_locals.insert(p.name.clone(), slots);
+        } else {
+            local_map.insert(p.name.clone(), param_idx);
+            param_idx += 1;
         }
     }
 
     let mut ctx = FnCodegenCtx {
         self_idx,
         self_ret_arity,
+        self_ret_type: f.ret_type.clone(),
         hash_to_func_idx,
         hash_to_ret_arity,
+        hash_to_ret_type,
         multi_val_block_types,
         str_pool,
         mem_word_mask,
         local_map,
         tuple_locals,
+        var_types,
         next_local_idx: param_idx,
         extra_i64_locals: 0,
     };
@@ -1016,10 +1122,13 @@ fn prealloc_stmt_locals(stmts: &[Stmt], ctx: &mut FnCodegenCtx<'_>) {
         match s {
             Stmt::Let { name, ty, value, .. } => {
                 prealloc_expr_locals(value, ctx);
+                let inferred = ty
+                    .clone()
+                    .unwrap_or_else(|| infer_codegen_expr_type(value, ctx));
+                ctx.var_types.insert(name.clone(), inferred.clone());
                 let arity = match ty {
-                    Some(Type::Tuple(ts)) => ts.len(),
-                    Some(Type::Slice(_) | Type::Str) => 2,
-                    _ => expr_result_arity(value, ctx),
+                    Some(t) => type_slot_count(t),
+                    None => expr_result_arity(value, ctx),
                 };
                 if arity > 1 {
                     if !ctx.tuple_locals.contains_key(name) {
@@ -1112,6 +1221,48 @@ fn prealloc_expr_locals(expr: &Expr, ctx: &mut FnCodegenCtx<'_>) {
             prealloc_expr_locals(lo, ctx);
             prealloc_expr_locals(hi, ctx);
             prealloc_expr_locals(len, ctx);
+        }
+        Expr::OptionSome { value, .. }
+        | Expr::ResultOk { value, .. }
+        | Expr::ResultErr { code: value, .. }
+        | Expr::Return(value) => prealloc_expr_locals(value, ctx),
+        Expr::OptionNone { .. } => {}
+        Expr::MatchTagged {
+            scrutinee,
+            ok_binding,
+            ok_body,
+            err_binding,
+            err_body,
+        } => {
+            prealloc_expr_locals(scrutinee, ctx);
+            let st = infer_codegen_expr_type(scrutinee, ctx);
+            let inner_ty = match st {
+                Type::Option(inner) | Type::Result(inner) => *inner,
+                _ => Type::I64,
+            };
+            if let Some(b) = ok_binding {
+                ctx.var_types.insert(b.clone(), inner_ty.clone());
+                let arity = type_slot_count(&inner_ty);
+                if arity > 1 {
+                    if !ctx.tuple_locals.contains_key(b) {
+                        let mut slots = Vec::with_capacity(arity);
+                        for _ in 0..arity {
+                            slots.push(ctx.alloc_local(None));
+                        }
+                        ctx.tuple_locals.insert(b.clone(), slots);
+                    }
+                } else if !ctx.local_map.contains_key(b) {
+                    ctx.alloc_local(Some(b));
+                }
+            }
+            if let Some(b) = err_binding {
+                ctx.var_types.insert(b.clone(), Type::I64);
+                if !ctx.local_map.contains_key(b) {
+                    ctx.alloc_local(Some(b));
+                }
+            }
+            prealloc_expr_locals(ok_body, ctx);
+            prealloc_expr_locals(err_body, ctx);
         }
         Expr::IntLit(_)
         | Expr::FixedLit(_)
@@ -1593,7 +1744,11 @@ fn emit_expr(
             emit_expr(cond, ctx, out)?;
             out.push(0xA7); // i32.wrap_i64
             out.push(0x04); // if (result i64 or multi-value type_idx)
-            let res_arity = expr_result_arity(then_branch, ctx);
+            let res_arity = if is_diverging_expr(then_branch) {
+                expr_result_arity(else_branch, ctx)
+            } else {
+                expr_result_arity(then_branch, ctx)
+            };
             if res_arity > 1 {
                 if let Some(&tidx) = ctx.multi_val_block_types.get(&res_arity) {
                     push_i32_leb(out, tidx as i32);
@@ -1760,6 +1915,112 @@ fn emit_expr(
         Expr::RangeCheck { lo, .. } => {
             // Zero runtime overhead in Wasm: proven statically by Z3!
             emit_expr(lo, ctx, out)?;
+        }
+        Expr::OptionSome { value, .. } => {
+            out.push(0x42); // i64.const 1 (tag = Some)
+            push_i64_leb(out, 1);
+            emit_expr(value, ctx, out)?;
+        }
+        Expr::OptionNone { inner_ty } => {
+            let k = type_slot_count(inner_ty);
+            for _ in 0..(1 + k) {
+                out.push(0x42); // i64.const 0
+                push_i64_leb(out, 0);
+            }
+        }
+        Expr::ResultOk { value, .. } => {
+            out.push(0x42); // i64.const 1 (tag = Ok)
+            push_i64_leb(out, 1);
+            out.push(0x42); // i64.const 0 (err_code = 0)
+            push_i64_leb(out, 0);
+            emit_expr(value, ctx, out)?;
+        }
+        Expr::ResultErr { code, ok_ty } => {
+            out.push(0x42); // i64.const 0 (tag = Err)
+            push_i64_leb(out, 0);
+            emit_expr(code, ctx, out)?;
+            let k = type_slot_count(ok_ty);
+            for _ in 0..k {
+                out.push(0x42); // i64.const 0 (unused payload slots)
+                push_i64_leb(out, 0);
+            }
+        }
+        Expr::MatchTagged {
+            scrutinee,
+            ok_binding,
+            ok_body,
+            err_binding,
+            err_body,
+        } => {
+            let st = infer_codegen_expr_type(scrutinee, ctx);
+            let (is_result, inner_ty) = match st {
+                Type::Result(inner) => (true, *inner),
+                Type::Option(inner) => (false, *inner),
+                _ => (false, Type::I64),
+            };
+            let header = if is_result { 2usize } else { 1usize };
+            let k = type_slot_count(&inner_ty);
+            let total = header + k;
+            let mut tmp_slots = Vec::with_capacity(total);
+            for _ in 0..total {
+                tmp_slots.push(ctx.alloc_local(None));
+            }
+            emit_expr(scrutinee, ctx, out)?;
+            for &slot in tmp_slots.iter().rev() {
+                out.push(0x21); // local.set
+                push_u32_leb(out, slot);
+            }
+            // Check tag != 0 -> i32 condition
+            out.push(0x20); // local.get tag
+            push_u32_leb(out, tmp_slots[0]);
+            out.push(0x42); // i64.const 0
+            push_i64_leb(out, 0);
+            out.push(0x52); // i64.ne (produces i32)
+            out.push(0x04); // if
+            let res_arity = expr_result_arity(expr, ctx);
+            if res_arity > 1 {
+                if let Some(&tidx) = ctx.multi_val_block_types.get(&res_arity) {
+                    push_i32_leb(out, tidx as i32);
+                } else {
+                    out.push(WASM_BLOCK_I64);
+                }
+            } else {
+                out.push(WASM_BLOCK_I64);
+            }
+            // Then branch: tag != 0 (Some / Ok)
+            if let Some(b) = ok_binding {
+                if let Some(dst_slots) = ctx.tuple_locals.get(b).cloned() {
+                    for (dst, &src) in dst_slots.iter().zip(tmp_slots[header..total].iter()) {
+                        out.push(0x20);
+                        push_u32_leb(out, src);
+                        out.push(0x21);
+                        push_u32_leb(out, *dst);
+                    }
+                } else if let Some(&dst) = ctx.local_map.get(b) {
+                    out.push(0x20);
+                    push_u32_leb(out, tmp_slots[header]);
+                    out.push(0x21);
+                    push_u32_leb(out, dst);
+                }
+            }
+            emit_expr(ok_body, ctx, out)?;
+            out.push(0x05); // else (None / Err)
+            if is_result {
+                if let Some(b) = err_binding {
+                    if let Some(&dst) = ctx.local_map.get(b) {
+                        out.push(0x20);
+                        push_u32_leb(out, tmp_slots[1]);
+                        out.push(0x21);
+                        push_u32_leb(out, dst);
+                    }
+                }
+            }
+            emit_expr(err_body, ctx, out)?;
+            out.push(0x0B); // end
+        }
+        Expr::Return(inner) => {
+            emit_expr(inner, ctx, out)?;
+            out.push(0x0F); // return
         }
         Expr::TupleField { expr, index } => {
             if let Expr::Var(name) = expr.as_ref() {

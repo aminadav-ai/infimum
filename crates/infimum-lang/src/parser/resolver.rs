@@ -63,6 +63,14 @@ impl SliceElemMeta {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct TaggedVarMeta {
+    pub(super) is_result: bool,
+    pub(super) inner_ty: Type,
+    pub(super) inner_struct: Option<String>,
+    pub(super) inner_slice: Option<SliceElemMeta>,
+}
+
 pub(super) struct ModuleResolver {
     pub(super) tables: Vec<UnitTables>,
     pub(super) unit_labels: Vec<String>,
@@ -86,6 +94,10 @@ pub(super) struct ModuleResolver {
     pub(super) fn_ret_struct: BTreeMap<String, String>,
     pub(super) slice_vars: Vec<BTreeMap<String, SliceElemMeta>>,
     pub(super) fn_ret_slice: BTreeMap<String, SliceElemMeta>,
+    pub(super) tagged_vars: Vec<BTreeMap<String, TaggedVarMeta>>,
+    pub(super) fn_ret_tagged: BTreeMap<String, TaggedVarMeta>,
+    pub(super) cur_fn_ret_type: Option<Type>,
+    pub(super) expected_tagged_stack: Vec<Option<TaggedVarMeta>>,
     pub(super) forma_subst: BTreeMap<String, Expr>,
 }
 
@@ -183,6 +195,10 @@ impl ModuleResolver {
             fn_ret_struct: BTreeMap::new(),
             slice_vars: Vec::new(),
             fn_ret_slice: BTreeMap::new(),
+            tagged_vars: Vec::new(),
+            fn_ret_tagged: BTreeMap::new(),
+            cur_fn_ret_type: None,
+            expected_tagged_stack: Vec::new(),
             forma_subst: BTreeMap::new(),
         }
     }
@@ -457,6 +473,8 @@ impl ModuleResolver {
                 let meta = self.resolve_slice_elem(inner)?;
                 Ok(Type::Slice(Box::new(meta.elem_ty)))
             }
+            RawType::Option(inner) => Ok(Type::Option(Box::new(self.resolve_raw_type(inner)?))),
+            RawType::Result(inner) => Ok(Type::Result(Box::new(self.resolve_raw_type(inner)?))),
             RawType::Tuple(elems) => {
                 let mut out = Vec::with_capacity(elems.len());
                 for e in elems {
@@ -482,6 +500,143 @@ impl ModuleResolver {
                     "Use a built-in type (i64, fixed, bool, str, unit, Secret<T>, (T1, T2), [T]) or a visible 'struct' name",
                 ))
             }
+        }
+    }
+
+    pub(super) fn resolve_tagged_meta(
+        &self,
+        rt: &RawType,
+    ) -> Result<Option<TaggedVarMeta>, InfimumDiagnostic> {
+        let (is_result, inner_raw) = match rt {
+            RawType::Option(inner) => (false, inner.as_ref()),
+            RawType::Result(inner) => (true, inner.as_ref()),
+            _ => return Ok(None),
+        };
+        let inner_ty = self.resolve_raw_type(inner_raw)?;
+        let inner_struct = if let RawType::Named { module, name, span } = inner_raw {
+            Some(self.resolve_struct_canon(module.as_deref(), name, *span)?)
+        } else {
+            None
+        };
+        let inner_slice = if let RawType::Slice(elem) = inner_raw {
+            Some(self.resolve_slice_elem(elem)?)
+        } else if matches!(inner_raw, RawType::Builtin(Type::Str)) {
+            Some(SliceElemMeta::utf8_str())
+        } else {
+            None
+        };
+        Ok(Some(TaggedVarMeta {
+            is_result,
+            inner_ty,
+            inner_struct,
+            inner_slice,
+        }))
+    }
+
+    fn lookup_tagged_var(&self, name: &str) -> Option<TaggedVarMeta> {
+        for scope in self.tagged_vars.iter().rev() {
+            if let Some(m) = scope.get(name) {
+                return Some(m.clone());
+            }
+        }
+        None
+    }
+
+    fn current_expected_tagged(&self) -> Option<TaggedVarMeta> {
+        self.expected_tagged_stack.last().and_then(|o| o.clone())
+    }
+
+    fn infer_raw_expr_tagged(&self, expr: &RawExpr) -> Option<TaggedVarMeta> {
+        match expr {
+            RawExpr::Var(v) => self.lookup_tagged_var(v),
+            RawExpr::OptionSome(inner) => Some(TaggedVarMeta {
+                is_result: false,
+                inner_ty: self.infer_raw_expr_basic_ty(inner),
+                inner_struct: self.infer_raw_expr_struct(inner),
+                inner_slice: self.infer_raw_expr_slice(inner),
+            }),
+            RawExpr::ResultOk(inner) => Some(TaggedVarMeta {
+                is_result: true,
+                inner_ty: self.infer_raw_expr_basic_ty(inner),
+                inner_struct: self.infer_raw_expr_struct(inner),
+                inner_slice: self.infer_raw_expr_slice(inner),
+            }),
+            RawExpr::OptionNone(_) => self.current_expected_tagged().filter(|m| !m.is_result),
+            RawExpr::ResultErr(_, _) => self.current_expected_tagged().filter(|m| m.is_result),
+            RawExpr::Call {
+                target: TargetRef::Named(fname),
+                ..
+            } => {
+                let canon = self
+                    .lookup_fn_sym(None, fname, Span::zero())
+                    .ok()
+                    .flatten()
+                    .map(|s| s.canonical_name.as_str())
+                    .unwrap_or(fname.as_str());
+                self.fn_ret_tagged.get(canon).cloned()
+            }
+            RawExpr::ModCall(mc) => {
+                let sym = self
+                    .lookup_fn_sym(Some(&mc.module), &mc.func, mc.span)
+                    .ok()
+                    .flatten()?;
+                self.fn_ret_tagged.get(&sym.canonical_name).cloned()
+            }
+            RawExpr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => self
+                .infer_raw_expr_tagged(then_branch)
+                .or_else(|| self.infer_raw_expr_tagged(else_branch)),
+            RawExpr::Block { tail, .. } => self.infer_raw_expr_tagged(tail),
+            _ => None,
+        }
+    }
+
+    fn infer_raw_expr_basic_ty(&self, expr: &RawExpr) -> Type {
+        if let Some(sm) = self.infer_raw_expr_slice(expr) {
+            return sm.binding_ty();
+        }
+        if let Some(sc) = self.infer_raw_expr_struct(expr) {
+            if let Some(sdef) = self.structs.get(&sc) {
+                return self.struct_tuple_type(sdef);
+            }
+        }
+        match expr {
+            RawExpr::FixedLit(_) => Type::Fixed,
+            RawExpr::DecLit(_) => Type::Dec64,
+            RawExpr::BoolLit(_) => Type::Bool,
+            RawExpr::StrLit(_) => Type::Str,
+            RawExpr::UnitLit => Type::Unit,
+            RawExpr::TupleLit(es) => {
+                Type::Tuple(es.iter().map(|e| self.infer_raw_expr_basic_ty(e)).collect())
+            }
+            RawExpr::Unary { op, expr: inner } => match op {
+                UnaryOp::Not => Type::Bool,
+                UnaryOp::Neg => self.infer_raw_expr_basic_ty(inner),
+                UnaryOp::IntToFixed | UnaryOp::RawToFixed => Type::Fixed,
+                UnaryOp::IntToDec64 | UnaryOp::RawToDec64 => Type::Dec64,
+                UnaryOp::ToU8 => Type::U8,
+                _ => Type::I64,
+            },
+            RawExpr::Binary { op, lhs, .. } => match op {
+                BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or => Type::Bool,
+                BinOp::FixedMul | BinOp::FixedDiv => Type::Fixed,
+                BinOp::DecMul | BinOp::DecDiv => Type::Dec64,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                    self.infer_raw_expr_basic_ty(lhs)
+                }
+                _ => Type::I64,
+            },
+            _ => Type::I64,
         }
     }
 
@@ -684,6 +839,12 @@ impl ModuleResolver {
                 .infer_raw_expr_slice(then_branch)
                 .or_else(|| self.infer_raw_expr_slice(else_branch)),
             RawExpr::Block { tail, .. } => self.infer_raw_expr_slice(tail),
+            RawExpr::Try(inner, _) => self
+                .infer_raw_expr_tagged(inner)
+                .and_then(|m| m.inner_slice),
+            RawExpr::TaggedMethod { base, method, .. } if method == "unwrap_or" => self
+                .infer_raw_expr_tagged(base)
+                .and_then(|m| m.inner_slice),
             _ => None,
         }
     }
@@ -856,6 +1017,12 @@ impl ModuleResolver {
                 .infer_raw_expr_struct(then_branch)
                 .or_else(|| self.infer_raw_expr_struct(else_branch)),
             RawExpr::Block { tail, .. } => self.infer_raw_expr_struct(tail),
+            RawExpr::Try(inner, _) => self
+                .infer_raw_expr_tagged(inner)
+                .and_then(|m| m.inner_struct),
+            RawExpr::TaggedMethod { base, method, .. } if method == "unwrap_or" => self
+                .infer_raw_expr_tagged(base)
+                .and_then(|m| m.inner_struct),
             _ => None,
         }
     }
@@ -1938,6 +2105,7 @@ impl ModuleResolver {
         let mut params = Vec::with_capacity(raw.params.len());
         let mut init_struct_vars = BTreeMap::new();
         let mut init_slice_vars = BTreeMap::new();
+        let mut init_tagged_vars = BTreeMap::new();
         for (pname, raw_ty) in &raw.params {
             let resolved_ty = self.resolve_raw_type(raw_ty)?;
             if let RawType::Named { module, name, span } = raw_ty {
@@ -1948,6 +2116,8 @@ impl ModuleResolver {
                 init_slice_vars.insert(pname.clone(), smeta);
             } else if matches!(raw_ty, RawType::Builtin(Type::Str)) {
                 init_slice_vars.insert(pname.clone(), SliceElemMeta::utf8_str());
+            } else if let Some(tmeta) = self.resolve_tagged_meta(raw_ty)? {
+                init_tagged_vars.insert(pname.clone(), tmeta);
             }
             params.push(Param {
                 name: pname.clone(),
@@ -1955,6 +2125,7 @@ impl ModuleResolver {
             });
         }
         let ret_type = self.resolve_raw_type(&raw.ret_type)?;
+        let ret_tagged_meta = self.resolve_tagged_meta(&raw.ret_type)?;
         if let RawType::Named { module, name, span } = &raw.ret_type {
             let scanon = self.resolve_struct_canon(module.as_deref(), name, *span)?;
             init_struct_vars.insert("result".to_string(), scanon);
@@ -1963,9 +2134,14 @@ impl ModuleResolver {
             init_slice_vars.insert("result".to_string(), smeta);
         } else if matches!(&raw.ret_type, RawType::Builtin(Type::Str)) {
             init_slice_vars.insert("result".to_string(), SliceElemMeta::utf8_str());
+        } else if let Some(ref tmeta) = ret_tagged_meta {
+            init_tagged_vars.insert("result".to_string(), tmeta.clone());
         }
         self.struct_vars.push(init_struct_vars);
         self.slice_vars.push(init_slice_vars);
+        self.tagged_vars.push(init_tagged_vars);
+        let prev_ret_ty = self.cur_fn_ret_type.replace(ret_type.clone());
+        self.expected_tagged_stack.push(ret_tagged_meta);
 
         let mut locals: Vec<BTreeSet<String>> = vec![params.iter().map(|p| p.name.clone()).collect()];
 
@@ -1978,8 +2154,11 @@ impl ModuleResolver {
             ensures.push(self.lower_expr(e, &mut locals)?);
         }
         let body = self.lower_expr(&raw.body, &mut locals)?;
-        self.struct_vars.pop();
+        self.expected_tagged_stack.pop();
+        self.cur_fn_ret_type = prev_ret_ty;
+        self.tagged_vars.pop();
         self.slice_vars.pop();
+        self.struct_vars.pop();
 
         Ok(FnDef {
             name: raw.name,
@@ -2524,7 +2703,16 @@ impl ModuleResolver {
                         Some(RawType::Builtin(Type::Str)) => Some(SliceElemMeta::utf8_str()),
                         _ => self.infer_raw_expr_slice(value),
                     };
+                    let explicit_tagged = match ty {
+                        Some(rt) => self.resolve_tagged_meta(rt)?,
+                        None => None,
+                    };
+                    let inferred_tagged = explicit_tagged
+                        .clone()
+                        .or_else(|| self.infer_raw_expr_tagged(value));
+                    self.expected_tagged_stack.push(explicit_tagged);
                     let v = self.lower_expr(value, locals)?;
+                    self.expected_tagged_stack.pop();
                     if let Some(top) = locals.last_mut() {
                         top.insert(name.clone());
                     }
@@ -2536,6 +2724,11 @@ impl ModuleResolver {
                     if let Some(smeta) = inferred_slice {
                         if let Some(sl_top) = self.slice_vars.last_mut() {
                             sl_top.insert(name.clone(), smeta);
+                        }
+                    }
+                    if let Some(tmeta) = inferred_tagged {
+                        if let Some(tg_top) = self.tagged_vars.last_mut() {
+                            tg_top.insert(name.clone(), tmeta);
                         }
                     }
                     out.push(Stmt::Let {
@@ -3982,8 +4175,10 @@ impl ModuleResolver {
                 locals.push(BTreeSet::new());
                 self.struct_vars.push(BTreeMap::new());
                 self.slice_vars.push(BTreeMap::new());
+                self.tagged_vars.push(BTreeMap::new());
                 let lstmts = self.lower_stmts(stmts, locals)?;
                 let ltail = self.lower_expr(tail, locals)?;
+                self.tagged_vars.pop();
                 self.slice_vars.pop();
                 self.struct_vars.pop();
                 locals.pop();
@@ -5034,6 +5229,213 @@ impl ModuleResolver {
                     }),
                 })
             }
+            RawExpr::OptionSome(inner) => {
+                let expected = self.current_expected_tagged().filter(|m| !m.is_result);
+                let inner_ty = expected
+                    .map(|m| m.inner_ty)
+                    .unwrap_or_else(|| self.infer_raw_expr_basic_ty(inner));
+                self.expected_tagged_stack.push(None);
+                let v = self.lower_expr(inner, locals)?;
+                self.expected_tagged_stack.pop();
+                Ok(Expr::OptionSome {
+                    value: Box::new(v),
+                    inner_ty,
+                })
+            }
+            RawExpr::OptionNone(span) => {
+                let expected = self.current_expected_tagged().filter(|m| !m.is_result);
+                let Some(meta) = expected else {
+                    return Err(InfimumDiagnostic::new(
+                        "E078_CANNOT_INFER_TAGGED_TYPE",
+                        "resolve",
+                        "Cannot infer inner type 'T' for 'None'",
+                        *span,
+                        "Annotate the binding (e.g. 'let x: Option<i64> = None;') or return 'None' from a function returning 'Option<T>'",
+                    ));
+                };
+                Ok(Expr::OptionNone {
+                    inner_ty: meta.inner_ty,
+                })
+            }
+            RawExpr::ResultOk(inner) => {
+                let expected = self.current_expected_tagged().filter(|m| m.is_result);
+                let ok_ty = expected
+                    .map(|m| m.inner_ty)
+                    .unwrap_or_else(|| self.infer_raw_expr_basic_ty(inner));
+                self.expected_tagged_stack.push(None);
+                let v = self.lower_expr(inner, locals)?;
+                self.expected_tagged_stack.pop();
+                Ok(Expr::ResultOk {
+                    value: Box::new(v),
+                    ok_ty,
+                })
+            }
+            RawExpr::ResultErr(code, span) => {
+                let expected = self.current_expected_tagged().filter(|m| m.is_result);
+                let Some(meta) = expected else {
+                    return Err(InfimumDiagnostic::new(
+                        "E078_CANNOT_INFER_TAGGED_TYPE",
+                        "resolve",
+                        "Cannot infer Ok type 'T' for 'Err(...)'",
+                        *span,
+                        "Annotate the binding (e.g. 'let r: Result<dec64, i64> = Err(400);') or return 'Err(...)' from a function returning 'Result<T, i64>'",
+                    ));
+                };
+                self.expected_tagged_stack.push(None);
+                let c = self.lower_expr(code, locals)?;
+                self.expected_tagged_stack.pop();
+                Ok(Expr::ResultErr {
+                    code: Box::new(c),
+                    ok_ty: meta.inner_ty,
+                })
+            }
+            RawExpr::Try(inner, span) => {
+                let tmeta = self.infer_raw_expr_tagged(inner).ok_or_else(|| {
+                    InfimumDiagnostic::new(
+                        "E080_TRY_TYPE_MISMATCH",
+                        "resolve",
+                        "Operator '?' can only be applied to Option<T> or Result<T, i64> expressions",
+                        *span,
+                        "Ensure the expression before '?' returns Option<T> or Result<T, i64>",
+                    )
+                })?;
+                let ret_ty = self.cur_fn_ret_type.clone();
+                let (fn_is_res, fn_inner_ty) = match ret_ty {
+                    Some(Type::Option(t)) => (false, *t),
+                    Some(Type::Result(t)) => (true, *t),
+                    other => {
+                        return Err(InfimumDiagnostic::new(
+                            "E080_TRY_TYPE_MISMATCH",
+                            "resolve",
+                            format!(
+                                "Operator '?' used in a function returning '{}', expected Option<_> or Result<_, i64>",
+                                other.map(|t| t.to_string()).unwrap_or_else(|| "unknown".to_string())
+                            ),
+                            *span,
+                            "Change the enclosing function return type to Option<T> or Result<T, i64>, or handle the value with 'match'",
+                        ));
+                    }
+                };
+                if fn_is_res != tmeta.is_result {
+                    return Err(InfimumDiagnostic::new(
+                        "E080_TRY_TYPE_MISMATCH",
+                        "resolve",
+                        if tmeta.is_result {
+                            "Operator '?' on Result<T, i64> cannot be used in a function returning Option<_>"
+                        } else {
+                            "Operator '?' on Option<T> cannot be used in a function returning Result<_, i64>"
+                        },
+                        *span,
+                        "Match the enclosing function's Option/Result return kind with the '?' operand",
+                    ));
+                }
+                self.expected_tagged_stack.push(None);
+                let scrut = self.lower_expr(inner, locals)?;
+                self.expected_tagged_stack.pop();
+                let ok_var = format!("__ifm_try_ok_{}", self.match_counter);
+                let err_var = format!("__ifm_try_err_{}", self.match_counter);
+                self.match_counter += 1;
+                let (err_binding, err_body) = if tmeta.is_result {
+                    (
+                        Some(err_var.clone()),
+                        Expr::Return(Box::new(Expr::ResultErr {
+                            code: Box::new(Expr::Var(err_var)),
+                            ok_ty: fn_inner_ty,
+                        })),
+                    )
+                } else {
+                    (
+                        None,
+                        Expr::Return(Box::new(Expr::OptionNone {
+                            inner_ty: fn_inner_ty,
+                        })),
+                    )
+                };
+                Ok(Expr::MatchTagged {
+                    scrutinee: Box::new(scrut),
+                    ok_binding: Some(ok_var.clone()),
+                    ok_body: Box::new(Expr::Var(ok_var)),
+                    err_binding,
+                    err_body: Box::new(err_body),
+                })
+            }
+            RawExpr::TaggedMethod {
+                base,
+                method,
+                arg,
+                span,
+            } => {
+                let tmeta = self.infer_raw_expr_tagged(base);
+                if let Some(ref m) = tmeta {
+                    if (method == "is_some" || method == "is_none") && m.is_result {
+                        return Err(InfimumDiagnostic::new(
+                            "E060_TYPE_MISMATCH",
+                            "resolve",
+                            format!("Method '.{method}()' is for Option<T>, not Result<T, i64>"),
+                            *span,
+                            "Use '.is_ok()' or '.is_err()' on Result<T, i64>",
+                        ));
+                    }
+                    if (method == "is_ok" || method == "is_err") && !m.is_result {
+                        return Err(InfimumDiagnostic::new(
+                            "E060_TYPE_MISMATCH",
+                            "resolve",
+                            format!("Method '.{method}()' is for Result<T, i64>, not Option<T>"),
+                            *span,
+                            "Use '.is_some()' or '.is_none()' on Option<T>",
+                        ));
+                    }
+                }
+                self.expected_tagged_stack.push(None);
+                let scrut = self.lower_expr(base, locals)?;
+                self.expected_tagged_stack.pop();
+                match method.as_str() {
+                    "is_some" | "is_ok" => Ok(Expr::MatchTagged {
+                        scrutinee: Box::new(scrut),
+                        ok_binding: None,
+                        ok_body: Box::new(Expr::BoolLit(true)),
+                        err_binding: None,
+                        err_body: Box::new(Expr::BoolLit(false)),
+                    }),
+                    "is_none" | "is_err" => Ok(Expr::MatchTagged {
+                        scrutinee: Box::new(scrut),
+                        ok_binding: None,
+                        ok_body: Box::new(Expr::BoolLit(false)),
+                        err_binding: None,
+                        err_body: Box::new(Expr::BoolLit(true)),
+                    }),
+                    "unwrap_or" => {
+                        let def_raw = arg.as_ref().ok_or_else(|| {
+                            InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                "'.unwrap_or(default)' requires 1 argument",
+                                *span,
+                                "Pass a default value to '.unwrap_or(default)'",
+                            )
+                        })?;
+                        self.expected_tagged_stack.push(None);
+                        let def_e = self.lower_expr(def_raw, locals)?;
+                        self.expected_tagged_stack.pop();
+                        let vname = format!("__ifm_unwrap_{}", self.match_counter);
+                        self.match_counter += 1;
+                        Ok(Expr::MatchTagged {
+                            scrutinee: Box::new(scrut),
+                            ok_binding: Some(vname.clone()),
+                            ok_body: Box::new(Expr::Var(vname)),
+                            err_binding: None,
+                            err_body: Box::new(def_e),
+                        })
+                    }
+                    _ => Err(InfimumDiagnostic::new(
+                        "E063_UNKNOWN_FIELD",
+                        "resolve",
+                        format!("Unknown tagged method '.{method}(...)'"),
+                        *span,
+                        "Supported methods: .is_some(), .is_none(), .is_ok(), .is_err(), .unwrap_or(default)",
+                    )),
+                }
+            }
         }
     }
 
@@ -5052,6 +5454,184 @@ impl ModuleResolver {
                 span,
                 "Add at least one arm ending with a wildcard '_ => ...' or covering all enum variants",
             ));
+        }
+
+        // Tagged Option<T> / Result<T, i64> match handling
+        let has_tagged_pat = arms.iter().any(|arm| {
+            arm.patterns.iter().any(|p| {
+                matches!(
+                    p,
+                    RawMatchPattern::Some(_, _)
+                        | RawMatchPattern::None(_)
+                        | RawMatchPattern::Ok(_, _)
+                        | RawMatchPattern::Err(_, _)
+                )
+            })
+        });
+        let scrut_tagged = self.infer_raw_expr_tagged(scrutinee);
+        if has_tagged_pat || scrut_tagged.is_some() {
+            let is_result = if let Some(ref tm) = scrut_tagged {
+                tm.is_result
+            } else {
+                arms.iter().any(|arm| {
+                    arm.patterns
+                        .iter()
+                        .any(|p| matches!(p, RawMatchPattern::Ok(_, _) | RawMatchPattern::Err(_, _)))
+                })
+            };
+            let mut ok_arm: Option<(Option<String>, &RawExpr)> = None;
+            let mut err_arm: Option<(Option<String>, &RawExpr)> = None;
+            let mut wild_arm: Option<&RawExpr> = None;
+            for arm in arms {
+                for pat in &arm.patterns {
+                    match pat {
+                        RawMatchPattern::Some(b, pspan) => {
+                            if is_result {
+                                return Err(InfimumDiagnostic::new(
+                                    "E060_TYPE_MISMATCH",
+                                    "resolve",
+                                    "Cannot match 'Some(...)' on a Result<T, i64> value",
+                                    *pspan,
+                                    "Use 'Ok(v) => ...' and 'Err(e) => ...' for Result<T, i64>",
+                                ));
+                            }
+                            ok_arm = Some((b.clone(), &arm.body));
+                        }
+                        RawMatchPattern::None(pspan) => {
+                            if is_result {
+                                return Err(InfimumDiagnostic::new(
+                                    "E060_TYPE_MISMATCH",
+                                    "resolve",
+                                    "Cannot match 'None' on a Result<T, i64> value",
+                                    *pspan,
+                                    "Use 'Ok(v) => ...' and 'Err(e) => ...' for Result<T, i64>",
+                                ));
+                            }
+                            err_arm = Some((None, &arm.body));
+                        }
+                        RawMatchPattern::Ok(b, pspan) => {
+                            if !is_result {
+                                return Err(InfimumDiagnostic::new(
+                                    "E060_TYPE_MISMATCH",
+                                    "resolve",
+                                    "Cannot match 'Ok(...)' on an Option<T> value",
+                                    *pspan,
+                                    "Use 'Some(v) => ...' and 'None => ...' for Option<T>",
+                                ));
+                            }
+                            ok_arm = Some((b.clone(), &arm.body));
+                        }
+                        RawMatchPattern::Err(b, pspan) => {
+                            if !is_result {
+                                return Err(InfimumDiagnostic::new(
+                                    "E060_TYPE_MISMATCH",
+                                    "resolve",
+                                    "Cannot match 'Err(...)' on an Option<T> value",
+                                    *pspan,
+                                    "Use 'Some(v) => ...' and 'None => ...' for Option<T>",
+                                ));
+                            }
+                            err_arm = Some((b.clone(), &arm.body));
+                        }
+                        RawMatchPattern::Wildcard(_) => {
+                            wild_arm = Some(&arm.body);
+                        }
+                        _ => {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                "Invalid pattern in Option/Result match",
+                                span,
+                                if is_result {
+                                    "Use 'Ok(v) => ...' and 'Err(e) => ...'"
+                                } else {
+                                    "Use 'Some(v) => ...' and 'None => ...'"
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+            if ok_arm.is_none() {
+                if let Some(wb) = wild_arm {
+                    ok_arm = Some((None, wb));
+                }
+            }
+            if err_arm.is_none() {
+                if let Some(wb) = wild_arm {
+                    err_arm = Some((None, wb));
+                }
+            }
+            let (Some((ok_binding, ok_raw)), Some((err_binding, err_raw))) = (ok_arm, err_arm) else {
+                return Err(InfimumDiagnostic::new(
+                    "E079_NON_EXHAUSTIVE_MATCH",
+                    "resolve",
+                    if is_result {
+                        "Non-exhaustive 'match' on Result<T, i64>: must handle both 'Ok(...)' and 'Err(...)'"
+                    } else {
+                        "Non-exhaustive 'match' on Option<T>: must handle both 'Some(...)' and 'None'"
+                    },
+                    span,
+                    if is_result {
+                        "Add both 'Ok(v) => ...' and 'Err(e) => ...' arms"
+                    } else {
+                        "Add both 'Some(v) => ...' and 'None => ...' arms"
+                    },
+                ));
+            };
+            self.expected_tagged_stack.push(None);
+            let scrut_e = self.lower_expr(scrutinee, locals)?;
+            self.expected_tagged_stack.pop();
+
+            // Lower ok_body with binding registered in locals / struct_vars / slice_vars
+            locals.push(BTreeSet::new());
+            self.struct_vars.push(BTreeMap::new());
+            self.slice_vars.push(BTreeMap::new());
+            self.tagged_vars.push(BTreeMap::new());
+            if let Some(ref b) = ok_binding {
+                locals.last_mut().unwrap().insert(b.clone());
+                if let Some(ref tm) = scrut_tagged {
+                    if let Some(ref sc) = tm.inner_struct {
+                        self.struct_vars
+                            .last_mut()
+                            .unwrap()
+                            .insert(b.clone(), sc.clone());
+                    }
+                    if let Some(ref sl) = tm.inner_slice {
+                        self.slice_vars
+                            .last_mut()
+                            .unwrap()
+                            .insert(b.clone(), sl.clone());
+                    }
+                }
+            }
+            let ok_body_e = self.lower_expr(ok_raw, locals)?;
+            self.tagged_vars.pop();
+            self.slice_vars.pop();
+            self.struct_vars.pop();
+            locals.pop();
+
+            // Lower err_body with err_binding registered in locals
+            locals.push(BTreeSet::new());
+            self.struct_vars.push(BTreeMap::new());
+            self.slice_vars.push(BTreeMap::new());
+            self.tagged_vars.push(BTreeMap::new());
+            if let Some(ref b) = err_binding {
+                locals.last_mut().unwrap().insert(b.clone());
+            }
+            let err_body_e = self.lower_expr(err_raw, locals)?;
+            self.tagged_vars.pop();
+            self.slice_vars.pop();
+            self.struct_vars.pop();
+            locals.pop();
+
+            return Ok(Expr::MatchTagged {
+                scrutinee: Box::new(scrut_e),
+                ok_binding,
+                ok_body: Box::new(ok_body_e),
+                err_binding,
+                err_body: Box::new(err_body_e),
+            });
         }
 
         enum ResolvedPat {
@@ -5087,6 +5667,10 @@ impl ModuleResolver {
                     }
                     RawMatchPattern::Int(v) => ResolvedPat::Int(*v),
                     RawMatchPattern::Bool(b) => ResolvedPat::Bool(*b),
+                    RawMatchPattern::Some(..)
+                    | RawMatchPattern::None(..)
+                    | RawMatchPattern::Ok(..)
+                    | RawMatchPattern::Err(..) => unreachable!(),
                     RawMatchPattern::ConstRef(name, pspan) => {
                         let sym = self.lookup_const_sym(None, name, *pspan)?;
                         let cdef = sym.and_then(|s| self.consts.get(&s.canonical_name)).ok_or_else(|| {
@@ -5530,6 +6114,55 @@ pub(super) fn infer_and_rewrite_fixed_expr(
             infer_and_rewrite_fixed_expr(len, env, fn_rets);
             Type::I64
         }
+        Expr::OptionSome { value, inner_ty } => {
+            let vt = infer_and_rewrite_fixed_expr(value, env, fn_rets);
+            if *inner_ty == Type::I64 && vt != Type::I64 {
+                *inner_ty = vt.clone();
+            }
+            Type::Option(Box::new(inner_ty.clone()))
+        }
+        Expr::OptionNone { inner_ty } => Type::Option(Box::new(inner_ty.clone())),
+        Expr::ResultOk { value, ok_ty } => {
+            let vt = infer_and_rewrite_fixed_expr(value, env, fn_rets);
+            if *ok_ty == Type::I64 && vt != Type::I64 {
+                *ok_ty = vt.clone();
+            }
+            Type::Result(Box::new(ok_ty.clone()))
+        }
+        Expr::ResultErr { code, ok_ty } => {
+            infer_and_rewrite_fixed_expr(code, env, fn_rets);
+            Type::Result(Box::new(ok_ty.clone()))
+        }
+        Expr::MatchTagged {
+            scrutinee,
+            ok_binding,
+            ok_body,
+            err_binding,
+            err_body,
+        } => {
+            let st = infer_and_rewrite_fixed_expr(scrutinee, env, fn_rets);
+            let inner_ty = match st {
+                Type::Option(t) | Type::Result(t) => *t,
+                _ => Type::I64,
+            };
+            let mut ok_env = env.clone();
+            if let Some(b) = ok_binding {
+                ok_env.insert(b.clone(), inner_ty);
+            }
+            let t_ok = infer_and_rewrite_fixed_expr(ok_body, &mut ok_env, fn_rets);
+
+            let mut err_env = env.clone();
+            if let Some(b) = err_binding {
+                err_env.insert(b.clone(), Type::I64);
+            }
+            let t_err = infer_and_rewrite_fixed_expr(err_body, &mut err_env, fn_rets);
+            if matches!(ok_body.as_ref(), Expr::Return(_)) {
+                t_err
+            } else {
+                t_ok
+            }
+        }
+        Expr::Return(inner) => infer_and_rewrite_fixed_expr(inner, env, fn_rets),
         Expr::Block { stmts, tail } => {
             let mut inner_env = env.clone();
             infer_and_rewrite_fixed_stmts(stmts, &mut inner_env, fn_rets);

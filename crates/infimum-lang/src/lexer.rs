@@ -56,6 +56,7 @@ pub enum TokenKind {
     DotDotEq, // ..=
     DotDot,   // ..
     Dot,
+    Question, // ?
     Assign,  // =
     PlusEq,  // +=
     MinusEq, // -=
@@ -725,6 +726,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, InfimumDiagnostic> {
             ',' => Some(TokenKind::Comma),
             ';' => Some(TokenKind::Semi),
             '.' => Some(TokenKind::Dot),
+            '?' => Some(TokenKind::Question),
             '=' => Some(TokenKind::Assign),
             '+' => Some(TokenKind::Plus),
             '-' => Some(TokenKind::Minus),

@@ -217,6 +217,8 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
                 resolver.fn_ret_slice.insert(cname, smeta);
             } else if matches!(&rf.ret_type, RawType::Builtin(Type::Str)) {
                 resolver.fn_ret_slice.insert(cname, resolver::SliceElemMeta::utf8_str());
+            } else if let Some(tmeta) = resolver.resolve_tagged_meta(&rf.ret_type)? {
+                resolver.fn_ret_tagged.insert(cname, tmeta);
             }
             all_raw_fns.push((uid, rf));
         }

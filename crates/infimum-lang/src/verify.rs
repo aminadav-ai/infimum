@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v6";
+pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v7";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationReport {
@@ -39,6 +39,15 @@ struct ProofObligation {
     guard_smt: String,
     goal_smt: String,
     kind: ObligationKind,
+}
+
+#[derive(Debug, Clone)]
+struct TaggedSmt {
+    tag: String,
+    err: Option<String>,
+    val: String,
+    inner_ty: Type,
+    val_sub: Vec<(String, Type)>,
 }
 
 struct SmtBuilder<'a, F>
@@ -185,6 +194,22 @@ where
             | Expr::SliceLen(_)
             | Expr::BoundsCheck { .. }
             | Expr::RangeCheck { .. } => Type::I64,
+            Expr::OptionSome { inner_ty, .. } | Expr::OptionNone { inner_ty } => {
+                Type::Option(Box::new(inner_ty.clone()))
+            }
+            Expr::ResultOk { ok_ty, .. } | Expr::ResultErr { ok_ty, .. } => {
+                Type::Result(Box::new(ok_ty.clone()))
+            }
+            Expr::MatchTagged {
+                ok_body, err_body, ..
+            } => {
+                if matches!(ok_body.as_ref(), Expr::Return(_)) {
+                    self.infer_expr_type(err_body, types)
+                } else {
+                    self.infer_expr_type(ok_body, types)
+                }
+            }
+            Expr::Return(_) => self.self_node.ast.ret_type.clone(),
         }
     }
 
@@ -427,7 +452,7 @@ where
                 }
             }
             Expr::Call { target, args } => {
-                let (_, slice_pair) =
+                let (_, slice_pair, _) =
                     self.encode_call_with_slice(target, args, env, types, guard, emit_checks)?;
                 Ok(slice_pair)
             }
@@ -435,6 +460,286 @@ where
         }
     }
 
+    fn bind_tagged_in_env(
+        prefix: &str,
+        ts: &TaggedSmt,
+        env: &mut BTreeMap<String, String>,
+        types: &mut BTreeMap<String, Type>,
+    ) {
+        env.insert(format!("{prefix}#tag"), ts.tag.clone());
+        types.insert(format!("{prefix}#tag"), Type::I64);
+        if let Some(ref e) = ts.err {
+            env.insert(format!("{prefix}#err"), e.clone());
+            types.insert(format!("{prefix}#err"), Type::I64);
+        }
+        env.insert(format!("{prefix}#val"), ts.val.clone());
+        types.insert(format!("{prefix}#val"), ts.inner_ty.clone());
+        for (i, (sub_smt, sub_ty)) in ts.val_sub.iter().enumerate() {
+            env.insert(format!("{prefix}#val#{i}"), sub_smt.clone());
+            types.insert(format!("{prefix}#val#{i}"), sub_ty.clone());
+        }
+    }
+
+    fn fresh_tagged_smt(&mut self, base: &str, ty: &Type) -> TaggedSmt {
+        let (is_result, inner_ty) = match ty {
+            Type::Result(inner) => (true, (**inner).clone()),
+            Type::Option(inner) => (false, (**inner).clone()),
+            _ => (false, Type::I64),
+        };
+        let tag = self.fresh_sym(&format!("{base}_tag"), &Type::I64);
+        self.assumptions
+            .push(format!("(assert (and (>= {tag} 0) (<= {tag} 1)))"));
+        let err = if is_result {
+            Some(self.fresh_sym(&format!("{base}_err"), &Type::I64))
+        } else {
+            None
+        };
+        let val = self.fresh_sym(&format!("{base}_val"), &inner_ty);
+        if inner_ty == Type::U8 {
+            self.assumptions
+                .push(format!("(assert (and (>= {val} 0) (<= {val} 255)))"));
+        } else if inner_ty == Type::Dec64 {
+            self.assumptions.push(format!(
+                "(assert (and (>= {val} (- 9000000000000000000)) (<= {val} 9000000000000000000)))"
+            ));
+        }
+        let mut val_sub = Vec::new();
+        if matches!(inner_ty, Type::Slice(_) | Type::Str) {
+            let p = self.fresh_sym(&format!("{base}_val_ptr"), &Type::I64);
+            let l = self.fresh_sym(&format!("{base}_val_len"), &Type::I64);
+            self.assumptions.push(format!("(assert (>= {p} 0))"));
+            self.assumptions.push(format!("(assert (>= {l} 0))"));
+            val_sub.push((p, Type::I64));
+            val_sub.push((l, Type::I64));
+        } else if let Type::Tuple(ts) = &inner_ty {
+            for (fi, fty) in ts.iter().enumerate() {
+                let fs = self.fresh_sym(&format!("{base}_val_f{fi}"), fty);
+                val_sub.push((fs, fty.clone()));
+            }
+        }
+        TaggedSmt {
+            tag,
+            err,
+            val,
+            inner_ty,
+            val_sub,
+        }
+    }
+
+    fn encode_tagged_fields(
+        &mut self,
+        expr: &Expr,
+        env: &mut BTreeMap<String, String>,
+        types: &mut BTreeMap<String, Type>,
+        guard: &str,
+        emit_checks: bool,
+    ) -> Result<Option<TaggedSmt>, InfimumDiagnostic> {
+        match expr {
+            Expr::OptionSome { value, inner_ty } => {
+                let mut val_sub = Vec::new();
+                let val = if matches!(inner_ty, Type::Slice(_) | Type::Str) {
+                    if let Some((p, l)) =
+                        self.encode_slice_fields(value, env, types, guard, emit_checks)?
+                    {
+                        val_sub.push((p, Type::I64));
+                        val_sub.push((l, Type::I64));
+                        self.fresh_sym("some_slice", &Type::I64)
+                    } else {
+                        self.encode_expr(value, env, types, guard, emit_checks)?
+                    }
+                } else if Self::is_tuple_expr(value) {
+                    if let Some(flds) =
+                        self.encode_tuple_fields(value, env, types, guard, emit_checks)?
+                    {
+                        val_sub = flds;
+                        self.fresh_sym("some_tup", &Type::I64)
+                    } else {
+                        self.encode_expr(value, env, types, guard, emit_checks)?
+                    }
+                } else {
+                    self.encode_expr(value, env, types, guard, emit_checks)?
+                };
+                Ok(Some(TaggedSmt {
+                    tag: "1".to_string(),
+                    err: None,
+                    val,
+                    inner_ty: inner_ty.clone(),
+                    val_sub,
+                }))
+            }
+            Expr::OptionNone { inner_ty } => {
+                let mut ts = self.fresh_tagged_smt("none", &Type::Option(Box::new(inner_ty.clone())));
+                ts.tag = "0".to_string();
+                Ok(Some(ts))
+            }
+            Expr::ResultOk { value, ok_ty } => {
+                let mut val_sub = Vec::new();
+                let val = if matches!(ok_ty, Type::Slice(_) | Type::Str) {
+                    if let Some((p, l)) =
+                        self.encode_slice_fields(value, env, types, guard, emit_checks)?
+                    {
+                        val_sub.push((p, Type::I64));
+                        val_sub.push((l, Type::I64));
+                        self.fresh_sym("ok_slice", &Type::I64)
+                    } else {
+                        self.encode_expr(value, env, types, guard, emit_checks)?
+                    }
+                } else if Self::is_tuple_expr(value) {
+                    if let Some(flds) =
+                        self.encode_tuple_fields(value, env, types, guard, emit_checks)?
+                    {
+                        val_sub = flds;
+                        self.fresh_sym("ok_tup", &Type::I64)
+                    } else {
+                        self.encode_expr(value, env, types, guard, emit_checks)?
+                    }
+                } else {
+                    self.encode_expr(value, env, types, guard, emit_checks)?
+                };
+                Ok(Some(TaggedSmt {
+                    tag: "1".to_string(),
+                    err: Some("0".to_string()),
+                    val,
+                    inner_ty: ok_ty.clone(),
+                    val_sub,
+                }))
+            }
+            Expr::ResultErr { code, ok_ty } => {
+                let err_smt = self.encode_expr(code, env, types, guard, emit_checks)?;
+                let mut ts = self.fresh_tagged_smt("err", &Type::Result(Box::new(ok_ty.clone())));
+                ts.tag = "0".to_string();
+                ts.err = Some(err_smt);
+                Ok(Some(ts))
+            }
+            Expr::Var(vname) => {
+                let Some(tag) = env.get(&format!("{vname}#tag")).cloned() else {
+                    return Ok(None);
+                };
+                let err = env.get(&format!("{vname}#err")).cloned();
+                let inner_ty = types
+                    .get(&format!("{vname}#val"))
+                    .cloned()
+                    .unwrap_or(Type::I64);
+                let val = env
+                    .get(&format!("{vname}#val"))
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string());
+                let mut val_sub = Vec::new();
+                let mut i = 0usize;
+                while let Some(sub_smt) = env.get(&format!("{vname}#val#{i}")).cloned() {
+                    let sub_ty = types
+                        .get(&format!("{vname}#val#{i}"))
+                        .cloned()
+                        .unwrap_or(Type::I64);
+                    val_sub.push((sub_smt, sub_ty));
+                    i += 1;
+                }
+                Ok(Some(TaggedSmt {
+                    tag,
+                    err,
+                    val,
+                    inner_ty,
+                    val_sub,
+                }))
+            }
+            Expr::Block { stmts, tail } => {
+                let mut local_env = env.clone();
+                let mut local_types = types.clone();
+                let mut declared = BTreeSet::new();
+                let tail_guard = self.encode_stmt_slice(
+                    stmts,
+                    &mut local_env,
+                    &mut local_types,
+                    Some(&mut declared),
+                    guard,
+                    emit_checks,
+                )?;
+                let res = self.encode_tagged_fields(
+                    tail,
+                    &mut local_env,
+                    &mut local_types,
+                    &tail_guard,
+                    emit_checks,
+                )?;
+                let outer_keys: Vec<String> = env.keys().cloned().collect();
+                for k in outer_keys {
+                    if declared.contains(&k) {
+                        continue;
+                    }
+                    if let Some(v) = local_env.get(&k) {
+                        env.insert(k, v.clone());
+                    } else {
+                        env.remove(&k);
+                    }
+                }
+                Ok(res)
+            }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let c = self.encode_expr(cond, env, types, guard, emit_checks)?;
+                let then_guard = conjoin_guard(guard, &c);
+                let else_guard = conjoin_guard(guard, &format!("(not {c})"));
+                let pre_mem = self.known_mem.clone();
+                let mut then_env = env.clone();
+                let mut then_types = types.clone();
+                let then_res = self.encode_tagged_fields(
+                    then_branch,
+                    &mut then_env,
+                    &mut then_types,
+                    &then_guard,
+                    emit_checks,
+                )?;
+                let then_mem = std::mem::replace(&mut self.known_mem, pre_mem);
+                let mut else_env = env.clone();
+                let mut else_types = types.clone();
+                let else_res = self.encode_tagged_fields(
+                    else_branch,
+                    &mut else_env,
+                    &mut else_types,
+                    &else_guard,
+                    emit_checks,
+                )?;
+                let else_mem = std::mem::take(&mut self.known_mem);
+                self.merge_known_mem(&c, then_mem, else_mem);
+                self.merge_branch_envs(&c, env, types, &then_env, &else_env);
+                match (then_res, else_res) {
+                    (Some(t), Some(e)) => {
+                        let tag = format!("(ite {c} {} {})", t.tag, e.tag);
+                        let err = match (t.err, e.err) {
+                            (Some(te), Some(ee)) => Some(format!("(ite {c} {te} {ee})")),
+                            _ => None,
+                        };
+                        let val = format!("(ite {c} {} {})", t.val, e.val);
+                        let mut val_sub = Vec::new();
+                        if t.val_sub.len() == e.val_sub.len() {
+                            for ((ts_s, ty), (es_s, _)) in t.val_sub.into_iter().zip(e.val_sub) {
+                                val_sub.push((format!("(ite {c} {ts_s} {es_s})"), ty));
+                            }
+                        }
+                        Ok(Some(TaggedSmt {
+                            tag,
+                            err,
+                            val,
+                            inner_ty: t.inner_ty,
+                            val_sub,
+                        }))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            Expr::Call { target, args } => {
+                let (_, _, tagged) =
+                    self.encode_call_with_slice(target, args, env, types, guard, emit_checks)?;
+                Ok(tagged)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
     fn encode_call_with_slice(
         &mut self,
         target: &TargetRef,
@@ -443,7 +748,7 @@ where
         types: &mut BTreeMap<String, Type>,
         guard: &str,
         emit_checks: bool,
-    ) -> Result<(String, Option<(String, String)>), InfimumDiagnostic> {
+    ) -> Result<(String, Option<(String, String)>, Option<TaggedSmt>), InfimumDiagnostic> {
         let mut encoded_args = Vec::with_capacity(args.len());
         for a in args {
             encoded_args.push(self.encode_expr(a, env, types, guard, emit_checks)?);
@@ -537,7 +842,7 @@ where
             }
         }
 
-        // 2. Introduce fresh result symbol (and slice #0/#1 slots if returning `[T]`)
+        // 2. Introduce fresh result symbol (and slice #0/#1 or tagged #tag/#err/#val slots)
         //    & assume callee's postconditions (or pure body summary if no `ens`).
         let call_sym = self.fresh_sym("call_ret", &callee_ast.ret_type);
         let ret_slice = if matches!(callee_ast.ret_type, Type::Slice(_) | Type::Str) {
@@ -550,6 +855,13 @@ where
             callee_env.insert("$result#1".to_string(), rl.clone());
             callee_types.insert("$result#1".to_string(), Type::I64);
             Some((rp, rl))
+        } else {
+            None
+        };
+        let ret_tagged = if matches!(callee_ast.ret_type, Type::Option(_) | Type::Result(_)) {
+            let ts = self.fresh_tagged_smt("call_ret", &callee_ast.ret_type);
+            Self::bind_tagged_in_env("$result", &ts, &mut callee_env, &mut callee_types);
+            Some(ts)
         } else {
             None
         };
@@ -578,6 +890,27 @@ where
                     self.assumptions
                         .push(format!("(assert (=> {guard} (and (= {rp} {bp}) (= {rl} {bl}))))"));
                 }
+            } else if let Some(ref rt) = ret_tagged {
+                if let Some(bt) = self.encode_tagged_fields(
+                    &callee_ast.body,
+                    &mut body_env,
+                    &mut body_types,
+                    guard,
+                    false,
+                )? {
+                    self.assumptions
+                        .push(format!("(assert (=> {guard} (= {} {})))", rt.tag, bt.tag));
+                    if let (Some(re), Some(be)) = (&rt.err, &bt.err) {
+                        self.assumptions
+                            .push(format!("(assert (=> {guard} (= {re} {be})))"));
+                    }
+                    self.assumptions
+                        .push(format!("(assert (=> {guard} (= {} {})))", rt.val, bt.val));
+                    for ((rs, _), (bs, _)) in rt.val_sub.iter().zip(bt.val_sub.iter()) {
+                        self.assumptions
+                            .push(format!("(assert (=> {guard} (= {rs} {bs})))"));
+                    }
+                }
             } else {
                 let body_smt =
                     self.encode_expr(&callee_ast.body, &mut body_env, &mut body_types, guard, false)?;
@@ -591,7 +924,7 @@ where
             self.known_mem.clear();
         }
 
-        Ok((call_sym, ret_slice))
+        Ok((call_sym, ret_slice, ret_tagged))
     }
 
     fn merge_branch_envs(
@@ -1004,7 +1337,7 @@ where
                 let mut local_env = env.clone();
                 let mut local_types = types.clone();
                 let mut declared = BTreeSet::new();
-                self.encode_stmt_slice(
+                let tail_guard = self.encode_stmt_slice(
                     stmts,
                     &mut local_env,
                     &mut local_types,
@@ -1012,7 +1345,13 @@ where
                     guard,
                     emit_checks,
                 )?;
-                let res = self.encode_expr(tail, &mut local_env, &mut local_types, guard, emit_checks)?;
+                let res = self.encode_expr(
+                    tail,
+                    &mut local_env,
+                    &mut local_types,
+                    &tail_guard,
+                    emit_checks,
+                )?;
                 for k in outer_keys {
                     let base = k.split('#').next().unwrap_or(&k);
                     if declared.contains(base) {
@@ -1138,6 +1477,137 @@ where
                 }
                 Ok(lo_s)
             }
+            Expr::OptionSome { value, .. } | Expr::ResultOk { value, .. } => {
+                let _ = self.encode_expr(value, env, types, guard, emit_checks)?;
+                Ok(self.fresh_sym("tagged", &Type::I64))
+            }
+            Expr::OptionNone { .. } => Ok(self.fresh_sym("tagged", &Type::I64)),
+            Expr::ResultErr { code, .. } => {
+                let _ = self.encode_expr(code, env, types, guard, emit_checks)?;
+                Ok(self.fresh_sym("tagged", &Type::I64))
+            }
+            Expr::MatchTagged {
+                scrutinee,
+                ok_binding,
+                ok_body,
+                err_binding,
+                err_body,
+            } => {
+                let ts = if let Some(t) =
+                    self.encode_tagged_fields(scrutinee, env, types, guard, emit_checks)?
+                {
+                    t
+                } else {
+                    let _ = self.encode_expr(scrutinee, env, types, guard, emit_checks)?;
+                    let st = self.infer_expr_type(scrutinee, types);
+                    self.fresh_tagged_smt("match_scrut", &st)
+                };
+                let ok_cond = format!("(= {} 1)", ts.tag);
+                let err_cond = format!("(= {} 0)", ts.tag);
+                let ok_guard = conjoin_guard(guard, &ok_cond);
+                let err_guard = conjoin_guard(guard, &err_cond);
+
+                let pre_mem = self.known_mem.clone();
+                let mut ok_env = env.clone();
+                let mut ok_types = types.clone();
+                if let Some(b) = ok_binding {
+                    ok_env.insert(b.clone(), ts.val.clone());
+                    ok_types.insert(b.clone(), ts.inner_ty.clone());
+                    for (i, (sub_s, sub_ty)) in ts.val_sub.iter().enumerate() {
+                        ok_env.insert(format!("{b}#{i}"), sub_s.clone());
+                        ok_types.insert(format!("{b}#{i}"), sub_ty.clone());
+                    }
+                }
+                let ok_smt = self.encode_expr(
+                    ok_body,
+                    &mut ok_env,
+                    &mut ok_types,
+                    &ok_guard,
+                    emit_checks,
+                )?;
+                let ok_mem = std::mem::replace(&mut self.known_mem, pre_mem);
+
+                let mut err_env = env.clone();
+                let mut err_types = types.clone();
+                if let Some(b) = err_binding {
+                    let es = ts
+                        .err
+                        .clone()
+                        .unwrap_or_else(|| self.fresh_sym("err_code", &Type::I64));
+                    err_env.insert(b.clone(), es);
+                    err_types.insert(b.clone(), Type::I64);
+                }
+                let err_smt = self.encode_expr(
+                    err_body,
+                    &mut err_env,
+                    &mut err_types,
+                    &err_guard,
+                    emit_checks,
+                )?;
+                let err_mem = std::mem::take(&mut self.known_mem);
+
+                if matches!(err_body.as_ref(), Expr::Return(_)) {
+                    self.known_mem = ok_mem;
+                    // Copy ok_env back to outer env for mutated vars
+                    let outer_keys: Vec<String> = env.keys().cloned().collect();
+                    for k in outer_keys {
+                        if let Some(v) = ok_env.get(&k) {
+                            env.insert(k, v.clone());
+                        }
+                    }
+                    Ok(ok_smt)
+                } else if matches!(ok_body.as_ref(), Expr::Return(_)) {
+                    self.known_mem = err_mem;
+                    let outer_keys: Vec<String> = env.keys().cloned().collect();
+                    for k in outer_keys {
+                        if let Some(v) = err_env.get(&k) {
+                            env.insert(k, v.clone());
+                        }
+                    }
+                    Ok(err_smt)
+                } else {
+                    self.merge_known_mem(&ok_cond, ok_mem, err_mem);
+                    self.merge_branch_envs(&ok_cond, env, types, &ok_env, &err_env);
+                    Ok(format!("(ite {ok_cond} {ok_smt} {err_smt})"))
+                }
+            }
+            Expr::Return(inner) => {
+                let ret_ty = self.self_node.ast.ret_type.clone();
+                let mut ens_env = env.clone();
+                let mut ens_types = types.clone();
+                let ret_smt = if matches!(ret_ty, Type::Option(_) | Type::Result(_)) {
+                    if let Some(ts) =
+                        self.encode_tagged_fields(inner, env, types, guard, emit_checks)?
+                    {
+                        Self::bind_tagged_in_env("$result", &ts, &mut ens_env, &mut ens_types);
+                    } else {
+                        let _ = self.encode_expr(inner, env, types, guard, emit_checks)?;
+                    }
+                    self.fresh_sym("early_ret", &ret_ty)
+                } else {
+                    self.encode_expr(inner, env, types, guard, emit_checks)?
+                };
+                if emit_checks && !self.self_node.ast.ensures.is_empty() {
+                    ens_env.insert("$result".to_string(), ret_smt.clone());
+                    ens_types.insert("$result".to_string(), ret_ty.clone());
+                    let ensures = self.self_node.ast.ensures.clone();
+                    for (i, ens_expr) in ensures.iter().enumerate() {
+                        let mut ce = ens_env.clone();
+                        let mut ct = ens_types.clone();
+                        let ens_smt =
+                            self.encode_expr(ens_expr, &mut ce, &mut ct, guard, false)?;
+                        self.obligations.push(ProofObligation {
+                            guard_smt: guard.to_string(),
+                            goal_smt: ens_smt,
+                            kind: ObligationKind::Postcondition {
+                                index: i + 1,
+                                display: crate::canon::format_expr_human(ens_expr),
+                            },
+                        });
+                    }
+                }
+                Ok(ret_smt)
+            }
         }
     }
 
@@ -1149,8 +1619,11 @@ where
         mut declared: Option<&mut BTreeSet<String>>,
         guard: &str,
         emit_checks: bool,
-    ) -> Result<(), InfimumDiagnostic> {
+    ) -> Result<String, InfimumDiagnostic> {
+        let mut cur_guard = guard.to_string();
         for stmt in stmts {
+            let g = cur_guard.clone();
+            let guard = g.as_str();
             match stmt {
                 Stmt::Let {
                     name, ty, value, ..
@@ -1172,6 +1645,20 @@ where
                         }
                         let v_smt = self.fresh_sym("tup", &Type::I64);
                         local_env.insert(name.clone(), v_smt);
+                    } else if matches!(inferred_ty, Type::Option(_) | Type::Result(_)) {
+                        if let Some(ts) =
+                            self.encode_tagged_fields(value, local_env, local_types, guard, emit_checks)?
+                        {
+                            Self::bind_tagged_in_env(name, &ts, local_env, local_types);
+                            let v_smt = self.fresh_sym("tagged", &Type::I64);
+                            local_env.insert(name.clone(), v_smt);
+                        } else {
+                            let v_smt =
+                                self.encode_expr(value, local_env, local_types, guard, emit_checks)?;
+                            local_env.insert(name.clone(), v_smt);
+                            let ts = self.fresh_tagged_smt(name, &inferred_ty);
+                            Self::bind_tagged_in_env(name, &ts, local_env, local_types);
+                        }
                     } else if matches!(inferred_ty, Type::Slice(_) | Type::Str) {
                         if let Some((psmt, lsmt)) =
                             self.encode_slice_fields(value, local_env, local_types, guard, emit_checks)?
@@ -1373,10 +1860,13 @@ where
                 }
                 Stmt::Expr(e) => {
                     let _ = self.encode_expr(e, local_env, local_types, guard, emit_checks)?;
+                    if matches!(e, Expr::Return(_)) {
+                        cur_guard = "false".to_string();
+                    }
                 }
             }
         }
-        Ok(())
+        Ok(cur_guard)
     }
 }
 
@@ -1388,6 +1878,7 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::BoolLit(_)
         | Expr::StrLit(_)
         | Expr::UnitLit
+        | Expr::OptionNone { .. }
         | Expr::Var(_) => {}
         Expr::Unary { expr: inner, .. }
         | Expr::SecretWrap(inner)
@@ -1399,7 +1890,21 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::SlicePtr(inner)
         | Expr::StrToBytes(inner)
         | Expr::StrFromBytes(inner)
-        | Expr::SliceLen(inner) => collect_mutated_vars_expr(inner, out),
+        | Expr::SliceLen(inner)
+        | Expr::OptionSome { value: inner, .. }
+        | Expr::ResultOk { value: inner, .. }
+        | Expr::ResultErr { code: inner, .. }
+        | Expr::Return(inner) => collect_mutated_vars_expr(inner, out),
+        Expr::MatchTagged {
+            scrutinee,
+            ok_body,
+            err_body,
+            ..
+        } => {
+            collect_mutated_vars_expr(scrutinee, out);
+            collect_mutated_vars_expr(ok_body, out);
+            collect_mutated_vars_expr(err_body, out);
+        }
         Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
             collect_mutated_vars_expr(ptr, out);
             collect_mutated_vars_expr(len, out);
@@ -1523,6 +2028,49 @@ where
             base_types.insert(format!("{cname}#0"), Type::I64);
             base_env.insert(format!("{cname}#1"), lsym);
             base_types.insert(format!("{cname}#1"), Type::I64);
+        } else if let Type::Option(inner) | Type::Result(inner) = &p.ty {
+            let is_res = matches!(p.ty, Type::Result(_));
+            let tsym = format!("p{i}_tag");
+            param_decls.push(format!("(declare-const {tsym} Int)"));
+            param_decls.push(format!("(assert (and (>= {tsym} 0) (<= {tsym} 1)))"));
+            base_env.insert(format!("{cname}#tag"), tsym);
+            base_types.insert(format!("{cname}#tag"), Type::I64);
+            if is_res {
+                let esym = format!("p{i}_err");
+                param_decls.push(format!("(declare-const {esym} Int)"));
+                base_env.insert(format!("{cname}#err"), esym);
+                base_types.insert(format!("{cname}#err"), Type::I64);
+            }
+            let vsym = format!("p{i}_val");
+            param_decls.push(format!("(declare-const {vsym} {})", smt_sort(inner)));
+            if **inner == Type::U8 {
+                param_decls.push(format!("(assert (and (>= {vsym} 0) (<= {vsym} 255)))"));
+            } else if **inner == Type::Dec64 {
+                param_decls.push(format!(
+                    "(assert (and (>= {vsym} (- 9000000000000000000)) (<= {vsym} 9000000000000000000)))"
+                ));
+            }
+            base_env.insert(format!("{cname}#val"), vsym);
+            base_types.insert(format!("{cname}#val"), (**inner).clone());
+            if matches!(inner.as_ref(), Type::Slice(_) | Type::Str) {
+                let psym = format!("p{i}_val_f0");
+                let lsym = format!("p{i}_val_f1");
+                param_decls.push(format!("(declare-const {psym} Int)"));
+                param_decls.push(format!("(declare-const {lsym} Int)"));
+                param_decls.push(format!("(assert (>= {psym} 0))"));
+                param_decls.push(format!("(assert (>= {lsym} 0))"));
+                base_env.insert(format!("{cname}#val#0"), psym);
+                base_types.insert(format!("{cname}#val#0"), Type::I64);
+                base_env.insert(format!("{cname}#val#1"), lsym);
+                base_types.insert(format!("{cname}#val#1"), Type::I64);
+            } else if let Type::Tuple(ts) = inner.as_ref() {
+                for (fi, fty) in ts.iter().enumerate() {
+                    let fsym = format!("p{i}_val_f{fi}");
+                    param_decls.push(format!("(declare-const {fsym} {})", smt_sort(fty)));
+                    base_env.insert(format!("{cname}#val#{fi}"), fsym);
+                    base_types.insert(format!("{cname}#val#{fi}"), fty.clone());
+                }
+            }
         }
     }
 
@@ -1585,6 +2133,22 @@ where
             ens_env.insert("$result#1".to_string(), rl);
             ens_types.insert("$result#0".to_string(), Type::I64);
             ens_types.insert("$result#1".to_string(), Type::I64);
+            b
+        }
+    } else if matches!(canon_fn.ret_type, Type::Option(_) | Type::Result(_)) {
+        if let Some(ts) = builder.encode_tagged_fields(
+            &canon_fn.body,
+            &mut body_env,
+            &mut body_types,
+            "true",
+            true,
+        )? {
+            SmtBuilder::<F>::bind_tagged_in_env("$result", &ts, &mut ens_env, &mut ens_types);
+            builder.fresh_sym("tagged_body", &Type::I64)
+        } else {
+            let b = builder.encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?;
+            let ts = builder.fresh_tagged_smt("ret_tagged", &canon_fn.ret_type);
+            SmtBuilder::<F>::bind_tagged_in_env("$result", &ts, &mut ens_env, &mut ens_types);
             b
         }
     } else {
@@ -1797,7 +2361,7 @@ fn smt_sort(ty: &Type) -> &'static str {
         Type::I64 | Type::U8 | Type::Fixed | Type::Dec64 => "Int",
         Type::Bool | Type::Unit => "Bool",
         Type::Secret(inner) => smt_sort(inner),
-        Type::Tuple(_) | Type::Slice(_) | Type::Str => "Int",
+        Type::Tuple(_) | Type::Slice(_) | Type::Str | Type::Option(_) | Type::Result(_) => "Int",
     }
 }
 

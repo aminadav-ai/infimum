@@ -137,6 +137,10 @@ pub(crate) enum RawMatchPattern {
     Bool(bool),
     ConstRef(String, Span),
     Path(Vec<String>, Span),
+    Some(Option<String>, Span),
+    None(Span),
+    Ok(Option<String>, Span),
+    Err(Option<String>, Span),
 }
 
 #[derive(Clone)]
@@ -156,6 +160,8 @@ pub(crate) enum RawType {
     Secret(Box<RawType>),
     Tuple(Vec<RawType>),
     Slice(Box<RawType>),
+    Option(Box<RawType>),
+    Result(Box<RawType>),
 }
 
 #[derive(Clone)]
@@ -332,6 +338,17 @@ pub(crate) enum RawExpr {
     SliceIndex(Box<RawSliceIndex>),
     SliceRange(Box<RawSliceRange>),
     VecOp(Box<RawVecOp>),
+    OptionSome(Box<RawExpr>),
+    OptionNone(Span),
+    ResultOk(Box<RawExpr>),
+    ResultErr(Box<RawExpr>, Span),
+    Try(Box<RawExpr>, Span),
+    TaggedMethod {
+        base: Box<RawExpr>,
+        method: String,
+        arg: Option<Box<RawExpr>>,
+        span: Span,
+    },
 }
 
 #[derive(Clone)]

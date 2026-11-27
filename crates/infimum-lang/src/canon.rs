@@ -805,6 +805,104 @@ where
                     resolve_hash,
                 )?),
             }),
+            Expr::OptionSome { value, inner_ty } => Ok(Expr::OptionSome {
+                value: Box::new(canon_expr(
+                    value,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                inner_ty: inner_ty.clone(),
+            }),
+            Expr::OptionNone { inner_ty } => Ok(Expr::OptionNone {
+                inner_ty: inner_ty.clone(),
+            }),
+            Expr::ResultOk { value, ok_ty } => Ok(Expr::ResultOk {
+                value: Box::new(canon_expr(
+                    value,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                ok_ty: ok_ty.clone(),
+            }),
+            Expr::ResultErr { code, ok_ty } => Ok(Expr::ResultErr {
+                code: Box::new(canon_expr(
+                    code,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                ok_ty: ok_ty.clone(),
+            }),
+            Expr::MatchTagged {
+                scrutinee,
+                ok_binding,
+                ok_body,
+                err_binding,
+                err_body,
+            } => {
+                let cscrut = canon_expr(
+                    scrutinee,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?;
+                env.push_frame();
+                let cok_bind = ok_binding.as_ref().map(|b| env.bind_local(b, false));
+                let cok_body = canon_expr(
+                    ok_body,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?;
+                env.pop_frame();
+
+                env.push_frame();
+                let cerr_bind = err_binding.as_ref().map(|b| env.bind_local(b, false));
+                let cerr_body = canon_expr(
+                    err_body,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?;
+                env.pop_frame();
+
+                Ok(Expr::MatchTagged {
+                    scrutinee: Box::new(cscrut),
+                    ok_binding: cok_bind,
+                    ok_body: Box::new(cok_body),
+                    err_binding: cerr_bind,
+                    err_body: Box::new(cerr_body),
+                })
+            }
+            Expr::Return(inner) => Ok(Expr::Return(Box::new(canon_expr(
+                inner,
+                self_name,
+                env,
+                deps,
+                perform_effects,
+                resolve_name,
+                resolve_hash,
+            )?))),
     }
 }
 
@@ -1126,6 +1224,53 @@ fn format_expr(expr: &Expr, out: &mut String) {
             out.push_str(", ");
             format_expr(len, out);
             out.push(')');
+        }
+        Expr::OptionSome { value, .. } => {
+            out.push_str("Some(");
+            format_expr(value, out);
+            out.push(')');
+        }
+        Expr::OptionNone { .. } => out.push_str("None"),
+        Expr::ResultOk { value, .. } => {
+            out.push_str("Ok(");
+            format_expr(value, out);
+            out.push(')');
+        }
+        Expr::ResultErr { code, .. } => {
+            out.push_str("Err(");
+            format_expr(code, out);
+            out.push(')');
+        }
+        Expr::MatchTagged {
+            scrutinee,
+            ok_binding,
+            ok_body,
+            err_binding,
+            err_body,
+        } => {
+            out.push_str("match ");
+            format_expr(scrutinee, out);
+            out.push_str(" { ok(");
+            if let Some(b) = ok_binding {
+                out.push_str(b);
+            } else {
+                out.push('_');
+            }
+            out.push_str(") => ");
+            format_expr(ok_body, out);
+            out.push_str(", err(");
+            if let Some(b) = err_binding {
+                out.push_str(b);
+            } else {
+                out.push('_');
+            }
+            out.push_str(") => ");
+            format_expr(err_body, out);
+            out.push_str(" }");
+        }
+        Expr::Return(inner) => {
+            out.push_str("return ");
+            format_expr(inner, out);
         }
     }
 }
