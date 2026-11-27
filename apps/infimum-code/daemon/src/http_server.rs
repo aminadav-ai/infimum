@@ -635,19 +635,10 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
             let tl = v
                 .get("timeline_words")
                 .and_then(|a| a.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let mut out = format!("{role} {} {char_len} {imgs_n}\n", tl.len());
-            if !tl.is_empty() {
-                let s: Vec<String> = tl
-                    .iter()
-                    .filter_map(|w| w.as_i64().map(|n| n.to_string()))
-                    .collect();
-                out.push_str(&s.join(" "));
-            }
-            out.push('\n');
-            out.push_str(text);
-            out
+                .map(|a| a.as_slice())
+                .unwrap_or(&[]);
+            let (tl_n, tl_joined) = format_timeline_within_budget(tl, char_len + 48);
+            format!("{role} {tl_n} {char_len} {imgs_n}\n{tl_joined}\n{text}")
         }
         ("GET", "/settings") => {
             if v.get("found").and_then(|b| b.as_bool()).unwrap_or(false) {
@@ -688,12 +679,8 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
             let tl = v
                 .get("timeline_words")
                 .and_then(|a| a.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let tl_str: Vec<String> = tl
-                .iter()
-                .filter_map(|w| w.as_i64().map(|n| n.to_string()))
-                .collect();
+                .map(|a| a.as_slice())
+                .unwrap_or(&[]);
             if st == 1 {
                 let el = v.get("elapsed_tenths").and_then(|x| x.as_i64()).unwrap_or(0);
                 let kil = v.get("killing").and_then(|x| x.as_i64()).unwrap_or(0);
@@ -702,7 +689,9 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
                     .and_then(|s| s.as_str())
                     .unwrap_or("")
                     .replace('\n', " ");
-                format!("1 {el} {kil} {}\n{line}\n{}", tl.len(), tl_str.join(" "))
+                let (tl_n, tl_joined) =
+                    format_timeline_within_budget(tl, line.chars().count() + 64);
+                format!("1 {el} {kil} {tl_n}\n{line}\n{tl_joined}")
             } else {
                 let el = v.get("elapsed_tenths").and_then(|x| x.as_i64()).unwrap_or(0);
                 let cm = v.get("cost_milli_ils").and_then(|x| x.as_i64()).unwrap_or(0);
@@ -713,14 +702,34 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
                     .unwrap_or("")
                     .replace('\n', " ");
                 let reply = v.get("reply").and_then(|s| s.as_str()).unwrap_or("");
-                format!(
-                    "2 {el} {cm} {tok} {}\n{hdr}\n{}\n{reply}",
-                    tl.len(),
-                    tl_str.join(" ")
-                )
+                let (tl_n, tl_joined) = format_timeline_within_budget(
+                    tl,
+                    hdr.chars().count() + reply.chars().count() + 64,
+                );
+                format!("2 {el} {cm} {tok} {tl_n}\n{hdr}\n{tl_joined}\n{reply}")
             }
         }
         _ => v.to_string(),
+    }
+}
+
+/// Fit `timeline_words` into the remaining 65,000-char capsule HTTP response buffer budget
+/// without EVER truncating the message/reply text.
+fn format_timeline_within_budget(tl: &[Value], reserved_chars: usize) -> (usize, String) {
+    const MAX_HTTP_RESP_CHARS: usize = 65_000;
+    if tl.is_empty() || reserved_chars + 64 >= MAX_HTTP_RESP_CHARS {
+        return (0, String::new());
+    }
+    let budget = MAX_HTTP_RESP_CHARS - reserved_chars - 64;
+    let nums: Vec<String> = tl
+        .iter()
+        .filter_map(|w| w.as_i64().map(|n| n.to_string()))
+        .collect();
+    let joined = nums.join(" ");
+    if joined.len() <= budget {
+        (nums.len(), joined)
+    } else {
+        (0, String::new())
     }
 }
 
