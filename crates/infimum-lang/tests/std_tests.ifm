@@ -36,8 +36,8 @@ test "std/buf push, int formatting, JSON escaping, and search" {
   buf_clear(StdTestMem::buf_a);
   buf_push_int(StdTestMem::buf_a, 200, -4096);
   assert(buf_len(StdTestMem::buf_a, 200) == 5);
-  assert(mem_load(StdTestMem::buf_a + 1) == '-');
-  assert(mem_load(StdTestMem::buf_a + 2) == '4');
+  assert(buf_get_cp(StdTestMem::buf_a, 0) == '-');
+  assert(buf_get_cp(StdTestMem::buf_a, 1) == '4');
   assert(buf_find_cp(StdTestMem::buf_a, 0, 5, '9') == 3);
   assert(buf_find_cp(StdTestMem::buf_a, 0, 5, 'z') == -1);
 
@@ -50,8 +50,8 @@ test "std/buf push, int formatting, JSON escaping, and search" {
   buf_clear(StdTestMem::buf_b);
   buf_push_json_escaped(StdTestMem::buf_b, 64, StdTestMem::buf_a, 0, 4);
   assert(buf_len(StdTestMem::buf_b, 64) == 6);
-  assert(mem_load(StdTestMem::buf_b + 2) == '\\');
-  assert(mem_load(StdTestMem::buf_b + 3) == '"');
+  assert(buf_get_cp(StdTestMem::buf_b, 1) == '\\');
+  assert(buf_get_cp(StdTestMem::buf_b, 2) == '"');
 }
 
 test "std/json find_key, parse_int, and decode_string" {
@@ -80,7 +80,7 @@ test "std/json find_key, parse_int, and decode_string" {
   assert(v_m >= 0);
   let dlen = json_decode_string(j, v_m, n, StdTestMem::buf_b, 128);
   assert(dlen == 4);
-  assert(mem_load(StdTestMem::buf_b + 3) == '\n');
+  assert(buf_get_cp(StdTestMem::buf_b, 2) == '\n');
 }
 
 test "std/text_edit insert, backspace, word bounds, and wrapping" {
@@ -123,23 +123,26 @@ test "std/color pack, unpack, alpha, lerp, and brightness" {
 
 test "std/gfx frame lifecycle, forma pointer mailbox, and ui_image_slot" {
   forma_begin_frame(1280, 720, 100, 200, 1, -24);
-  assert(mem_load(STD_PRIM_COUNT_WORD) == 0);
+  assert(gfx_prim_count() == 0);
   assert(forma_wheel_dy() == -24);
   assert(!forma_hovered());
 
   forma_set_pointer(-1, -1, 0, 12);
-  assert(mem_load(STD_FORMA_MAILBOX_WORD) == -1);
+  let mb = slice_i64(STD_FORMA_MAILBOX_WORD, 1);
+  assert(mb[0] == -1);
   assert(forma_wheel_dy() == 12);
 
   gfx_set_cursor(1);
-  assert(mem_load(STD_CURSOR_KIND_WORD) == 1);
+  let ck = slice_i64(STD_CURSOR_KIND_WORD, 1);
+  assert(ck[0] == 1);
 
   ui_rect(10, 20, 100, 40, 8, 1, 0, pack_rgba(20, 24, 32, 255), 0, 0);
   ui_image(10, 70, 64, 64, 6, 0);
   ui_image_slot(80, 70, 64, 64, 6, 5, 0);
-  assert(mem_load(STD_PRIM_COUNT_WORD) == 3);
+  assert(gfx_prim_count() == 3);
   // 3rd prim (index 2) meta has kind=4, radius=6, slot=5
-  let p2_meta = mem_load(STD_GPU_PRIMS_WORD + 2 * 8 + 4);
+  let p2 = slice_i64(STD_GPU_PRIMS_WORD + 2 * 8, 8);
+  let p2_meta = p2[4];
   assert((p2_meta & 15) == 4);
   assert(((p2_meta >> 12) & 15) == 5);
 }
@@ -159,7 +162,7 @@ test "std/markdown measure and draw headings, list, and hr" {
   let dh = md_draw(b, 200, 20, 20, 400, 15, 22, THEME_DARK, 0, 0, 600);
   assert(mh > 0);
   assert(mh == dh);
-  assert(mem_load(STD_PRIM_COUNT_WORD) > 0);
+  assert(gfx_prim_count() > 0);
 }
 
 test "std/mem FrameScratch, Arena, Pool, and host_ret" {
@@ -171,10 +174,14 @@ test "std/mem FrameScratch, Arena, Pool, and host_ret" {
   assert(scratch_calloc(5000) == -1);
   let s1 = scratch_alloc(16);
   assert(s1 == SYS_SCRATCH_BASE_WORD);
-  mem_store(s1 + 16, 999);
+  if s1 >= 0 {
+    let dirty = slice_i64(s1 + 16, 1);
+    dirty[0] = 999;
+  }
   let s2 = scratch_calloc(8);
   assert(s2 == SYS_SCRATCH_BASE_WORD + 16);
-  assert(mem_load(s2) == 0);
+  let s2_first = if s2 >= 0 { let s2v = slice_i64(s2, 8); s2v[0] } else { -1 };
+  assert(s2_first == 0);
   assert(scratch_used() == 24);
   scratch_reset();
   assert(scratch_used() == 0);
@@ -188,13 +195,11 @@ test "std/mem FrameScratch, Arena, Pool, and host_ret" {
   assert(arena_alloc(StdTestMem::arena_buf, 128, StdTestMem::arena_cur, 200) == -1);
 
   let src = StdTestMem::buf_a;
-  buf_clear(src);
-  buf_push_cp(src, 32, 'O');
-  buf_push_cp(src, 32, 'K');
+  buf_set_str(src, 32, "OK");
   let copy_ptr = arena_push_strbuf(StdTestMem::arena_buf, 128, StdTestMem::arena_cur, src, 32);
   assert(copy_ptr == StdTestMem::arena_buf + 10);
-  assert(mem_load(copy_ptr) == 2);
-  assert(mem_load(copy_ptr + 1) == 'O' && mem_load(copy_ptr + 2) == 'K');
+  assert(buf_len(copy_ptr, 32) == 2);
+  assert(buf_get_cp(copy_ptr, 0) == 'O' && buf_get_cp(copy_ptr, 1) == 'K');
 
   // 3. Pool
   pool_init(StdTestMem::pool_flags, 8);
@@ -209,36 +214,44 @@ test "std/mem FrameScratch, Arena, Pool, and host_ret" {
   assert(pool_alloc(StdTestMem::pool_flags, 8) == 0);
 
   // 4. host_ret
-  mem_store(SYS_HOST_RET_WORD, 200);
+  let hr = slice_i64(SYS_HOST_RET_WORD, 1);
+  hr[0] = 200;
   assert(host_ret() == 200);
 }
 
 test "std/gfx forma_set_input, forma_focus_id, forma_set_focus, and forma_cursor" {
   forma_begin_frame(800, 600, 100, 120, 0, 0);
   forma_set_input(1, 65, 0, 42);
-  assert(mem_load(SYS_FORMA_MDOWN_WORD) == 1);
-  assert(mem_load(SYS_FORMA_KEY_CHAR_WORD) == 65);
-  assert(mem_load(SYS_FORMA_TICK_WORD) == 42);
+  let fm_mdown = slice_i64(SYS_FORMA_MDOWN_WORD, 1);
+  let fm_kch = slice_i64(SYS_FORMA_KEY_CHAR_WORD, 1);
+  let fm_tick = slice_i64(SYS_FORMA_TICK_WORD, 1);
+  let fm_drag = slice_i64(SYS_FORMA_DRAG_ID_WORD, 1);
+  let fm_caret = slice_i64(SYS_FORMA_CARET_POS_WORD, 1);
+  let fm_scr = slice_i64(SYS_FORMA_TEXT_SCROLL_WORD, 1);
+  let fm_hov = slice_i64(SYS_FORMA_HOVERED_WORD, 1);
+  assert(fm_mdown[0] == 1);
+  assert(fm_kch[0] == 65);
+  assert(fm_tick[0] == 42);
 
   // Active drag releases automatically when m_down == 0
-  mem_store(SYS_FORMA_DRAG_ID_WORD, 7);
+  fm_drag[0] = 7;
   forma_set_input(0, 0, 0, 43);
-  assert(mem_load(SYS_FORMA_DRAG_ID_WORD) == 0);
+  assert(fm_drag[0] == 0);
 
   // Focus switch resets caret and horizontal scroll
-  mem_store(SYS_FORMA_CARET_POS_WORD, 9);
-  mem_store(SYS_FORMA_TEXT_SCROLL_WORD, 40);
+  fm_caret[0] = 9;
+  fm_scr[0] = 40;
   forma_set_focus(12);
   assert(forma_focus_id() == 12);
-  assert(mem_load(SYS_FORMA_CARET_POS_WORD) == 0);
-  assert(mem_load(SYS_FORMA_TEXT_SCROLL_WORD) == 0);
+  assert(fm_caret[0] == 0);
+  assert(fm_scr[0] == 0);
 
   // Cursor kind decoding: 0 -> Default, >0 -> Pointer(1), <0 -> Text(2)
-  mem_store(SYS_FORMA_HOVERED_WORD, 0);
+  fm_hov[0] = 0;
   assert(forma_cursor() == 0);
-  mem_store(SYS_FORMA_HOVERED_WORD, 5);
+  fm_hov[0] = 5;
   assert(forma_cursor() == 1 && forma_hovered());
-  mem_store(SYS_FORMA_HOVERED_WORD, -5);
+  fm_hov[0] = -5;
   assert(forma_cursor() == 2 && !forma_hovered());
 }
 
@@ -247,49 +260,33 @@ test "std/gfx forma_paste_text, forma_copy_text, and selection replacement" {
   let field_buf = scratch_alloc(64);
   let paste_buf = scratch_alloc(64);
   let copy_buf = scratch_alloc(64);
-  buf_clear(field_buf);
-  buf_push_cp(field_buf, 32, 'H');
-  buf_push_cp(field_buf, 32, 'i');
-  buf_push_cp(field_buf, 32, ' ');
-  buf_push_cp(field_buf, 32, 'W');
-  buf_push_cp(field_buf, 32, 'o');
-  buf_push_cp(field_buf, 32, 'r');
-  buf_push_cp(field_buf, 32, 'l');
-  buf_push_cp(field_buf, 32, 'd');
+  buf_set_str(field_buf, 32, "Hi World");
 
   // Focus field_buf (unmasked) with selection [3..8) ("World")
   forma_set_focus(77);
-  mem_store(SYS_FORMA_TEXT_BUF_WORD, field_buf);
-  mem_store(SYS_FORMA_TEXT_MAX_WORD, 32);
-  mem_store(SYS_FORMA_TEXT_MASK_WORD, 0);
-  mem_store(SYS_FORMA_SEL_ANCHOR_WORD, 3);
-  mem_store(SYS_FORMA_CARET_POS_WORD, 8);
+  forma_bind_text_input(field_buf, 32, 0);
+  forma_set_sel(3, 8);
   assert(forma_sel_range_len() == 5);
 
   // Copy selected range "World"
   let copied = forma_copy_text(copy_buf, 32);
   assert(copied == 5);
-  assert(mem_load(copy_buf) == 5);
-  assert(mem_load(copy_buf + 1) == 'W' && mem_load(copy_buf + 5) == 'd');
+  assert(buf_len(copy_buf, 32) == 5);
+  assert(buf_get_cp(copy_buf, 0) == 'W' && buf_get_cp(copy_buf, 4) == 'd');
 
   // Paste "Forma" replacing "World" -> "Hi Forma"
-  buf_clear(paste_buf);
-  buf_push_cp(paste_buf, 32, 'F');
-  buf_push_cp(paste_buf, 32, 'o');
-  buf_push_cp(paste_buf, 32, 'r');
-  buf_push_cp(paste_buf, 32, 'm');
-  buf_push_cp(paste_buf, 32, 'a');
+  buf_set_str(paste_buf, 32, "Forma");
   let pasted = forma_paste_text(paste_buf, 5);
   assert(pasted == 5);
-  assert(mem_load(field_buf) == 8);
-  assert(mem_load(field_buf + 4) == 'F' && mem_load(field_buf + 8) == 'a');
+  assert(buf_len(field_buf, 32) == 8);
+  assert(buf_get_cp(field_buf, 3) == 'F' && buf_get_cp(field_buf, 7) == 'a');
   assert(forma_sel_range_len() == 0);
-  assert(mem_load(SYS_FORMA_TEXT_CHANGED_WORD) == 1);
+  let fm_chg = slice_i64(SYS_FORMA_TEXT_CHANGED_WORD, 1);
+  assert(fm_chg[0] == 1);
 
   // Masked field refuses copy
-  mem_store(SYS_FORMA_TEXT_MASK_WORD, 1);
-  mem_store(SYS_FORMA_SEL_ANCHOR_WORD, 0);
-  mem_store(SYS_FORMA_CARET_POS_WORD, 8);
+  forma_bind_text_input(field_buf, 32, 1);
+  forma_set_sel(0, 8);
   assert(forma_copy_text(copy_buf, 32) == 0);
 }
 
@@ -308,17 +305,14 @@ test "std/json unicode \\uXXXX decoding and std/input KeySpecial" {
   buf_push_cp(src, 32, '"');
   let dn = json_decode_string(src, 0, 8, dst, 32);
   assert(dn == 1);
-  assert(mem_load(dst + 1) == 1040);
+  assert(buf_get_cp(dst, 0) == 1040);
   assert(KeySpecial::Enter == 2 && KeySpecial::CtrlA == 20 && KEY_Z == 8192);
 }
 
 test "std/markdown full GFM table layout and md_hit" {
   gfx_begin_frame(800, 600);
   let b = scratch_alloc(64);
-  mem_store(b, 17);
-  mem_store(b + 1, '|'); mem_store(b + 2, 'A'); mem_store(b + 3, '|'); mem_store(b + 4, 'B'); mem_store(b + 5, '|'); mem_store(b + 6, '\n');
-  mem_store(b + 7, '|'); mem_store(b + 8, '-'); mem_store(b + 9, '|'); mem_store(b + 10, '-'); mem_store(b + 11, '|'); mem_store(b + 12, '\n');
-  mem_store(b + 13, '|'); mem_store(b + 14, '1'); mem_store(b + 15, '|'); mem_store(b + 16, '2'); mem_store(b + 17, '|');
+  buf_set_str(b, 60, "|A|B|\n|-|-|\n|1|2|");
   let h = md_measure_h(b, 64, 400, 14, 20, 0);
   assert(h > 40);
   let hit_top = md_hit(b, 64, 10, -5, 0, 0, 400, 14, 20, 0);

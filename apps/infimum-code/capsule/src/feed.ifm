@@ -16,36 +16,36 @@ use "timeline.ifm" as tl;
 // Detect trailing `[PLAY:<app.ifw>]` tag at the end of an assistant reply.
 // Returns the word offset where the tag (including preceding `\n` if any) starts, or -1 if absent.
 pub fn find_play_tag(text_ptr: i64) -[Mem]-> i64 {
-  let n = clamp_i64(mem_load(text_ptr), 0, MAX_MSG_CHARS);
+  let n = buf_len(text_ptr, MAX_MSG_CHARS);
   let mut end_i = n;
   while end_i > 0 max 32 {
-    let ch = mem_load(text_ptr + end_i);
+    let ch = buf_get_cp(text_ptr, end_i - 1);
     if ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t' {
       end_i -= 1;
     } else {
       break;
     }
   }
-  if end_i < 8 || mem_load(text_ptr + end_i) != ']' {
+  if end_i < 8 || buf_get_cp(text_ptr, end_i - 1) != ']' {
     -1
   } else {
     let min_scan = if end_i > 160 { end_i - 160 } else { 0 };
     let mut i = end_i - 6;
     let mut found = -1;
     while i >= min_scan max 170 {
-      if mem_load(text_ptr + 1 + i) == '['
-        && mem_load(text_ptr + 2 + i) == 'P'
-        && mem_load(text_ptr + 3 + i) == 'L'
-        && mem_load(text_ptr + 4 + i) == 'A'
-        && mem_load(text_ptr + 5 + i) == 'Y'
-        && mem_load(text_ptr + 6 + i) == ':'
+      if buf_get_cp(text_ptr, i) == '['
+        && buf_get_cp(text_ptr, i + 1) == 'P'
+        && buf_get_cp(text_ptr, i + 2) == 'L'
+        && buf_get_cp(text_ptr, i + 3) == 'A'
+        && buf_get_cp(text_ptr, i + 4) == 'Y'
+        && buf_get_cp(text_ptr, i + 5) == ':'
       {
         found = i;
         break;
       }
       i -= 1;
     }
-    if found > 0 && mem_load(text_ptr + found) == '\n' {
+    if found > 0 && buf_get_cp(text_ptr, found - 1) == '\n' {
       found - 1
     } else {
       found
@@ -54,24 +54,24 @@ pub fn find_play_tag(text_ptr: i64) -[Mem]-> i64 {
 }
 
 pub fn extract_play_name(text_ptr: i64, tag_pos: i64, dst: i64) -[Mem]-> i64 {
-  let n = clamp_i64(mem_load(text_ptr), 0, MAX_MSG_CHARS);
+  let n = buf_len(text_ptr, MAX_MSG_CHARS);
   let mut p = tag_pos;
-  if p < n && mem_load(text_ptr + 1 + p) == '\n' {
+  if p < n && buf_get_cp(text_ptr, p) == '\n' {
     p += 1;
   }
   // Skip `[PLAY:` (6 chars)
   p += 6;
   let mut w = 0;
   while p < n && w < 120 max 130 {
-    let ch = mem_load(text_ptr + 1 + p);
+    let ch = buf_get_cp(text_ptr, p);
     if ch == ']' || ch == '\n' || ch == '\r' {
       break;
     }
-    mem_store(dst + 1 + w, ch);
+    buf_set_cp(dst, w, ch);
     w += 1;
     p += 1;
   }
-  mem_store(dst, w);
+  buf_set_len(dst, w);
   w
 }
 
@@ -85,7 +85,7 @@ pub fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem]->
   ui_rect(main_x, 0, main_w, top_h, 0, 1, 0, col_bg(th), col_border(th), ClipId::Root);
   if vm == ViewMode::Web {
     ui_text(main_x + 20, (top_h - hdr_sz) / 2, "infimum-web / Clean-Reader (0% JS)", hdr_sz, 1, col_text(th), ClipId::Root);
-  } else if mem_load(StudioMem::active_hdr_buf) > 0 {
+  } else if buf_len(StudioMem::active_hdr_buf, 256) > 0 {
     emit_line_ptr(main_x + 20, (top_h - hdr_sz) / 2, StudioMem::active_hdr_buf, hdr_sz, 1, col_text(th), ClipId::Root);
   } else {
     ui_text(main_x + 20, (top_h - hdr_sz) / 2, "infimum-code.ifw / Автономный диалог Gemini 4", hdr_sz, 1, col_text(th), ClipId::Root);
@@ -216,7 +216,7 @@ pub fn render_feed(
       let text_ptr = StudioMem.msg_meta[mi].text_ptr;
       let is_user = role == 0;
       let u_btn_s = clamp_i64(sf(26), 26, 38);
-      let orig_text_len = mem_load(text_ptr);
+      let orig_text_len = buf_len(text_ptr, MAX_MSG_CHARS);
       let play_pos = if !is_user { find_play_tag(text_ptr) } else { -1 };
       let cached = StudioMem.msg_meta[mi].cached_h;
       let mh = if cached > 0 {
@@ -225,9 +225,9 @@ pub fn render_feed(
         let computed = if is_user {
           measure_wrapped_ptr(col_w - 28 - u_btn_s - 6, text_ptr, body_sz, line_h, 0)
         } else {
-          if play_pos >= 0 { mem_store(text_ptr, play_pos); }
+          if play_pos >= 0 { buf_set_len(text_ptr, play_pos); }
           let h_md = md::layout_md_ptr(0, 0, 0, 0, 0, col_w - 28, text_ptr, body_sz, line_h, th, ClipId::Feed, 0, 0, 0, 0);
-          if play_pos >= 0 { mem_store(text_ptr, orig_text_len); }
+          if play_pos >= 0 { buf_set_len(text_ptr, orig_text_len); }
           h_md
         };
         StudioMem.msg_meta[mi].cached_h = computed;
@@ -347,7 +347,7 @@ pub fn render_feed(
         let play_btn_h = if play_pos >= 0 { clamp_i64(sf(34), 32, 46) } else { 0 };
         let play_gap = if play_pos >= 0 { play_btn_h + 10 } else { 0 };
         let fy = mty + mh + play_gap + 4;
-        if play_pos >= 0 { mem_store(text_ptr, play_pos); }
+        if play_pos >= 0 { buf_set_len(text_ptr, play_pos); }
         if m_down == 1 && StudioMem.msg_sel_dragging == 1 && StudioMem.msg_sel_ptr == text_ptr {
           StudioMem.msg_sel_focus = md::layout_md_ptr(1, mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, th, ClipId::Feed, vis_y0, vis_y1, 0, 0);
         }
@@ -375,7 +375,7 @@ pub fn render_feed(
           let ms1 = if StudioMem.msg_sel_ptr == text_ptr { max_i64(StudioMem.msg_sel_anchor, StudioMem.msg_sel_focus) } else { 0 };
           md::layout_md_ptr(2, mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, th, ClipId::Feed, vis_y0, vis_y1, ms0, ms1);
         }
-        if play_pos >= 0 { mem_store(text_ptr, orig_text_len); }
+        if play_pos >= 0 { buf_set_len(text_ptr, orig_text_len); }
 
         // Clickable Play button for the compiled `.ifw` app in the current project folder
         if play_pos >= 0 {
@@ -523,16 +523,11 @@ test "find_play_tag and extract_play_name parse trailing PLAY tag" {
   let b = scratch_alloc(64);
   let dst = scratch_alloc(64);
   assert(b >= 0 && dst >= 0);
-  mem_store(b, 19);
-  mem_store(b + 1, 'D'); mem_store(b + 2, 'o'); mem_store(b + 3, 'n'); mem_store(b + 4, 'e');
-  mem_store(b + 5, '\n'); mem_store(b + 6, '['); mem_store(b + 7, 'P'); mem_store(b + 8, 'L');
-  mem_store(b + 9, 'A'); mem_store(b + 10, 'Y'); mem_store(b + 11, ':'); mem_store(b + 12, 'a');
-  mem_store(b + 13, 'p'); mem_store(b + 14, 'p'); mem_store(b + 15, '.'); mem_store(b + 16, 'a');
-  mem_store(b + 17, 'x'); mem_store(b + 18, 'w'); mem_store(b + 19, ']');
+  buf_set_str(b, 60, "Done\n[PLAY:app.axw]");
   let pos = find_play_tag(b);
   assert(pos == 4);
   let nlen = extract_play_name(b, pos, dst);
   assert(nlen == 7);
-  assert(mem_load(dst + 1) == 'a');
-  assert(mem_load(dst + 7) == 'w');
+  assert(buf_get_cp(dst, 0) == 'a');
+  assert(buf_get_cp(dst, 6) == 'w');
 }

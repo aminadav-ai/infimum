@@ -346,9 +346,9 @@ fn test_layout_auto_pinned_overlap_error_effect_enforcement_and_wasm_memory() {
           StudioMem.tick += delta;
           StudioMem.in_scroll_y = 42;
           StudioMem.in_scroll_y -= 2;
-          mem_store(StudioMem::input_buf, 'A');
-          mem_store(StudioMem::input_buf + 1, '\n');
-          StudioMem.tick + StudioMem.in_scroll_y + mem_load(StudioMem::input_buf) + mem_load(StudioMem::input_buf + 1)
+          StudioMem.input_buf[0] = 'A';
+          StudioMem.input_buf[1] = '\n';
+          StudioMem.tick + StudioMem.in_scroll_y + StudioMem.input_buf[0] + StudioMem.input_buf[1]
         }
     "#;
 

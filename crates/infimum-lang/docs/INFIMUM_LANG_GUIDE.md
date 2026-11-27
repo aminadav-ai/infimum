@@ -172,15 +172,17 @@ Inside `forma Name(...) { ... }`, containers (`Box`, `Col`, `Row`, `Stack`, `Scr
     - Arithmetic: `fixed + fixed`, `fixed - fixed`, `fixed * fixed` (auto `/ 65536`), `fixed / fixed` (auto `* 65536`, Z3 proves divisor `!= 0.0`), `fixed * i64`, `fixed / i64`, comparisons `<`, `<=`, `==`. Mixing `i64 + fixed` is a compile-time error (`E060_TYPE_MISMATCH`).
     - Zero-heap formatting via `ui_fixed(x, y, val, decimals, ...)` or directly inside `ui_fmt(x, y, "Y: {y} | V: {vy:.1}", ...)`.
   - Return multiple values with zero heap overhead: `fn divmod(n: i64) -> (i64, i64) { (n / 18, n % 18) }`; destructure with `let (r, c) = divmod(idx);`.
-  - **Zero-Overhead Slices `[T]` (2-register fat pointer `(ptr, len)`, 0 runtime bounds checks in Wasm):**
-    - Element `T`: `i64` (or `word`), `fixed`, or any `struct` (including qualified `[m::Drone]`). `Secret<T>` inside `[T]` and `[T]` on `export fn` boundaries are rejected (`E062_SECRET_IN_SLICE` / `E082_NON_SCALAR_EXPORT`).
-    - Zero-copy construction: `Layout.arr[..]`, `Layout.arr[lo..hi]`, `s[lo..hi]`, `slice_i64(ptr, count)`, `slice_fixed(ptr, count)`, `str_as_slice(s)`.
-    - Properties & indexing: `s.len`, `s.ptr`, `s[i]`, `s[i].field`, `s[i] = val` (including whole-struct read/write: `let d = drones[i]; drones[i] = d;`), `s[i].field += delta`.
-    - Z3 proves every index `0 <= i < s.len`, subslice `0 <= lo <= hi <= s.len`, and struct field invariant statically (`E056_SLICE_OUT_OF_BOUNDS`, `E054_FIELD_INVARIANT_VIOLATED`).
-  - **Variable-Length Arrays `vec<T>[CAP]` inside `layout` (100% binary-compatible with `[len, data...]`):**
-    - Declare inside `layout`: `title: vec<word>[64]`, `weights: vec<fixed>[16]`, `bolts: vec<Bolt>[40]`, `drones: vec<m::Drone>[16]`. Occupies `1 + CAP * stride` words (`offset` stores `len` with automatic Z3 invariant `0..=CAP`; elements start at `offset + 1`).
-    - Operations: `.len`, `.cap`, `.as_slice()`, `L.v[lo..hi]`, `L.v[i]` / `L.v[i].f` (read & write, Z3-proven `0 <= i < len`), `.clear()`, `.push(val)` (Z3 proves `len < cap`), `.try_push(val) -> bool` (returns `false` when full), `.pop() -> T` (Z3 proves `len > 0`), `.swap_remove(i)` (O(1) removal, Z3 proves `0 <= i < len`).
-    - `infimum export-abi` emits `*_WORD`, `*_DATA_WORD`, `*_CAP`, `*_STRIDE` (when `> 1`), `*_LEN`, `*_END` in `--rust`, `--js`, and `--json`.
+  - **Zero-Overhead Slices `[T]` & Native UTF-8 `str` (2-register fat pointer `(ptr, len)`, 0 runtime bounds checks in Wasm):**
+    - Element `T`: `i64` (or `word`), `u8` (byte, `0..=255` Z3-verified), `fixed`, or any `struct` (including qualified `[m::Drone]`). `Secret<T>` inside `[T]` and `[T]`/`str` on `export fn` boundaries are rejected (`E062_SECRET_IN_SLICE` / `E082_NON_SCALAR_EXPORT`).
+    - Zero-copy construction: `Layout.arr[..]`, `Layout.arr[lo..hi]`, `s[lo..hi]`, `slice_i64(ptr, count)`, `slice_u8(byte_ptr, count)`, `slice_fixed(ptr, count)`, `s.as_bytes()`, `b.as_str()`.
+    - Native UTF-8 `str`: read-only `(byte_ptr, byte_len)` view over the compact UTF-8 static pool (4x less RAM). Supports O(1) `s.len` (bytes), `s[i]` (byte), `s[lo..hi]` (`[u8]` subslice), `s.as_bytes()`, and `std/utf8.ifm` (`utf8_decode_next`, `utf8_encode`, `utf8_prev_char_pos`, `utf8_next_char_pos`) + `std/slice.ifm` (`bytes_eq`, `bytes_starts_with`, `bytes_ends_with`, `bytes_find`, `bytes_find_bytes`, `bytes_eq_ascii_ci`, `bytes_starts_with_ascii_ci`, `bytes_copy`, `bytes_fill`).
+    - Properties & indexing: `s.len`, `s.ptr`, `s[i]`, `s[i].field`, `s[i] = val` (including whole-struct read/write: `let d = drones[i]; drones[i] = d;`), `s[i].field += delta`. Mutating read-only `str` is rejected (`E060_TYPE_MISMATCH`).
+    - Z3 proves every index `0 <= i < s.len`, subslice `0 <= lo <= hi <= s.len`, byte range `0 <= v <= 255` (use `u8(x)` to mask), and struct field invariant statically (`E056_SLICE_OUT_OF_BOUNDS`, `E054_FIELD_INVARIANT_VIOLATED`).
+    - **Memory safety (`E076_RAW_MEM_FORBIDDEN`):** raw `mem_load`/`mem_store`/`byte_load`/`byte_store` are forbidden outside `std/` — always use typed `layout` fields, `vec<T>[N]`, slices `[T]`/`[u8]`, or `std/buf` / `std/mem` helpers.
+  - **Variable-Length Arrays `vec<T>[CAP]` & Byte Buffers `bytes[N]` inside `layout`:**
+    - Declare inside `layout`: `buf: bytes[4096]` (or `u8[4096]`), `msg: vec<u8>[256]`, `title: vec<word>[64]`, `weights: vec<fixed>[16]`, `bolts: vec<Bolt>[40]`, `drones: vec<m::Drone>[16]`. `vec<u8>[CAP]` supports `.as_bytes()` (`[u8]`) and `.as_str()` (`str`).
+    - Operations: `.len`, `.cap`, `.as_slice()`, `.as_bytes()`, `.as_str()` (`vec<u8>`), `L.v[lo..hi]`, `L.v[i]` / `L.v[i].f` (read & write, Z3-proven `0 <= i < len`), `.clear()`, `.push(val)` (Z3 proves `len < cap`), `.try_push(val) -> bool` (returns `false` when full), `.pop() -> T` (Z3 proves `len > 0`), `.swap_remove(i)` (O(1) removal, Z3 proves `0 <= i < len`).
+    - `infimum export-abi` emits `*_WORD`, `*_DATA_WORD`, `*_BYTE_OFFSET`, `*_DATA_BYTE_OFFSET`, `*_CAP_BYTES`, `*_CAP`, `*_STRIDE` (when `> 1`), `*_LEN`, `*_END` in `--rust`, `--js`, and `--json`.
 - **Field invariants (`inv lo..=hi` / `inv lo..hi`) in `struct` and `layout`:**
   - `turn: word inv 1..=2`, `board: words[324] inv 0..=2`.
   - Checked on every write (`E054_FIELD_INVARIANT_VIOLATED`), automatically assumed by Z3 on every read (eliminates redundant `clamp_i64`).

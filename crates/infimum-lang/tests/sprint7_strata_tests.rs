@@ -65,6 +65,10 @@ fn test_direct_strata_wasm_zero_rustc_framebuffer_and_passport() {
           0xFF000000 | ((b & 255) << 16) | ((g & 255) << 8) | (r & 255)
         }
 
+        layout StripFb at 1024 {
+          px: words[256],
+        }
+
         // Direct Strata framebuffer kernel with bounded termination (`max 256`)
         export fn render_strip(count: i64, red: i64) -[Mem]-> i64
           req count >= 0 && count <= 100
@@ -74,8 +78,10 @@ fn test_direct_strata_wasm_zero_rustc_framebuffer_and_passport() {
           let safe_r = clamp_coord(red, 255);
           while i < count max 256 {
             let color = pack_rgba(safe_r, i * 2, 128);
-            mem_store(1024 + i, color);
-            checksum = checksum + mem_load(1024 + i);
+            if i >= 0 && i < 256 {
+              StripFb.px[i] = color;
+              checksum = checksum + StripFb.px[i];
+            }
             i = i + 1;
           }
           checksum

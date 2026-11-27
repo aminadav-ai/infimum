@@ -124,8 +124,8 @@ fn draw_settings_api_keys_header(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i
       if m_clicked == 1 {
         StudioMem.keys_sel_prov = clamp_i64(p, 0, 6);
         StudioMem.keys_test_ok = 0;
-        mem_store(StudioMem::key_input_buf, 0);
-        mem_store(StudioMem::key_status_buf, 0);
+        buf_clear(StudioMem::key_input_buf);
+        buf_clear(StudioMem::key_status_buf);
         forma_set_focus(320);
       }
     }
@@ -142,14 +142,14 @@ fn draw_settings_api_keys_status(rx: i64, ry: i64, rw: i64, _rh: i64, clip_id: i
   let th = StudioMem.theme;
   let s_s = sf(12);
   let sel_p = clamp_i64(StudioMem.keys_sel_prov, 0, 6);
-  let slen = clamp_i64(mem_load(StudioMem::key_status_buf), 0, 150);
+  let slen = buf_len(StudioMem::key_status_buf, 150);
   if slen > 0 {
     let scol = if StudioMem.keys_test_ok == 1 { col_emerald() } else { col_red() };
     let mut sx = rx + 2;
     let max_sx = rx + rw - 6;
     let mut j = 0;
     while j < slen && sx < max_sx max 150 {
-      let ch = mem_load(StudioMem::key_status_buf + 1 + j);
+      let ch = buf_get_cp(StudioMem::key_status_buf, j);
       let adv = glyph_px(ch, s_s, 1);
       if sx + adv <= max_sx {
         ui_glyph(sx, ry + 2, ch, s_s, 1, scol, clip_id);
@@ -358,11 +358,11 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
       SetAct::CurUsd => { StudioMem.currency_id = Currency::Usd; StudioMem.cur_dd_open = 0; save_settings(); },
       SetAct::CurEur => { StudioMem.currency_id = Currency::Eur; StudioMem.cur_dd_open = 0; save_settings(); },
       SetAct::SaveKey => {
-        let klen = clamp_i64(mem_load(StudioMem::key_input_buf), 0, 180);
+        let klen = buf_len(StudioMem::key_input_buf, 180);
         if klen > 0 {
           let ok = daemon::keys_save(sel_p, StudioMem::key_input_buf);
           if ok == 1 {
-            mem_store(StudioMem::key_input_buf, 0);
+            buf_clear(StudioMem::key_input_buf);
             forma_set_focus(0);
             daemon::keys_test(sel_p, StudioMem::key_status_buf);
           }
@@ -652,7 +652,7 @@ pub fn render_context_menu(w: i64, h: i64, key_special: i64) -[Mem]-> unit {
         let mp_cm = StudioMem.msg_sel_ptr;
         if mp_cm > 0 {
           StudioMem.msg_sel_anchor = 0;
-          StudioMem.msg_sel_focus = clamp_i64(mem_load(mp_cm), 0, MAX_MSG_CHARS);
+          StudioMem.msg_sel_focus = clamp_i64(buf_len(mp_cm, MAX_MSG_CHARS), 0, MAX_MSG_CHARS);
         } else {
           StudioMem.sel_anchor = 0;
           StudioMem.cursor_pos = input_len();

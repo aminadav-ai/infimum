@@ -161,9 +161,9 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
   let sub_h = clamp_i64((26 * scale) / 100, 24, 44);
   let mut py = p_top + 2 - side_scr;
 
-  let plen = clamp_i64(mem_load(StudioMem::projects_buf), 0, 3500);
-  let clen = clamp_i64(mem_load(StudioMem::convs_buf), 0, 3500);
-  let flen = clamp_i64(mem_load(StudioMem::files_buf), 0, 3500);
+  let plen = buf_len(StudioMem::projects_buf, 3500);
+  let clen = buf_len(StudioMem::convs_buf, 3500);
+  let flen = buf_len(StudioMem::files_buf, 3500);
   if StudioMem.proj_count == 0 {
     ui_text(rx + 16, py + 2, "Нажмите + выше, чтобы", sm_sz, 0, col_muted(th), clip_id);
     py += sm_sz + 4;
@@ -176,7 +176,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
   while pi < plen && p_idx < MAX_PROJECTS max 64 {
     let start = pi;
     for _ in 0..80 {
-      if pi >= plen || mem_load(StudioMem::projects_buf + 1 + pi) == '\n' { break; }
+      if pi >= plen || buf_get_cp(StudioMem::projects_buf, pi) == '\n' { break; }
       pi += 1;
     }
     let name_len = pi - start;
@@ -242,7 +242,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
         let name_vis = min_i64(name_len, 28);
         for ci in 0..name_vis max 28 {
           if cx >= max_name_x { break; }
-          let ch_p = mem_load(StudioMem::projects_buf + 1 + start + ci);
+          let ch_p = buf_get_cp(StudioMem::projects_buf, start + ci);
           let st_p = if is_act { 1 } else { 0 };
           let adv_p = glyph_px(ch_p, ui_sz, st_p);
           if cx + adv_p <= max_name_x {
@@ -273,7 +273,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
           let mut tab_pos = -1;
           for _ in 0..140 {
             if fpi >= flen { break; }
-            let fch = mem_load(StudioMem::files_buf + 1 + fpi);
+            let fch = buf_get_cp(StudioMem::files_buf, fpi);
             if fch == '\n' { break; }
             if fch == '\t' && tab_pos < 0 { tab_pos = fpi; }
             fpi += 1;
@@ -307,7 +307,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
                 let t_vis = min_i64(tlen, 38);
                 for fci in 0..t_vis max 38 {
                   if fcx >= max_tx { break; }
-                  let fc = mem_load(StudioMem::files_buf + 1 + tstart + fci);
+                  let fc = buf_get_cp(StudioMem::files_buf, tstart + fci);
                   let fst = if is_fact { 1 } else { 0 };
                   let fadv = glyph_px(fc, sm_sz, fst);
                   if fcx + fadv <= max_tx {
@@ -329,7 +329,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
           let mut tab_pos = -1;
           for _ in 0..140 {
             if cpi >= clen { break; }
-            let cch = mem_load(StudioMem::convs_buf + 1 + cpi);
+            let cch = buf_get_cp(StudioMem::convs_buf, cpi);
             if cch == '\n' { break; }
             if cch == '\t' && tab_pos < 0 { tab_pos = cpi; }
             cpi += 1;
@@ -381,7 +381,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
                 let t_vis = min_i64(tlen, 36);
                 for cci in 0..t_vis max 36 {
                   if ccx >= max_tx { break; }
-                  let tc = mem_load(StudioMem::convs_buf + 1 + tstart + cci);
+                  let tc = buf_get_cp(StudioMem::convs_buf, tstart + cci);
                   let cst = if is_cact { 1 } else { 0 };
                   let tadv = glyph_px(tc, sm_sz, cst);
                   if ccx + tadv <= max_tx {

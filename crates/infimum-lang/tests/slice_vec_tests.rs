@@ -312,10 +312,10 @@ export fn safe_div() -[Mem]-> i64 {
         .verify_module(&m_ok)
         .expect("known_mem forwarding should prove State.denom > 0 across loads");
 
-    // 2. Dynamic MemStore invalidates known_mem (soundness!)
+    // 2. Dynamic raw MemStore (inside std/) invalidates known_mem (soundness!)
     let mut f_bad = BTreeMap::new();
     f_bad.insert(
-        "main.ifm".to_string(),
+        "__std__/raw_mem_soundness.ifm".to_string(),
         r#"
 layout State {
   denom: word,
@@ -332,7 +332,7 @@ export fn clobbered_div(idx: i64) -[Mem]-> i64 {
 "#
         .to_string(),
     );
-    let m_bad = parse_module_from_virtual_fs("main.ifm", &f_bad).expect("parse ok");
+    let m_bad = parse_module_from_virtual_fs("__std__/raw_mem_soundness.ifm", &f_bad).expect("parse ok");
     let err = store
         .verify_module(&m_bad)
         .expect_err("dynamic mem_store must invalidate known_mem");
@@ -369,8 +369,9 @@ export fn run_vec_scalars() -[Mem]-> i64 {
   let ok5 = BufMem.nums.try_push(50); // full -> false
 
   // 100% binary compatibility with [len, data...]
-  let raw_len = mem_load(BufMem::nums);
-  let raw_el1 = mem_load(BufMem::nums + 2); // index 1 == 20
+  let raw_view = slice_i64(BufMem::nums, 5);
+  let raw_len = raw_view[0];
+  let raw_el1 = raw_view[2]; // index 1 == 20
 
   // swap_remove(1): [10, 20, 30, 40] -> [10, 40, 30], len=3
   BufMem.nums.swap_remove(1);

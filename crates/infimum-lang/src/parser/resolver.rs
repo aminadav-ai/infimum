@@ -477,6 +477,34 @@ impl ModuleResolver {
         None
     }
 
+    fn allow_raw_mem(&self) -> bool {
+        let lbl = self
+            .unit_labels
+            .get(self.cur_uid)
+            .map(String::as_str)
+            .unwrap_or("");
+        let norm = lbl.replace('\\', "/");
+        norm.starts_with("__std__/")
+            || norm.starts_with("__forma__/")
+            || norm.starts_with("std/")
+            || norm.contains("/std/")
+            || norm.ends_with("/widgets_rt.ifm")
+    }
+
+    fn forbid_raw_mem(&self, op: &str, span: Span) -> Result<(), InfimumDiagnostic> {
+        if self.allow_raw_mem() {
+            Ok(())
+        } else {
+            Err(InfimumDiagnostic::new(
+                "E076_RAW_MEM_FORBIDDEN",
+                "resolve",
+                format!("Raw memory intrinsic '{op}' is forbidden outside std/"),
+                span,
+                "Use typed 'layout' fields, 'vec<T>[N]', slices '[T]'/'[u8]', or 'std/buf' / 'std/mem' helpers instead of raw mem_load/mem_store/byte_load/byte_store",
+            ))
+        }
+    }
+
     fn lookup_slice_var(&self, name: &str) -> Option<SliceElemMeta> {
         for scope in self.slice_vars.iter().rev() {
             if let Some(meta) = scope.get(name) {
@@ -3492,12 +3520,14 @@ impl ModuleResolver {
             RawExpr::Call { target, args, span } => {
                 if let TargetRef::Named(n) = target {
                     if args.len() == 1 && n == "byte_load" {
+                        self.forbid_raw_mem("byte_load", *span)?;
                         return Ok(Expr::ByteLoad {
                             index: Box::new(self.lower_expr(&args[0], locals)?),
                             region: 0,
                         });
                     }
                     if args.len() == 2 && n == "byte_store" {
+                        self.forbid_raw_mem("byte_store", *span)?;
                         return Ok(Expr::ByteStore {
                             index: Box::new(self.lower_expr(&args[0], locals)?),
                             value: Box::new(self.lower_expr(&args[1], locals)?),
@@ -3665,19 +3695,25 @@ impl ModuleResolver {
                     args: largs,
                 })
             }
-            RawExpr::MemLoad { index } => Ok(Expr::MemLoad {
-                index: Box::new(self.lower_expr(index, locals)?),
-                inv: None,
-                fixed_ty: false,
-                region: 0,
-            }),
-            RawExpr::MemStore { index, value } => Ok(Expr::MemStore {
-                index: Box::new(self.lower_expr(index, locals)?),
-                value: Box::new(self.lower_expr(value, locals)?),
-                inv: None,
-                fixed_ty: false,
-                region: 0,
-            }),
+            RawExpr::MemLoad { index } => {
+                self.forbid_raw_mem("mem_load", Span::zero())?;
+                Ok(Expr::MemLoad {
+                    index: Box::new(self.lower_expr(index, locals)?),
+                    inv: None,
+                    fixed_ty: false,
+                    region: 0,
+                })
+            }
+            RawExpr::MemStore { index, value } => {
+                self.forbid_raw_mem("mem_store", Span::zero())?;
+                Ok(Expr::MemStore {
+                    index: Box::new(self.lower_expr(index, locals)?),
+                    value: Box::new(self.lower_expr(value, locals)?),
+                    inv: None,
+                    fixed_ty: false,
+                    region: 0,
+                })
+            }
             RawExpr::SecretWrap(inner) => {
                 Ok(Expr::SecretWrap(Box::new(self.lower_expr(inner, locals)?)))
             }

@@ -7,7 +7,7 @@
 
 use "std/math.ifm";
 use "std/mem.ifm";
-use "std/buf.ifm" { buf_set_str, buf_eq_str };
+use "std/buf.ifm" { buf_len, buf_get_cp, buf_set_str, buf_eq_str };
 use "std/slice.ifm" { slice_find, slice_eq_ascii_ci };
 
 const MAX_TASKS: i64 = 16;
@@ -53,7 +53,7 @@ fn task_add(title: str, priority: i64) -[Mem]-> i64 {
       pool_free(TaskStore::pool_flags, slot, MAX_TASKS);
       -1
     } else {
-      let tlen = clamp_i64(mem_load(stored_ptr), 0, 64);
+      let tlen = clamp_i64(buf_len(stored_ptr, 64), 0, 64);
       TaskStore.tasks[slot] = TaskSlot {
         priority: clamp_i64(priority, 1, 5),
         title_ptr: stored_ptr,
@@ -113,7 +113,7 @@ fn task_title_matches_ci(slot: i64, query: str) -[Mem]-> bool {
     } else {
       let mut ok = true;
       for i in 0..qb.len max 64 {
-        let mut a = mem_load(ptr + 1 + i);
+        let mut a = buf_get_cp(ptr, i);
         let mut b = qb[i];
         if a >= 'A' && a <= 'Z' { a += 32; }
         if b >= 'A' && b <= 'Z' { b += 32; }

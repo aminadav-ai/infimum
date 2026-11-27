@@ -309,3 +309,19 @@ fn utf8_str_len_subslice_as_str_and_readonly_guard() {
 
     let _ = fs::remove_dir_all(&ws);
 }
+
+#[test]
+fn raw_mem_load_and_store_forbidden_in_user_code() {
+    for src in [
+        "export fn a() -[Mem]-> i64 { mem_load(0) }",
+        "export fn b() -[Mem]-> unit { mem_store(0, 1); () }",
+        "export fn c() -[Mem]-> i64 { byte_load(0) }",
+        "export fn d() -[Mem]-> unit { byte_store(0, 1); () }",
+    ] {
+        let err = parse_module(src).expect_err("raw mem intrinsic must be rejected outside std/");
+        assert_eq!(
+            err.code, "E076_RAW_MEM_FORBIDDEN",
+            "Expected E076_RAW_MEM_FORBIDDEN for `{src}`, got: {err:?}"
+        );
+    }
+}

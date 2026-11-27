@@ -79,7 +79,7 @@ pub fn tl_icon_status(cx: i64, cy: i64, status: i64, tick: i64, th: i64, clip: i
 pub fn tl_word_px(ptr: i64, start: i64, total: i64, size: i64, style: i64) -[Mem]-> i64 {
   let mut w = 0;
   for i in start..total max 64 {
-    let ch = mem_load(ptr + 1 + i);
+    let ch = buf_get_cp(ptr, i);
     if ch == ' ' || ch == '\n' || ch == '\r' { break; }
     w += glyph_px(ch, size, style);
   }
@@ -92,7 +92,7 @@ pub fn tl_wrapped_text(
   max_lines: i64, vis_y0: i64, vis_y1: i64
 ) -[Mem]-> i64 {
   let cap = clamp_i64(max_chars, 0, TL_MAX_TAIL_CHARS);
-  let n = clamp_i64(mem_load(ptr), 0, cap);
+  let n = buf_len(ptr, cap);
   let lim_lines = clamp_i64(max_lines, 0, 20);
   let safe_w = clamp_i64(max_w, 60, 1400);
   if n == 0 || lim_lines == 0 {
@@ -102,7 +102,7 @@ pub fn tl_wrapped_text(
     let mut line_idx = 0;
     let mut i = 0;
     while i < n && line_idx < lim_lines max 420 {
-      let ch = mem_load(ptr + 1 + i);
+      let ch = buf_get_cp(ptr, i);
       if ch == '\r' {
         i += 1;
       } else if ch == '\n' {
@@ -123,7 +123,7 @@ pub fn tl_wrapped_text(
         }
         for _ in 0..64 {
           if i >= n || line_idx >= lim_lines { break; }
-          let c2 = mem_load(ptr + 1 + i);
+          let c2 = buf_get_cp(ptr, i);
           if c2 == ' ' || c2 == '\n' || c2 == '\r' { break; }
           let adv = glyph_px(c2, size, style);
           if cx > 0 && cx + adv > safe_w {
@@ -157,11 +157,11 @@ pub fn tl_emit_clipped_line(
   size: i64, style: i64, rgba: i64, clip: i64
 ) -[Mem]-> i64 {
   let cap = clamp_i64(max_chars, 0, 240);
-  let n = clamp_i64(mem_load(ptr), 0, cap);
+  let n = buf_len(ptr, cap);
   let safe_w = clamp_i64(max_w, 20, 1400);
   let mut cx = 0;
   for i in 0..n max 240 {
-    let ch = mem_load(ptr + 1 + i);
+    let ch = buf_get_cp(ptr, i);
     if ch == '\n' || ch == '\r' { break; }
     let adv = glyph_px(ch, size, style);
     if cx + adv > safe_w { break; }
@@ -175,12 +175,13 @@ pub fn tl_has_content(base: i64) -[Mem]-> bool {
   if base <= 0 {
     false
   } else {
-    let total_w = clamp_i64(mem_load(base), 0, LIVE_TIMELINE_MAX_WORDS);
+    let hdr = slice_i64(base, 7);
+    let total_w = clamp_i64(hdr[0], 0, LIVE_TIMELINE_MAX_WORDS);
     if total_w < TL_HEADER_WORDS {
       false
     } else {
-      let steps = clamp_i64(mem_load(base + 5) & 65535, 0, TL_MAX_STEPS);
-      let th_len = clamp_i64(mem_load(base + 6), 0, TL_MAX_THOUGHT_CHARS);
+      let steps = clamp_i64(hdr[5] & 65535, 0, TL_MAX_STEPS);
+      let th_len = clamp_i64(hdr[6], 0, TL_MAX_THOUGHT_CHARS);
       steps > 0 || th_len > 0
     }
   }
@@ -193,7 +194,8 @@ pub fn tl_body_layout(
   if base <= 0 {
     0
   } else {
-    let total_w = clamp_i64(mem_load(base), 0, LIVE_TIMELINE_MAX_WORDS);
+    let hdr = slice_i64(base, 7);
+    let total_w = clamp_i64(hdr[0], 0, LIVE_TIMELINE_MAX_WORDS);
     if total_w < TL_HEADER_WORDS {
       0
     } else {
@@ -208,7 +210,7 @@ pub fn tl_body_layout(
 
       // 1. Model thought snippet block
       let thought_ptr = base + 6;
-      let thought_len = clamp_i64(mem_load(thought_ptr), 0, TL_MAX_THOUGHT_CHARS);
+      let thought_len = buf_len(thought_ptr, TL_MAX_THOUGHT_CHARS);
       if thought_len > 0 {
         let th_tx = x + 12;
         let th_tw = clamp_i64(safe_w - 20, 100, 1180);
@@ -231,7 +233,7 @@ pub fn tl_body_layout(
       }
 
       // 2. Vertical timeline step list
-      let step_count = clamp_i64(mem_load(base + 5) & 65535, 0, TL_MAX_STEPS);
+      let step_count = clamp_i64(hdr[5] & 65535, 0, TL_MAX_STEPS);
       let end_p = base + total_w;
       let mut p = base + TL_HEADER_WORDS + thought_len;
       let icon_cx = x + 10;
@@ -242,21 +244,22 @@ pub fn tl_body_layout(
       let mut prev_icon_y = 0;
       let mut si = 0;
 
-      while si < step_count && p + TL_STEP_MIN_WORDS <= end_p max 32 {
-        let st_status = mem_load(p);
-        let st_kind = mem_load(p + 1);
-        let st_dur = clamp_i64(mem_load(p + 2), 0, 99999);
+      while si < step_count && p + TL_STEP_MIN_WORDS <= end_p && p >= 0 max 32 {
+        let sh = slice_i64(p, 3);
+        let st_status = sh[0];
+        let st_kind = sh[1];
+        let st_dur = clamp_i64(sh[2], 0, 99999);
         let title_ptr = p + 3;
-        let title_len = clamp_i64(mem_load(title_ptr), 0, TL_MAX_TITLE_CHARS);
+        let title_len = buf_len(title_ptr, TL_MAX_TITLE_CHARS);
         let detail_ptr = title_ptr + 1 + title_len;
         let detail_len = if detail_ptr < end_p {
-          clamp_i64(mem_load(detail_ptr), 0, TL_MAX_DETAIL_CHARS)
+          buf_len(detail_ptr, TL_MAX_DETAIL_CHARS)
         } else {
           0
         };
         let tail_ptr = detail_ptr + 1 + detail_len;
         let tail_len = if tail_ptr < end_p {
-          clamp_i64(mem_load(tail_ptr), 0, TL_MAX_TAIL_CHARS)
+          buf_len(tail_ptr, TL_MAX_TAIL_CHARS)
         } else {
           0
         };
@@ -354,7 +357,8 @@ pub fn draw_timeline_card(
   let ftr_h = clamp_i64(sf(30), 28, 42);
   let hdr_sz = sf(14);
   let sm_sz = sf(12);
-  let has_blob = StudioMem.live_timeline_words >= TL_HEADER_WORDS && mem_load(base) >= TL_HEADER_WORDS;
+  let hdr = if base >= 0 { slice_i64(base, 7) } else { slice_i64(0, 7) };
+  let has_blob = base >= 0 && StudioMem.live_timeline_words >= TL_HEADER_WORDS && hdr[0] >= TL_HEADER_WORDS;
   let body_h = if has_blob && tl_has_content(base) {
     tl_body_layout(false, col_x + 14, cy + hdr_h + 8, clamp_i64(col_w - 28, 160, 1200), base, th, tick, ClipId::Feed, vis_y0, vis_y1)
   } else {
@@ -380,7 +384,7 @@ pub fn draw_timeline_card(
 
     // 1. Live timer badge (M мин S с when >= 60s)
     let elapsed = if has_blob {
-      clamp_i64(mem_load(base + 3), 0, 999999)
+      clamp_i64(hdr[3], 0, 999999)
     } else {
       clamp_i64(StudioMem.async_elapsed_tenths, 0, 999999)
     };
@@ -391,8 +395,8 @@ pub fn draw_timeline_card(
 
     // 2. Round badge ("Раунд X/Y")
     if has_blob {
-      let round_v = clamp_i64(mem_load(base + 1), 1, 99);
-      let max_r = clamp_i64(mem_load(base + 2), 1, 99);
+      let round_v = clamp_i64(hdr[1], 1, 99);
+      let max_r = clamp_i64(hdr[2], 1, 99);
       let step_txt_w = ui_fmt_width("Раунд {round_v}/{max_r}", sm_sz, 0);
       let step_w = clamp_i64(step_txt_w + 18, 68, 220);
       right_x -= step_w + 6;
@@ -401,7 +405,7 @@ pub fn draw_timeline_card(
     }
 
     // 3. Red interactive "Прервать команду" button when shell command is active
-    let has_running_cmd = has_blob && mem_load(base + 4) == 1;
+    let has_running_cmd = has_blob && hdr[4] == 1;
     if has_running_cmd {
       let killing = StudioMem.live_cmd_killing == 1;
       let kill_w = if killing {
@@ -434,7 +438,7 @@ pub fn draw_timeline_card(
     let st_x = col_x + 32;
     let st_max_w = clamp_i64(right_x - st_x - 8, 40, 640);
     let st_y = cy + (hdr_h - hdr_sz) / 2;
-    if mem_load(StudioMem::agent_status_buf) > 0 {
+    if buf_len(StudioMem::agent_status_buf, 200) > 0 {
       tl_emit_clipped_line(st_x, st_y, StudioMem::agent_status_buf, 200, st_max_w, hdr_sz, 1, col_accent(), ClipId::Feed);
     } else {
       ui_text(st_x, st_y, "Думаю...", hdr_sz, 1, col_accent(), ClipId::Feed);
@@ -452,12 +456,12 @@ pub fn draw_timeline_card(
         ui_line(col_x + 12, ftr_y, col_x + col_w - 12, ftr_y, 1, col_border(th), ClipId::Feed);
         let fy_t = ftr_y + (ftr_h - sm_sz) / 2;
         ui_circle(col_x + 18, ftr_y + ftr_h / 2, 3, 0, col_accent(), ClipId::Feed);
-        let raw_st = mem_load(base + 5);
+        let raw_st = hdr[5];
         let enc_st = clamp_i64(raw_st & 65535, 0, TL_MAX_STEPS);
         let hi_st = (raw_st >> 16) & 65535;
         let tot_st = if hi_st > enc_st { hi_st } else { enc_st };
-        let round_f = clamp_i64(mem_load(base + 1), 1, 99);
-        let max_rf = clamp_i64(mem_load(base + 2), 1, 99);
+        let round_f = clamp_i64(hdr[1], 1, 99);
+        let max_rf = clamp_i64(hdr[2], 1, 99);
         let mut fx = col_x + 28;
         fx += ui_text(fx, fy_t, "Ход работы: ", sm_sz, 1, col_text(th), ClipId::Feed);
         fx += ui_int(fx, fy_t, tot_st, sm_sz, 2, col_accent(), ClipId::Feed);
@@ -484,11 +488,12 @@ pub fn tl_draw_summary_left_slot(rx: i64, ry: i64, _rw: i64, rh: i64, _clip_id: 
       icon_chevron_right(rx + 5, ry + rh / 2, sm_sz, chev_col, ClipId::Feed);
     }
 
-    let raw_steps = mem_load(tl_ptr + 5);
+    let tl_hdr = slice_i64(tl_ptr, 6);
+    let raw_steps = tl_hdr[5];
     let enc_steps = clamp_i64(raw_steps & 65535, 0, TL_MAX_STEPS);
     let hi_steps = (raw_steps >> 16) & 65535;
     let total_steps = if hi_steps > enc_steps { hi_steps } else { enc_steps };
-    let el_t = clamp_i64(mem_load(tl_ptr + 3), 0, 999999);
+    let el_t = clamp_i64(tl_hdr[3], 0, 999999);
     let ty = ry + (rh - sm_sz) / 2;
     let mut lx = rx + 18;
     lx += ui_text(lx, ty, "Ход работы: ", sm_sz, 1, col_text(th), ClipId::Feed);
@@ -547,7 +552,7 @@ pub fn tl_draw_msg_summary_bar(
 
 pub fn tl_copy_append_cp(pos: i64, cp: i64) -[Mem]-> i64 {
   if pos >= 0 && pos < LARGE_COPY_MAX_CHARS {
-    mem_store(StudioMem::copy_mailbox + 1 + pos, cp);
+    buf_set_cp(StudioMem::copy_mailbox, pos, cp);
     pos + 1
   } else {
     pos
@@ -555,11 +560,11 @@ pub fn tl_copy_append_cp(pos: i64, cp: i64) -[Mem]-> i64 {
 }
 
 pub fn tl_copy_append_buf(pos: i64, ptr: i64, max_len: i64) -[Mem]-> i64 {
-  let n = clamp_i64(mem_load(ptr), 0, max_len);
+  let n = buf_len(ptr, max_len);
   let mut p = pos;
   let mut i = 0;
   while i < n && p < LARGE_COPY_MAX_CHARS max 1024 {
-    mem_store(StudioMem::copy_mailbox + 1 + p, mem_load(ptr + 1 + i));
+    buf_set_cp(StudioMem::copy_mailbox, p, buf_get_cp(ptr, i));
     p += 1;
     i += 1;
   }
@@ -567,52 +572,55 @@ pub fn tl_copy_append_buf(pos: i64, ptr: i64, max_len: i64) -[Mem]-> i64 {
 }
 
 pub fn tl_copy_to_mailbox(tl_ptr: i64) -[Mem]-> unit {
-  let total_w = clamp_i64(mem_load(tl_ptr), 0, LIVE_TIMELINE_MAX_WORDS);
-  if total_w >= TL_HEADER_WORDS {
-    let mut out_n = 0;
-    let thought_ptr = tl_ptr + 6;
-    let thought_len = clamp_i64(mem_load(thought_ptr), 0, TL_MAX_THOUGHT_CHARS);
-    if thought_len > 0 {
-      out_n = tl_copy_append_buf(out_n, thought_ptr, TL_MAX_THOUGHT_CHARS);
-      out_n = tl_copy_append_cp(out_n, '\n');
-      out_n = tl_copy_append_cp(out_n, '\n');
-    }
-    let step_count = clamp_i64(mem_load(tl_ptr + 5) & 65535, 0, TL_MAX_STEPS);
-    let end_p = tl_ptr + total_w;
-    let mut p = tl_ptr + TL_HEADER_WORDS + thought_len;
-    let mut si = 0;
-    while si < step_count && p + TL_STEP_MIN_WORDS <= end_p max 32 {
-      let title_ptr = p + 3;
-      let title_len = clamp_i64(mem_load(title_ptr), 0, TL_MAX_TITLE_CHARS);
-      let detail_ptr = title_ptr + 1 + title_len;
-      let detail_len = if detail_ptr < end_p { clamp_i64(mem_load(detail_ptr), 0, TL_MAX_DETAIL_CHARS) } else { 0 };
-      let tail_ptr = detail_ptr + 1 + detail_len;
-      let tail_len = if tail_ptr < end_p { clamp_i64(mem_load(tail_ptr), 0, TL_MAX_TAIL_CHARS) } else { 0 };
-      let next_p = tail_ptr + 1 + tail_len;
+  if tl_ptr >= 0 {
+    let hdr = slice_i64(tl_ptr, 7);
+    let total_w = clamp_i64(hdr[0], 0, LIVE_TIMELINE_MAX_WORDS);
+    if total_w >= TL_HEADER_WORDS {
+      let mut out_n = 0;
+      let thought_ptr = tl_ptr + 6;
+      let thought_len = buf_len(thought_ptr, TL_MAX_THOUGHT_CHARS);
+      if thought_len > 0 {
+        out_n = tl_copy_append_buf(out_n, thought_ptr, TL_MAX_THOUGHT_CHARS);
+        out_n = tl_copy_append_cp(out_n, '\n');
+        out_n = tl_copy_append_cp(out_n, '\n');
+      }
+      let step_count = clamp_i64(hdr[5] & 65535, 0, TL_MAX_STEPS);
+      let end_p = tl_ptr + total_w;
+      let mut p = tl_ptr + TL_HEADER_WORDS + thought_len;
+      let mut si = 0;
+      while si < step_count && p + TL_STEP_MIN_WORDS <= end_p max 32 {
+        let title_ptr = p + 3;
+        let title_len = buf_len(title_ptr, TL_MAX_TITLE_CHARS);
+        let detail_ptr = title_ptr + 1 + title_len;
+        let detail_len = if detail_ptr < end_p { buf_len(detail_ptr, TL_MAX_DETAIL_CHARS) } else { 0 };
+        let tail_ptr = detail_ptr + 1 + detail_len;
+        let tail_len = if tail_ptr < end_p { buf_len(tail_ptr, TL_MAX_TAIL_CHARS) } else { 0 };
+        let next_p = tail_ptr + 1 + tail_len;
 
-      if title_len > 0 {
-        out_n = tl_copy_append_buf(out_n, title_ptr, TL_MAX_TITLE_CHARS);
+        if title_len > 0 {
+          out_n = tl_copy_append_buf(out_n, title_ptr, TL_MAX_TITLE_CHARS);
+          out_n = tl_copy_append_cp(out_n, '\n');
+        }
+        if detail_len > 0 {
+          out_n = tl_copy_append_cp(out_n, ' ');
+          out_n = tl_copy_append_cp(out_n, ' ');
+          out_n = tl_copy_append_buf(out_n, detail_ptr, TL_MAX_DETAIL_CHARS);
+          out_n = tl_copy_append_cp(out_n, '\n');
+        }
+        if tail_len > 0 {
+          out_n = tl_copy_append_buf(out_n, tail_ptr, TL_MAX_TAIL_CHARS);
+          out_n = tl_copy_append_cp(out_n, '\n');
+        }
         out_n = tl_copy_append_cp(out_n, '\n');
+        p = next_p;
+        si += 1;
       }
-      if detail_len > 0 {
-        out_n = tl_copy_append_cp(out_n, ' ');
-        out_n = tl_copy_append_cp(out_n, ' ');
-        out_n = tl_copy_append_buf(out_n, detail_ptr, TL_MAX_DETAIL_CHARS);
-        out_n = tl_copy_append_cp(out_n, '\n');
-      }
-      if tail_len > 0 {
-        out_n = tl_copy_append_buf(out_n, tail_ptr, TL_MAX_TAIL_CHARS);
-        out_n = tl_copy_append_cp(out_n, '\n');
-      }
-      out_n = tl_copy_append_cp(out_n, '\n');
-      p = next_p;
-      si += 1;
+      buf_set_len(StudioMem::copy_mailbox, clamp_i64(out_n, 0, LARGE_COPY_MAX_CHARS));
+      StudioMem.copy_override_ptr = -1;
+      StudioMem.copy_toast_ticks = 90;
+      StudioMem.copy_toast_ptr = tl_ptr;
+      StudioMem.host_action = HostAction::Copy;
     }
-    mem_store(StudioMem::copy_mailbox, clamp_i64(out_n, 0, LARGE_COPY_MAX_CHARS));
-    StudioMem.copy_override_ptr = -1;
-    StudioMem.copy_toast_ticks = 90;
-    StudioMem.copy_toast_ptr = tl_ptr;
-    StudioMem.host_action = HostAction::Copy;
   }
 }
 

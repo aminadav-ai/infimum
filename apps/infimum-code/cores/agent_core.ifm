@@ -34,9 +34,9 @@ struct Rates {
 fn buf_to_lower(ptr: i64, max_len: i64) -[Mem]-> unit {
   let n = buf_len(ptr, max_len);
   for i in 0..n max 128 {
-    let c = mem_load(ptr + 1 + i);
+    let c = buf_get_cp(ptr, i);
     if c >= 'A' && c <= 'Z' {
-      mem_store(ptr + 1 + i, c + 32);
+      buf_set_cp(ptr, i, c + 32);
     }
   }
 }
@@ -107,12 +107,12 @@ export fn extract_api_error_ifm(raw_len: i64) -[Mem]-> i64 {
   let n = clamp_i64(raw_len, 0, 16384);
   buf_clear(AgentMem::json_out);
   let mut obj_pos = json_skip_ws(AgentMem::json_in, 0, n);
-  if obj_pos < n && mem_load(AgentMem::json_in + 1 + obj_pos) == '[' {
+  if obj_pos < n && buf_get_cp(AgentMem::json_in, obj_pos) == '[' {
     obj_pos = json_skip_ws(AgentMem::json_in, obj_pos + 1, n);
   }
   let err_val = find_json_key_str(obj_pos, n, "error");
   if err_val >= 0 {
-    if mem_load(AgentMem::json_in + 1 + err_val) == '"' {
+    if buf_get_cp(AgentMem::json_in, err_val) == '"' {
       json_decode_string(AgentMem::json_in, err_val, n, AgentMem::json_out, 2048)
     } else {
       let msg_val = find_json_key_str(err_val, n, "message");

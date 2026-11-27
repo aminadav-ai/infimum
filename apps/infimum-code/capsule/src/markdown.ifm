@@ -4,6 +4,7 @@
 // Thin Infimum Code bridge over the standard GFM Markdown engine (`std/markdown.ifm`).
 
 use "abi.ifm";
+use "std/buf.ifm";
 use "std/markdown.ifm";
 
 pub fn layout_md_ptr(
@@ -17,12 +18,8 @@ pub fn layout_md_ptr(
 }
 
 test "markdown table layout and hit-test work" {
-  // "|A|B|\n|-|-|\n|1|2|"
   let b = StudioMem::http_body_tmp;
-  mem_store(b, 17);
-  mem_store(b + 1, '|'); mem_store(b + 2, 'A'); mem_store(b + 3, '|'); mem_store(b + 4, 'B'); mem_store(b + 5, '|'); mem_store(b + 6, '\n');
-  mem_store(b + 7, '|'); mem_store(b + 8, '-'); mem_store(b + 9, '|'); mem_store(b + 10, '-'); mem_store(b + 11, '|'); mem_store(b + 12, '\n');
-  mem_store(b + 13, '|'); mem_store(b + 14, '1'); mem_store(b + 15, '|'); mem_store(b + 16, '2'); mem_store(b + 17, '|');
+  buf_set_str(b, 64, "|A|B|\n|-|-|\n|1|2|");
   let h = layout_md_ptr(0, 0, 0, 0, 0, 400, b, 14, 20, 0, 0, 0, 400, 0, 0);
   assert(h > 40);
   let idx_top = layout_md_ptr(1, 10, -5, 0, 0, 400, b, 14, 20, 0, 0, 0, 400, 0, 0);

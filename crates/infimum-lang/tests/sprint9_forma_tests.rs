@@ -321,6 +321,8 @@ forma UnsafeTimelineHeader(bar_w: i64, summary: str, bg_col: i64, text_col: i64,
 #[test]
 fn test_forma2_full_capsule_compiles_and_runs_headless() {
     let src = r#"
+use "std/gfx.ifm";
+
 forma Forma2Demo(vw: i64, vh: i64, summary: str)
   req vw >= 320 && vh >= 240
   -[Mem]-> i64
@@ -348,20 +350,17 @@ export fn init_app() -[Mem]-> unit {
 }
 
 export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, m_down: i64, m_clicked: i64, wheel_dy: i64, key_char: i64, key_special: i64) -[Mem, Gpu]-> i64 {
-  mem_store(12, 0);
-  mem_store(48100, mx);
-  mem_store(48101, my);
-  mem_store(48102, m_clicked);
-  mem_store(48103, wheel_dy);
+  gfx_begin_frame(vw, vh);
+  forma_set_pointer(mx, my, m_clicked, wheel_dy);
   let w = if vw < 320 { 320 } else { vw };
   let h = if vh < 240 { 240 } else { vh };
   let _ = Forma2Demo(w, h, "Ход работы: 76 шагов (посл. 32) за 4 мин 30 с — очень длинный текст");
-  mem_load(12)
+  gfx_prim_count()
 }
 
 export fn get_cmd_byte_offset() -[Mem]-> i64 { 65536 * 8 }
 export fn get_clips_byte_offset() -[Mem]-> i64 { 48000 * 8 }
-export fn get_prim_count() -[Mem]-> i64 { mem_load(12) }
+export fn get_prim_count() -[Mem]-> i64 { gfx_prim_count() }
 export fn get_cursor_kind() -[Mem]-> i64 { 0 }
 export fn ifw_unicode_atlas() -[Mem]-> i64 { 1 }
 "#;
@@ -422,7 +421,7 @@ export fn init_app() -[Mem]-> unit {
 }
 
 export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, _m_down: i64, m_clicked: i64, _wheel_dy: i64, _key_char: i64, _key_special: i64) -[Mem, Gpu]-> i64 {
-  mem_store(12, 0);
+  gfx_reset_prims();
   let w = clamp_i64(vw, 320, 2560);
   let h = clamp_i64(vh, 240, 1440);
   let th = THEME_DARK;
@@ -440,12 +439,12 @@ export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, _m_down: i64, m_clicked: i
   icon_folder(28, 204, 16, theme_warn(), 0);
   icon_check(60, 212, 6, theme_success(), 0);
   icon_spinner(88, 212, 8, 15, theme_accent(), 0);
-  mem_load(12)
+  gfx_prim_count()
 }
 
 export fn get_cmd_byte_offset() -[Mem]-> i64 { GPU_CMD_BYTE_OFFSET }
 export fn get_clips_byte_offset() -[Mem]-> i64 { GPU_CLIPS_BYTE_OFFSET }
-export fn get_prim_count() -[Mem]-> i64 { mem_load(12) }
+export fn get_prim_count() -[Mem]-> i64 { gfx_prim_count() }
 export fn get_cursor_kind() -[Mem]-> i64 { 0 }
 export fn ifw_unicode_atlas() -[Mem]-> i64 { 1 }
 "#;
@@ -514,7 +513,7 @@ export fn init_app() -[Mem]-> unit {
 }
 
 export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, _m_down: i64, _m_clicked: i64, _wheel_dy: i64, _key_char: i64, _key_special: i64) -[Mem, Gpu]-> i64 {
-  mem_store(12, 0);
+  DemoMem.prim_count = 0;
   let w = clamp_i64(vw, 320, 2560);
   let h = clamp_i64(vh, 240, 1440);
   let th = THEME_DARK;
@@ -527,12 +526,12 @@ export fn step_ui(vw: i64, vh: i64, mx: i64, my: i64, _m_down: i64, _m_clicked: 
   );
   let _ = md_measure_h(DemoMem::md_buf, 500, w - 40, 14, 20, th);
   let _ = md_draw(DemoMem::md_buf, 500, 20, 32 + eh, w - 40, 14, 20, th, 0, 0, h);
-  mem_load(12)
+  DemoMem.prim_count
 }
 
 export fn get_cmd_byte_offset() -[Mem]-> i64 { GPU_CMD_BYTE_OFFSET }
 export fn get_clips_byte_offset() -[Mem]-> i64 { GPU_CLIPS_BYTE_OFFSET }
-export fn get_prim_count() -[Mem]-> i64 { mem_load(12) }
+export fn get_prim_count() -[Mem]-> i64 { DemoMem.prim_count }
 export fn get_cursor_kind() -[Mem]-> i64 { 0 }
 export fn ifw_unicode_atlas() -[Mem]-> i64 { 1 }
 "##;

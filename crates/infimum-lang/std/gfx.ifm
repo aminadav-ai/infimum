@@ -180,6 +180,25 @@ pub fn gfx_set_cursor(kind: i64) -[Mem]-> unit {
   mem_store(STD_CURSOR_KIND_WORD, kind);
 }
 
+pub fn gfx_prim_count() -[Mem]-> i64 {
+  mem_load(STD_PRIM_COUNT_WORD)
+}
+
+pub fn gfx_reset_prims() -[Mem]-> unit {
+  mem_store(STD_PRIM_COUNT_WORD, 0);
+}
+
+pub fn forma_bind_text_input(buf_ptr: i64, max_len: i64, mask: i64) -[Mem]-> unit {
+  mem_store(SYS_FORMA_TEXT_BUF_WORD, buf_ptr);
+  mem_store(SYS_FORMA_TEXT_MAX_WORD, max_len);
+  mem_store(SYS_FORMA_TEXT_MASK_WORD, mask);
+}
+
+pub fn forma_set_sel(anchor: i64, caret: i64) -[Mem]-> unit {
+  mem_store(SYS_FORMA_SEL_ANCHOR_WORD, anchor);
+  mem_store(SYS_FORMA_CARET_POS_WORD, caret);
+}
+
 pub fn gfx_end_frame() -[Mem, Gpu]-> i64 {
   let total = mem_load(STD_PRIM_COUNT_WORD);
   let cur = mem_load(STD_CURSOR_KIND_WORD);

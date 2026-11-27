@@ -1683,14 +1683,18 @@ export fn bad_export(v: Vec2) -> Vec2 {
         files.insert(
             "main.ifm".to_string(),
             r#"
+layout SideMem {
+  slot: word,
+}
+
 fn side_effect() -[Mem]-> i64 {
-  mem_store(100, 777);
+  SideMem.slot = 777;
   1
 }
 
 export fn run_check() -[Mem]-> i64 {
   let v = (side_effect(), 42).1;
-  mem_load(100) + v
+  SideMem.slot + v
 }
 "#
             .to_string(),

@@ -19,10 +19,10 @@ pub fn buf_can_insert(len: i64, cap: i64) -> bool req len >= 0 && cap >= 0 {
 }
 
 pub fn emit_line_ptr(x: i64, y: i64, ptr: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
-  let n = clamp_i64(mem_load(ptr), 0, 256);
+  let n = buf_len(ptr, 256);
   let mut cx = x;
   for i in 0..n max 256 {
-    cx += ui_glyph(cx, y, mem_load(ptr + 1 + i), size, style, rgba, clip);
+    cx += ui_glyph(cx, y, buf_get_cp(ptr, i), size, style, rgba, clip);
   }
   cx - x
 }

@@ -241,7 +241,7 @@ pub fn draw_composer_editor(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[
     let mut cx = tx;
     let mut cy = ty;
     for k in 0..ilen max 8192 {
-      let cp = mem_load(StudioMem::input_buf + 1 + k);
+      let cp = buf_get_cp(StudioMem::input_buf, k);
       if k == cur_i { cur_px = cx; cur_py = cy; }
       if cp == '\n' {
         if s_hi > s_lo && k >= s_lo && k < s_hi {

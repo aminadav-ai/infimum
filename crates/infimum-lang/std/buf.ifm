@@ -17,6 +17,18 @@ pub fn buf_clear(buf_ptr: i64) -[Mem]-> unit {
   mem_store(buf_ptr, 0);
 }
 
+pub fn buf_set_len(buf_ptr: i64, n: i64) -[Mem]-> unit {
+  mem_store(buf_ptr, max_i64(n, 0));
+}
+
+pub fn buf_get_cp(buf_ptr: i64, idx: i64) -[Mem]-> i64 {
+  if idx >= 0 { mem_load(buf_ptr + 1 + idx) } else { 0 }
+}
+
+pub fn buf_set_cp(buf_ptr: i64, idx: i64, cp: i64) -[Mem]-> unit {
+  if idx >= 0 { mem_store(buf_ptr + 1 + idx, cp); }
+}
+
 pub fn buf_push_cp(buf_ptr: i64, max_len: i64, cp: i64) -[Mem]-> unit {
   let cap = max_i64(max_len, 0);
   let n = clamp_i64(mem_load(buf_ptr), 0, cap);

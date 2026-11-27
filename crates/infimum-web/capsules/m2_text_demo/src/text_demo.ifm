@@ -75,14 +75,14 @@ fn input_submit_to_feed() -[Mem]-> unit {
     let slot = if cnt < 16 { cnt } else { 15 };
     let dst = DemoState::msgs + slot * MSG_STRIDE;
     let copy_n = clamp_i64(len, 0, 500);
-    mem_store(dst, copy_n);
+    buf_set_len(dst, copy_n);
     for i in 0..copy_n max 500 {
-      mem_store(dst + 1 + i, mem_load(DemoState::input_buf + 1 + i));
+      buf_set_cp(dst, i, buf_get_cp(DemoState::input_buf, i));
     }
     if cnt < 16 {
       DemoState.msg_count = cnt + 1;
     }
-    mem_store(DemoState::input_buf, 0);
+    buf_clear(DemoState::input_buf);
     DemoState.cursor_pos = 0;
     DemoState.sel_anchor = 0;
   }
@@ -93,7 +93,7 @@ fn input_submit_to_feed() -[Mem]-> unit {
 export fn ifw_on_paste_text(ptr: i64, len: i64) -[Mem]-> i64 {
   let n = clamp_i64(len, 0, 512);
   for i in 0..n max 512 {
-    let cp = mem_load(ptr + 1 + i);
+    let cp = buf_get_cp(ptr, i);
     if cp >= 32 { input_insert_char(cp); }
   }
   n
@@ -120,9 +120,9 @@ export fn ifw_get_copy_text() -[Mem]-> i64 {
   let lo = if c == a { 0 } else { min_i64(c, a) };
   let hi = if c == a { len } else { max_i64(c, a) };
   let n = clamp_i64(hi - lo, 0, INPUT_CAP);
-  mem_store(DemoState::copy_mailbox, n);
+  buf_set_len(DemoState::copy_mailbox, n);
   for i in 0..n max 1020 {
-    mem_store(DemoState::copy_mailbox + 1 + i, mem_load(DemoState::input_buf + 1 + lo + i));
+    buf_set_cp(DemoState::copy_mailbox, i, buf_get_cp(DemoState::input_buf, lo + i));
   }
   n
 }

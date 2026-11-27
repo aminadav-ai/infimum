@@ -86,7 +86,7 @@ pub fn measure_input_lines(max_w: i64, size: i64) -[Mem]-> i64 {
   let mut lines = 1;
   let mut cx = 0;
   for i in 0..len max 8192 {
-    let cp = mem_load(StudioMem::input_buf + 1 + i);
+    let cp = buf_get_cp(StudioMem::input_buf, i);
     if cp == '\n' {
       lines += 1;
       cx = 0;
@@ -111,7 +111,7 @@ pub fn hit_input_index_2d(mx: i64, my: i64, box_x: i64, box_y: i64, max_w: i64, 
   let mut cx = box_x;
   let mut best = len;
   for i in 0..len max 8192 {
-    let cp = mem_load(StudioMem::input_buf + 1 + i);
+    let cp = buf_get_cp(StudioMem::input_buf, i);
     if cp == '\n' {
       if row == target_row {
         best = i;
@@ -145,7 +145,7 @@ pub fn input_cursor_rel_y(cur_idx: i64, max_w: i64, size: i64, in_lh: i64) -[Mem
   let mut row = 0;
   let mut cx = 0;
   for i in 0..lim max 8192 {
-    let cp = mem_load(StudioMem::input_buf + 1 + i);
+    let cp = buf_get_cp(StudioMem::input_buf, i);
     if cp == '\n' {
       row += 1;
       cx = 0;
@@ -168,7 +168,7 @@ pub fn input_move_vertical(dir: i64, max_w: i64, size: i64, in_lh: i64, keep_sel
   let mut row = 0;
   let mut cx = 0;
   for i in 0..cur max 8192 {
-    let cp = mem_load(StudioMem::input_buf + 1 + i);
+    let cp = buf_get_cp(StudioMem::input_buf, i);
     if cp == '\n' {
       row += 1;
       cx = 0;
@@ -200,7 +200,7 @@ pub fn input_move_line_edge(to_end: bool, max_w: i64, size: i64, keep_sel: bool)
   let mut cx = 0;
   let mut line_start = 0;
   for i in 0..cur max 8192 {
-    let cp = mem_load(StudioMem::input_buf + 1 + i);
+    let cp = buf_get_cp(StudioMem::input_buf, i);
     if cp == '\n' {
       cx = 0;
       line_start = i + 1;
@@ -215,7 +215,7 @@ pub fn input_move_line_edge(to_end: bool, max_w: i64, size: i64, keep_sel: bool)
     }
   }
   if cur < len {
-    let cp_cur = mem_load(StudioMem::input_buf + 1 + cur);
+    let cp_cur = buf_get_cp(StudioMem::input_buf, cur);
     if cp_cur != '\n' {
       let adv_cur = glyph_px(cp_cur, size, 0);
       if cx > 0 && cx + adv_cur > max_w {
@@ -229,7 +229,7 @@ pub fn input_move_line_edge(to_end: bool, max_w: i64, size: i64, keep_sel: bool)
     let mut j = cur;
     for _ in 0..8192 {
       if j >= len { break; }
-      let cp = mem_load(StudioMem::input_buf + 1 + j);
+      let cp = buf_get_cp(StudioMem::input_buf, j);
       if cp == '\n' { break; }
       let adv = glyph_px(cp, size, 0);
       if cx > 0 && cx + adv > max_w { break; }
@@ -294,7 +294,7 @@ pub fn evict_msg_pool_range(alloc_start: i64, alloc_end: i64, keep_slot: i64) -[
   while s < cnt max 128 {
     let tp = StudioMem.msg_meta[s].text_ptr;
     let tlen = if tp >= StudioMem::msg_pool {
-      clamp_i64(mem_load(tp), 0, MAX_MSG_CHARS) + 2
+      buf_len(tp, MAX_MSG_CHARS) + 2
     } else {
       0
     };
@@ -332,7 +332,7 @@ pub fn append_message(role: i64, src_ptr: i64, el_tenths: i64, cost_m: i64, toke
   } else {
     cur_raw
   };
-  let n_raw = clamp_i64(mem_load(src_ptr), 0, MAX_MSG_CHARS);
+  let n_raw = buf_len(src_ptr, MAX_MSG_CHARS);
   let avail = clamp_i64((StudioMem::msg_pool + MSG_POOL_GUARD_OFFSET) - cursor, 0, MAX_MSG_CHARS);
   let n = if n_raw <= avail {
     n_raw
@@ -354,10 +354,10 @@ pub fn append_message(role: i64, src_ptr: i64, el_tenths: i64, cost_m: i64, toke
     127
   };
 
-  mem_store(cursor, n);
+  buf_set_len(cursor, n);
   let mut i = 0;
   while i < n max 32768 {
-    mem_store(cursor + 1 + i, mem_load(src_ptr + 1 + i));
+    buf_set_cp(cursor, i, buf_get_cp(src_ptr, i));
     i += 1;
   }
   StudioMem.msg_pool_cursor = cursor + n + 2;
@@ -389,11 +389,12 @@ pub fn attach_live_timeline_to_last_msg() -[Mem]-> unit {
       cursor = StudioMem::msg_pool;
     }
     let slot = evict_msg_pool_range(cursor, cursor + tl_n + 2, cnt - 1);
-    if slot >= 0 && slot < MAX_MESSAGES {
-      let mut i = 0;
-      while i < tl_n max 9000 {
-        mem_store(cursor + i, mem_load(StudioMem::live_timeline_buf + i));
-        i += 1;
+    if slot >= 0 && slot < MAX_MESSAGES && cursor >= 0 {
+      let dst_tl = slice_i64(cursor, tl_n);
+      for i in 0..dst_tl.len max 9000 {
+        if i < LIVE_TIMELINE_MAX_WORDS {
+          dst_tl[i] = StudioMem.live_timeline_buf[i];
+        }
       }
       StudioMem.msg_pool_cursor = cursor + tl_n + 2;
       StudioMem.msg_meta[slot].tl_ptr = cursor;
@@ -412,7 +413,7 @@ pub fn spans_equal(buf_a: i64, start_a: i64, len_a: i64, buf_b: i64, start_b: i6
     let mut i = 0;
     let lim = clamp_i64(len_a, 0, 96);
     while i < lim && ok max 96 {
-      if mem_load(buf_a + 1 + start_a + i) != mem_load(buf_b + 1 + start_b + i) {
+      if buf_get_cp(buf_a, start_a + i) != buf_get_cp(buf_b, start_b + i) {
         ok = false;
       }
       i += 1;
@@ -422,7 +423,7 @@ pub fn spans_equal(buf_a: i64, start_a: i64, len_a: i64, buf_b: i64, start_b: i6
 }
 
 pub fn project_has_convs(p_start: i64, p_len: i64) -[Mem]-> bool {
-  let clen = clamp_i64(mem_load(StudioMem::convs_buf), 0, 3500);
+  let clen = buf_len(StudioMem::convs_buf, 3500);
   let mut cpi = 0;
   let mut found = false;
   for _ in 0..MAX_CONVS max 60 {
@@ -431,7 +432,7 @@ pub fn project_has_convs(p_start: i64, p_len: i64) -[Mem]-> bool {
     let mut tab_pos = -1;
     for _ in 0..140 {
       if cpi >= clen { break; }
-      let ch = mem_load(StudioMem::convs_buf + 1 + cpi);
+      let ch = buf_get_cp(StudioMem::convs_buf, cpi);
       if ch == '\n' { break; }
       if ch == '\t' && tab_pos < 0 { tab_pos = cpi; }
       cpi += 1;
@@ -452,24 +453,24 @@ pub fn count_and_init_project_tree() -[Mem]-> unit {
   for k in 0..MAX_PROJECTS max 64 {
     StudioMem.proj_expanded[k] = 0;
   }
-  let clen = clamp_i64(mem_load(StudioMem::convs_buf), 0, 3500);
+  let clen = buf_len(StudioMem::convs_buf, 3500);
   let mut first_plen = 0;
   for ci in 0..min_i64(clen, 96) max 96 {
-    let ch = mem_load(StudioMem::convs_buf + 1 + ci);
+    let ch = buf_get_cp(StudioMem::convs_buf, ci);
     if ch == '\t' || ch == '\n' {
       if ch == '\t' { first_plen = ci; }
       break;
     }
   }
 
-  let plen = clamp_i64(mem_load(StudioMem::projects_buf), 0, 3500);
+  let plen = buf_len(StudioMem::projects_buf, 3500);
   let mut pi = 0;
   let mut p_idx = 0;
   let mut matched_idx = -1;
   while pi < plen && p_idx < MAX_PROJECTS max 64 {
     let start = pi;
     for _ in 0..80 {
-      if pi >= plen || mem_load(StudioMem::projects_buf + 1 + pi) == '\n' { break; }
+      if pi >= plen || buf_get_cp(StudioMem::projects_buf, pi) == '\n' { break; }
       pi += 1;
     }
     let name_len = pi - start;
@@ -492,23 +493,23 @@ pub fn count_and_init_project_tree() -[Mem]-> unit {
 
 pub fn extract_active_project_to(dst_ptr: i64) -[Mem]-> unit {
   let target = StudioMem.active_proj_idx;
-  let plen = clamp_i64(mem_load(StudioMem::projects_buf), 0, 3500);
+  let plen = buf_len(StudioMem::projects_buf, 3500);
   let mut pi = 0;
   let mut idx = 0;
-  mem_store(dst_ptr, 0);
+  buf_clear(dst_ptr);
   while pi < plen && idx <= target max 64 {
     let start = pi;
     for _ in 0..80 {
-      if pi >= plen || mem_load(StudioMem::projects_buf + 1 + pi) == '\n' { break; }
+      if pi >= plen || buf_get_cp(StudioMem::projects_buf, pi) == '\n' { break; }
       pi += 1;
     }
     let nlen = clamp_i64(pi - start, 0, 96);
     if pi < plen { pi += 1; }
     if nlen > 0 {
       if idx == target {
-        mem_store(dst_ptr, nlen);
+        buf_set_len(dst_ptr, nlen);
         for k in 0..nlen max 96 {
-          mem_store(dst_ptr + 1 + k, mem_load(StudioMem::projects_buf + 1 + start + k));
+          buf_set_cp(dst_ptr, k, buf_get_cp(StudioMem::projects_buf, start + k));
         }
         break;
       }
@@ -566,7 +567,7 @@ pub fn daemon_load_conv(idx: i64) -[Mem, Net]-> i64 {
   if code != 200 {
     0
   } else {
-    mem_store(StudioMem::http_key_tmp, 0);
+    StudioMem.http_key_tmp[0] = 0;
     daemon::parse_line_into(StudioMem::http_resp_buf, StudioMem::active_hdr_buf, 200);
     let msg_n = clamp_i64(daemon::parse_i64(StudioMem::http_resp_buf), 0, MAX_MESSAGES);
 
@@ -577,7 +578,7 @@ pub fn daemon_load_conv(idx: i64) -[Mem, Net]-> i64 {
     for i in 0..msg_n max 128 {
       let mcode = daemon_fetch_conv_msg(i);
       if mcode == 200 {
-        mem_store(StudioMem::http_key_tmp, 0);
+        StudioMem.http_key_tmp[0] = 0;
         let role = daemon::parse_i64(StudioMem::http_resp_buf);
         let tl_n = daemon::parse_i64(StudioMem::http_resp_buf);
         let text_len = clamp_i64(daemon::parse_i64(StudioMem::http_resp_buf), 0, MAX_MSG_CHARS);
@@ -591,8 +592,8 @@ pub fn daemon_load_conv(idx: i64) -[Mem, Net]-> i64 {
           daemon::parse_skip_to_next_line(StudioMem::http_resp_buf);
         }
 
-        let start_pos = mem_load(StudioMem::http_key_tmp);
-        let total_len = clamp_i64(mem_load(StudioMem::http_resp_buf), 0, 65536);
+        let start_pos = StudioMem.http_key_tmp[0];
+        let total_len = buf_len(StudioMem::http_resp_buf, 65536);
         let avail = clamp_i64(total_len - start_pos, 0, MAX_MSG_CHARS);
         let copy_len = if text_len < avail { text_len } else { avail };
         daemon::buf_copy_slice(StudioMem::reply_buf, MAX_MSG_CHARS, StudioMem::http_resp_buf, start_pos, copy_len);
@@ -666,7 +667,7 @@ pub fn start_gemini_async() -[Mem, Net]-> unit {
       append_message(0, StudioMem::input_buf, 0, 0, 0);
     }
     extract_active_project_to(StudioMem::active_proj_buf);
-    mem_store(StudioMem::agent_status_buf, 0);
+    buf_clear(StudioMem::agent_status_buf);
     StudioMem.live_timeline_words = 0;
     StudioMem.live_cmd_killing = 0;
     daemon_upload_pending_images(StudioMem.img_count);
@@ -693,7 +694,7 @@ pub fn start_gemini_async() -[Mem, Net]-> unit {
     StudioMem.pasted_img_h = 0;
     StudioMem.img_count = 0;
     StudioMem.img_preview_idx = -1;
-    mem_store(StudioMem::input_buf, 0);
+    buf_clear(StudioMem::input_buf);
     StudioMem.cursor_pos = 0;
     StudioMem.sel_anchor = 0;
     StudioMem.in_scroll_y = 0;
@@ -712,7 +713,7 @@ pub fn handle_paste_text(ptr: i64, len: i64) -[Mem]-> i64 {
   let mut ins = 0;
   let mut i = 0;
   while i < n && ins < avail max 4096 {
-    let cp = mem_load(ptr + 1 + i);
+    let cp = buf_get_cp(ptr, i);
     if cp == '\n' || cp == '\t' || cp >= ' ' { ins += 1; }
     i += 1;
   }
@@ -720,23 +721,23 @@ pub fn handle_paste_text(ptr: i64, len: i64) -[Mem]-> i64 {
     let pos = clamp_i64(StudioMem.cursor_pos, 0, cur_len);
     let mut j = cur_len - 1;
     while j >= pos max 8192 {
-      mem_store(StudioMem::input_buf + 1 + j + ins, mem_load(StudioMem::input_buf + 1 + j));
+      buf_set_cp(StudioMem::input_buf, j + ins, buf_get_cp(StudioMem::input_buf, j));
       j -= 1;
     }
     let mut wi = 0;
     let mut ri = 0;
     while ri < n && wi < ins max 4096 {
-      let cp = mem_load(ptr + 1 + ri);
+      let cp = buf_get_cp(ptr, ri);
       if cp == '\n' || cp >= ' ' {
-        mem_store(StudioMem::input_buf + 1 + pos + wi, cp);
+        buf_set_cp(StudioMem::input_buf, pos + wi, cp);
         wi += 1;
       } else if cp == '\t' {
-        mem_store(StudioMem::input_buf + 1 + pos + wi, ' ');
+        buf_set_cp(StudioMem::input_buf, pos + wi, ' ');
         wi += 1;
       }
       ri += 1;
     }
-    mem_store(StudioMem::input_buf, cur_len + ins);
+    buf_set_len(StudioMem::input_buf, cur_len + ins);
     StudioMem.cursor_pos = pos + ins;
     StudioMem.sel_anchor = pos + ins;
     StudioMem.in_follow_cursor = 1;
@@ -748,14 +749,14 @@ pub fn handle_copy_text() -[Mem]-> i64 {
   let ov = StudioMem.copy_override_ptr;
   if ov == -1 {
     StudioMem.copy_override_ptr = 0;
-    clamp_i64(mem_load(StudioMem::copy_mailbox), 0, LARGE_COPY_MAX_CHARS)
+    buf_len(StudioMem::copy_mailbox, LARGE_COPY_MAX_CHARS)
   } else if ov > 0 {
     StudioMem.copy_override_ptr = 0;
-    let n = clamp_i64(mem_load(ov), 0, LARGE_COPY_MAX_CHARS);
-    mem_store(StudioMem::copy_mailbox, n);
+    let n = buf_len(ov, LARGE_COPY_MAX_CHARS);
+    buf_set_len(StudioMem::copy_mailbox, n);
     let mut i = 0;
     while i < n max 32768 {
-      mem_store(StudioMem::copy_mailbox + 1 + i, mem_load(ov + 1 + i));
+      buf_set_cp(StudioMem::copy_mailbox, i, buf_get_cp(ov, i));
       i += 1;
     }
     StudioMem.copy_toast_ticks = 90;
@@ -766,16 +767,16 @@ pub fn handle_copy_text() -[Mem]-> i64 {
     let ma = StudioMem.msg_sel_anchor;
     let mf = StudioMem.msg_sel_focus;
     if mp > 0 && ma != mf {
-      let mlen = clamp_i64(mem_load(mp), 0, LARGE_COPY_MAX_CHARS);
+      let mlen = buf_len(mp, LARGE_COPY_MAX_CHARS);
       let ca = clamp_i64(ma, 0, mlen);
       let cf = clamp_i64(mf, 0, mlen);
       let lo = min_i64(ca, cf);
       let hi = max_i64(ca, cf);
       let n = clamp_i64(hi - lo, 0, LARGE_COPY_MAX_CHARS);
-      mem_store(StudioMem::copy_mailbox, n);
+      buf_set_len(StudioMem::copy_mailbox, n);
       let mut i = 0;
       while i < n max 32768 {
-        mem_store(StudioMem::copy_mailbox + 1 + i, mem_load(mp + 1 + lo + i));
+        buf_set_cp(StudioMem::copy_mailbox, i, buf_get_cp(mp, lo + i));
         i += 1;
       }
       StudioMem.copy_toast_ticks = 90;
@@ -788,10 +789,10 @@ pub fn handle_copy_text() -[Mem]-> i64 {
       let lo = if c == a { 0 } else { min_i64(c, a) };
       let hi = if c == a { len } else { max_i64(c, a) };
       let n = clamp_i64(hi - lo, 0, INPUT_MAX_CHARS);
-      mem_store(StudioMem::copy_mailbox, n);
+      buf_set_len(StudioMem::copy_mailbox, n);
       let mut i = 0;
       while i < n max 8192 {
-        mem_store(StudioMem::copy_mailbox + 1 + i, mem_load(StudioMem::input_buf + 1 + lo + i));
+        buf_set_cp(StudioMem::copy_mailbox, i, buf_get_cp(StudioMem::input_buf, lo + i));
         i += 1;
       }
       if n > 0 {
