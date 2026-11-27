@@ -206,12 +206,12 @@ pub fn render_feed(
     if StudioMem.cached_layout_col_w != col_w || StudioMem.cached_layout_scale != scale {
       StudioMem.cached_layout_col_w = col_w;
       StudioMem.cached_layout_scale = scale;
-      for ci_inv in 0..mcnt max 128 {
+      for ci_inv in 0..mcnt max 512 {
         StudioMem.msg_meta[ci_inv].cached_h = 0;
       }
     }
 
-    for mi in 0..mcnt max 128 {
+    for mi in 0..mcnt max 512 {
       let role = StudioMem.msg_meta[mi].role;
       let text_ptr = StudioMem.msg_meta[mi].text_ptr;
       let is_user = role == 0;

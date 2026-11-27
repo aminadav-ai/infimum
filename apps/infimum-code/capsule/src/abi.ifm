@@ -15,7 +15,7 @@ pub const INPUT_MAX_CHARS: i64 = 8192;
 pub const CLIPBOARD_MAX_CHARS: i64 = 4096;
 pub const LARGE_COPY_MAX_CHARS: i64 = 32768;
 pub const MAX_MSG_CHARS: i64 = 32768;
-pub const MAX_MESSAGES: i64 = 128;
+pub const MAX_MESSAGES: i64 = 512;
 pub const MSG_META_STRIDE: i64 = 8;
 
 pub struct MsgMeta {
@@ -28,11 +28,12 @@ pub struct MsgMeta {
   feedback_pack: word,
   tl_ptr: word,
 }
-pub const MSG_POOL_CAP: i64 = 1050000;
-pub const MSG_POOL_GUARD_OFFSET: i64 = 1049900;
-pub const MSG_POOL_WRAP_OFFSET: i64 = 1046000;
+pub const MSG_POOL_CAP: i64 = 4000000;
+pub const MSG_POOL_GUARD_OFFSET: i64 = 3999900;
+pub const MSG_POOL_WRAP_OFFSET: i64 = 3996000;
 pub const MAX_PROJECTS: i64 = 64;
-pub const MAX_CONVS: i64 = 60;
+pub const MAX_CONVS: i64 = 256;
+pub const CONVS_BUF_MAX_CHARS: i64 = 15800;
 pub const FONT_ATLAS_SLOTS: i64 = 176;
 pub const MAX_TBL_COLS: i64 = 12;
 
@@ -65,6 +66,9 @@ pub enum HostAction {
   RemoveImage4 = 10,
   RemoveImage5 = 11,
   GoHome = 12,
+  ExportBackup = 13,
+  ImportBackup = 14,
+  ExportConvMd = 15,
 }
 
 pub enum ViewMode {
@@ -147,7 +151,7 @@ pub layout StudioMem {
   mouse_selecting: word,
   pasted_img_w: word,
   pasted_img_h: word,
-  msg_count: word inv 0..=128,
+  msg_count: word inv 0..=512,
   active_proj_idx: word,
   model_idx: word inv 0..=21,
   ctx_open: word,
@@ -255,7 +259,7 @@ pub layout StudioMem {
   projects_buf: words[4000],
 
   // Saved Conversations UTF-32 (`project\ttitle\n`)
-  convs_buf: words[3600],
+  convs_buf: words[16000],
 
   // Async Agent Live Status Line
   agent_status_buf: words[300],
@@ -270,7 +274,7 @@ pub layout StudioMem {
   active_hdr_buf: words[300],
 
   // Per-Message Timeline Expansion Flags
-  msg_tl_expanded: words[128],
+  msg_tl_expanded: words[512],
 
   // In-App API Key Input & Live Test Status Buffers
   key_input_buf: words[200],
@@ -282,11 +286,11 @@ pub layout StudioMem {
   // Large Host Reply / Clean-Reader Buffer
   reply_buf: words[33000],
 
-  // Packed Message Metadata: 128 msgs * 8 words
-  msg_meta: MsgMeta[128],
+  // Packed Message Metadata: 512 msgs * 8 words
+  msg_meta: MsgMeta[512],
 
-  // Packed Message Text Pool: 1.05M UTF-32 chars
-  msg_pool: words[1050000],
+  // Packed Message Text Pool: 4.0M UTF-32 chars (~16 MiB)
+  msg_pool: words[4000000],
 
   // Native Source File Viewer Path, Request Key & Paged Content UTF-32
   file_view_path_buf: words[256],

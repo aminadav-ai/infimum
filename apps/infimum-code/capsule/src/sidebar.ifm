@@ -162,7 +162,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
   let mut py = p_top + 2 - side_scr;
 
   let plen = buf_len(StudioMem::projects_buf, 3500);
-  let clen = buf_len(StudioMem::convs_buf, 3500);
+  let clen = buf_len(StudioMem::convs_buf, CONVS_BUF_MAX_CHARS);
   let flen = buf_len(StudioMem::files_buf, 3500);
   if StudioMem.proj_count == 0 {
     ui_text(rx + 16, py + 2, "Нажмите + выше, чтобы", sm_sz, 0, col_muted(th), clip_id);
@@ -324,7 +324,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
       } else if StudioMem.proj_expanded[p_idx] == 1 && StudioMem.side_tab == 0 && clen > 0 {
         let mut cpi = 0;
         let mut c_idx = 0;
-        while cpi < clen && c_idx < MAX_CONVS max 60 {
+        while cpi < clen && c_idx < MAX_CONVS max 256 {
           let lstart = cpi;
           let mut tab_pos = -1;
           for _ in 0..140 {

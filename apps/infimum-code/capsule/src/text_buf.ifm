@@ -255,7 +255,7 @@ pub fn save_settings() -[Mem, Net]-> unit {
 
 pub fn reset_tl_expanded() -[Mem]-> unit {
   let mut i = 0;
-  while i < MAX_MESSAGES max 128 {
+  while i < MAX_MESSAGES max 512 {
     StudioMem.msg_tl_expanded[i] = 0;
     i += 1;
   }
@@ -291,7 +291,7 @@ pub fn evict_msg_pool_range(alloc_start: i64, alloc_end: i64, keep_slot: i64) -[
   let mut dst = 0;
   let mut new_keep = -1;
   let mut s = 0;
-  while s < cnt max 128 {
+  while s < cnt max 512 {
     let tp = StudioMem.msg_meta[s].text_ptr;
     let tlen = if tp >= StudioMem::msg_pool {
       buf_len(tp, MAX_MSG_CHARS) + 2
@@ -423,10 +423,10 @@ pub fn spans_equal(buf_a: i64, start_a: i64, len_a: i64, buf_b: i64, start_b: i6
 }
 
 pub fn project_has_convs(p_start: i64, p_len: i64) -[Mem]-> bool {
-  let clen = buf_len(StudioMem::convs_buf, 3500);
+  let clen = buf_len(StudioMem::convs_buf, CONVS_BUF_MAX_CHARS);
   let mut cpi = 0;
   let mut found = false;
-  for _ in 0..MAX_CONVS max 60 {
+  for _ in 0..MAX_CONVS max 256 {
     if cpi >= clen { break; }
     let lstart = cpi;
     let mut tab_pos = -1;
@@ -453,7 +453,7 @@ pub fn count_and_init_project_tree() -[Mem]-> unit {
   for k in 0..MAX_PROJECTS max 64 {
     StudioMem.proj_expanded[k] = 0;
   }
-  let clen = buf_len(StudioMem::convs_buf, 3500);
+  let clen = buf_len(StudioMem::convs_buf, CONVS_BUF_MAX_CHARS);
   let mut first_plen = 0;
   for ci in 0..min_i64(clen, 96) max 96 {
     let ch = buf_get_cp(StudioMem::convs_buf, ci);
@@ -575,7 +575,7 @@ pub fn daemon_load_conv(idx: i64) -[Mem, Net]-> i64 {
     do Net.call(HostOp::GpuClearImages, 0, 0, 0);
     let mut gpu_slot = 0;
     let mut loaded = 0;
-    for i in 0..msg_n max 128 {
+    for i in 0..msg_n max 512 {
       let mcode = daemon_fetch_conv_msg(i);
       if mcode == 200 {
         StudioMem.http_key_tmp[0] = 0;
