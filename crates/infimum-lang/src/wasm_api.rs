@@ -8,7 +8,7 @@ use crate::canon::{canonicalize_fn, CanonicalNode};
 use crate::diag::{InfimumDiagnostic, Span};
 use crate::parser::parse_module_from_virtual_fs;
 use crate::store::topo_sort_functions;
-use crate::strata_wasm::{compute_module_layout_end_word, emit_strata_wasm_bytes_with_layout_end};
+use crate::strata_wasm::{compute_module_layout_end_word, emit_strata_wasm_bytes_v2};
 use crate::typecheck::typecheck_node;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -183,7 +183,7 @@ where
             .or_default()
             .push(alias.clone());
     }
-    let passport_bytes = crate::store::build_merged_passport_bytes(&export_pairs, |alias| {
+    let mut passport = crate::store::build_merged_passport(&export_pairs, |alias| {
         let h = aliases.get(alias).ok_or_else(|| {
             InfimumDiagnostic::new(
                 "E032_NODE_NOT_FOUND",
@@ -195,13 +195,18 @@ where
         })?;
         crate::store::compute_passport_in_memory(h, &nodes_by_hash, &aliases_by_hash)
     })?;
+    if let Some(ref mut p) = passport {
+        p.total_reachable_nodes = ordered_nodes.len();
+        p.z3_obligations_proved = z3_proven;
+    }
 
     let layout_end_word = compute_module_layout_end_word(&module);
-    let wasm_bytes = emit_strata_wasm_bytes_with_layout_end(
+    let wasm_bytes = emit_strata_wasm_bytes_v2(
         &ordered_nodes,
         &export_pairs,
-        &passport_bytes,
+        passport,
         layout_end_word,
+        None,
     )?;
     let meta = InMemoryCompileResult {
         ok: true,

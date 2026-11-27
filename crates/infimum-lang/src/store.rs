@@ -55,10 +55,24 @@ pub struct SecretPipe {
     pub witness_chain: Vec<String>,
 }
 
+pub const PASSPORT_SCHEMA_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityPassport {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub compiler_version: String,
     pub root_hash: String,
     pub short_hash: String,
+    #[serde(default)]
+    pub wasm_code_hash: String,
+    #[serde(default)]
+    pub z3_obligations_proved: usize,
+    #[serde(default)]
+    pub max_memory_bytes: u64,
+    #[serde(default)]
+    pub exported_functions: Vec<String>,
     pub aliases: Vec<String>,
     pub total_reachable_nodes: usize,
     pub is_pure: bool,
@@ -778,7 +792,80 @@ pub fn compute_passport_in_memory(
     compute_passport_with(root_hash, &load, &aliases_fn)
 }
 
-/// Merge `SecurityPassport` across all exported entrypoints (so no exported function can hide capabilities).
+/// Merge `SecurityPassport` across ALL exported entrypoints (so no exported function can hide capabilities).
+pub fn build_merged_passport<F>(
+    export_pairs: &[(String, String)],
+    compute: F,
+) -> Result<Option<SecurityPassport>, InfimumDiagnostic>
+where
+    F: Fn(&str) -> Result<SecurityPassport, InfimumDiagnostic>,
+{
+    if export_pairs.is_empty() {
+        return Ok(None);
+    }
+    let primary_alias = export_pairs
+        .iter()
+        .find(|(n, _)| n == "step_ui" || n == "init_app" || n == "cap_execute")
+        .map(|(n, _)| n.as_str())
+        .unwrap_or_else(|| export_pairs[0].0.as_str());
+
+    let mut merged = compute(primary_alias)?;
+    let mut seen_effs: BTreeSet<String> = merged
+        .capabilities
+        .iter()
+        .map(|c| c.effect.clone())
+        .collect();
+    let mut seen_pipes: BTreeSet<(String, String, String)> = merged
+        .secret_pipes
+        .iter()
+        .map(|p| {
+            (
+                p.secret_type.clone(),
+                p.destination_domain.clone(),
+                p.operation.clone(),
+            )
+        })
+        .collect();
+    let mut all_exports: Vec<String> = Vec::with_capacity(export_pairs.len());
+    let mut seen_aliases: BTreeSet<String> = merged.aliases.iter().cloned().collect();
+
+    for (alias, _) in export_pairs {
+        all_exports.push(alias.clone());
+        if seen_aliases.insert(alias.clone()) {
+            merged.aliases.push(alias.clone());
+        }
+        if alias == primary_alias {
+            continue;
+        }
+        let other = compute(alias)?;
+        if other.uses_secret_types {
+            merged.uses_secret_types = true;
+        }
+        for cap in other.capabilities {
+            if seen_effs.insert(cap.effect.clone()) {
+                merged.capabilities.push(cap);
+            }
+        }
+        for pipe in other.secret_pipes {
+            let key = (
+                pipe.secret_type.clone(),
+                pipe.destination_domain.clone(),
+                pipe.operation.clone(),
+            );
+            if seen_pipes.insert(key) {
+                merged.secret_pipes.push(pipe);
+            }
+        }
+    }
+
+    merged.schema_version = PASSPORT_SCHEMA_VERSION;
+    merged.compiler_version = env!("CARGO_PKG_VERSION").to_string();
+    merged.exported_functions = all_exports;
+    merged.is_pure = merged.capabilities.is_empty();
+    Ok(Some(merged))
+}
+
+/// Serialize merged `SecurityPassport` across all exported entrypoints into JSON bytes.
 pub fn build_merged_passport_bytes<F>(
     export_pairs: &[(String, String)],
     compute: F,
@@ -786,35 +873,9 @@ pub fn build_merged_passport_bytes<F>(
 where
     F: Fn(&str) -> Result<SecurityPassport, InfimumDiagnostic>,
 {
-    if let Some((ui_alias, _)) = export_pairs
-        .iter()
-        .find(|(n, _)| n == "step_ui" || n == "init_app")
-    {
-        let mut merged = compute(ui_alias)?;
-        let mut seen_effs: BTreeSet<String> = merged
-            .capabilities
-            .iter()
-            .map(|c| c.effect.clone())
-            .collect();
-        for (alias, _) in export_pairs {
-            if let Ok(other) = compute(alias) {
-                if other.uses_secret_types {
-                    merged.uses_secret_types = true;
-                }
-                for cap in other.capabilities {
-                    if seen_effs.insert(cap.effect.clone()) {
-                        merged.capabilities.push(cap);
-                    }
-                }
-            }
-        }
-        merged.is_pure = merged.capabilities.is_empty();
-        Ok(serde_json::to_vec(&merged).unwrap_or_default())
-    } else if let Some((alias, _)) = export_pairs.first() {
-        let p = compute(alias)?;
-        Ok(serde_json::to_vec(&p).unwrap_or_default())
-    } else {
-        Ok(Vec::new())
+    match build_merged_passport(export_pairs, compute)? {
+        Some(merged) => Ok(serde_json::to_vec(&merged).unwrap_or_default()),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -885,8 +946,14 @@ where
         .collect();
 
     Ok(SecurityPassport {
+        schema_version: PASSPORT_SCHEMA_VERSION,
+        compiler_version: env!("CARGO_PKG_VERSION").to_string(),
         root_hash: root_hash.to_string(),
         short_hash: root_node.short_hash,
+        wasm_code_hash: String::new(),
+        z3_obligations_proved: 0,
+        max_memory_bytes: 0,
+        exported_functions: root_aliases.clone(),
         aliases: root_aliases,
         total_reachable_nodes: visited.len(),
         is_pure: capabilities.is_empty(),

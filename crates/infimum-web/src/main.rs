@@ -45,13 +45,35 @@ fn parse_cli() -> Result<CliArgs, String> {
     let mut app_id = "infimum-web".to_string();
     let mut policy = CapabilityPolicy::default();
 
-    for arg in env::args().skip(1) {
+    let mut args_iter = env::args().skip(1);
+    while let Some(arg) = args_iter.next() {
         if arg == "--headless-check" {
             headless_check = true;
         } else if arg == "--allow-clipboard" {
             policy.allow_clipboard = true;
         } else if arg == "--allow-unsigned" {
             policy.require_passport = false;
+        } else if arg == "--require-signature" {
+            let spec = args_iter
+                .next()
+                .ok_or_else(|| "Missing <pubkey.hex|path> after --require-signature".to_string())?;
+            let raw_hex = if Path::new(&spec).is_file() {
+                fs::read_to_string(&spec)
+                    .map_err(|e| format!("Failed to read public key '{spec}': {e}"))?
+            } else {
+                spec
+            };
+            let pk = crate::passport::decode_pubkey_hex_32(&raw_hex)?;
+            policy.trusted_pubkeys.push(pk);
+        } else if let Some(spec) = arg.strip_prefix("--require-signature=") {
+            let raw_hex = if Path::new(spec).is_file() {
+                fs::read_to_string(spec)
+                    .map_err(|e| format!("Failed to read public key '{spec}': {e}"))?
+            } else {
+                spec.to_string()
+            };
+            let pk = crate::passport::decode_pubkey_hex_32(&raw_hex)?;
+            policy.trusted_pubkeys.push(pk);
         } else if let Some(t) = arg.strip_prefix("--title=") {
             window_title = Some(t.to_string());
         } else if let Some(id) = arg.strip_prefix("--app-id=") {
@@ -68,11 +90,12 @@ fn parse_cli() -> Result<CliArgs, String> {
             println!(
                 "Usage: infimum-web <capsule.ifw|capsule.wasm> [OPTIONS]\n\
                  Options:\n\
-                 \t--headless-check          Verify infimum.passport and step 1 frame without opening a window\n\
-                 \t--allow-net=<host[:port]> Allow capsule network access to a specific domain or loopback port\n\
-                 \t--cap-arg=<KEY=VAL>       Pass an explicit launch parameter to the capsule\n\
-                 \t--allow-clipboard         Allow capsule clipboard read/write\n\
-                 \t--allow-unsigned          Allow Wasm without an infimum.passport section"
+                 \t--headless-check                  Verify infimum.passport and step 1 frame without opening a window\n\
+                 \t--require-signature <pubkey|file> Require valid Ed25519 signature from trusted public key\n\
+                 \t--allow-net=<host[:port]>         Allow capsule network access to a specific domain or loopback port\n\
+                 \t--cap-arg=<KEY=VAL>               Pass an explicit launch parameter to the capsule\n\
+                 \t--allow-clipboard                 Allow capsule clipboard read/write\n\
+                 \t--allow-unsigned                  Allow Wasm without an infimum.passport section"
             );
             std::process::exit(0);
         } else if capsule_path.is_none() {

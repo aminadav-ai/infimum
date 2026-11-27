@@ -1,6 +1,5 @@
 use infimum_lang::parser::parse_module;
 use infimum_lang::store::GraphStore;
-use infimum_lang::strata_elf::{build_strata_elf_target, run_strata_elf_target};
 use infimum_lang::strata_wasm::build_strata_wasm_from_module;
 use std::env;
 use std::fs;
@@ -112,11 +111,14 @@ import assert from 'node:assert/strict';
 const bytes = fs.readFileSync(process.argv[2]);
 const mod = await WebAssembly.compile(bytes);
 
-// 1. Check embedded custom section `infimum.passport`
+// 1. Check embedded custom section `infimum.passport` (Passport v2 merges all exports, including `render_strip -[Mem]->`)
 const sections = WebAssembly.Module.customSections(mod, 'infimum.passport');
 assert.equal(sections.length, 1);
 const passport = JSON.parse(new TextDecoder().decode(sections[0]));
-assert.equal(passport.is_pure, true);
+assert.equal(passport.schema_version, 2);
+assert.equal(passport.is_pure, false);
+assert.equal(passport.capabilities.some((c) => c.effect === 'Mem'), true);
+assert.equal(passport.wasm_code_hash.length, 64);
 
 // 2. Instantiate & invoke JS-friendly i32 exports directly, including negative i32 args!
 const inst = await WebAssembly.instantiate(mod, {});
@@ -145,75 +147,6 @@ console.log('STRATA_WASM_PIXEL_OK');
         );
         assert!(stdout.contains("STRATA_WASM_PIXEL_OK"));
     }
-
-    let _ = fs::remove_dir_all(&ws);
-}
-
-#[test]
-fn test_direct_strata_linux_x86_64_elf64_zero_rustc() {
-    let ws = temp_workspace("strata_elf");
-    let mut store = GraphStore::open(&ws).unwrap();
-
-    let src = r#"
-        fn fib(n: i64) -> i64
-          req n >= 0
-          ens result >= 0
-        {
-          if n <= 1 {
-            n
-          } else {
-            fib(n - 1) + fib(n - 2)
-          }
-        }
-
-        fn mem_sum_squares(n: i64) -[Mem]-> i64
-          req n >= 1 && n <= 100
-        {
-          let mut i = 1;
-          while i <= n max 128 {
-            mem_store(i, i * i);
-            i = i + 1;
-          }
-          let mut k = 1;
-          let mut acc = 0;
-          while k <= n max 128 {
-            acc = acc + mem_load(k);
-            k = k + 1;
-          }
-          acc + fib(10) - 100
-        }
-
-        fn neg_diff(a: i64, b: i64) -> i64
-          ens result == a - b
-        {
-          a - b
-        }
-    "#;
-
-    store.ingest_module(&parse_module(src).unwrap()).unwrap();
-
-    // 1. Build tiny standalone x86_64 ELF64 executable (< 4 KB, zero rustc/libc!)
-    let elf_out = ws.join("mem_sum");
-    let art = build_strata_elf_target(&store, "mem_sum_squares", &elf_out).unwrap();
-    assert!(
-        art.elf_size_bytes < 4096,
-        "Expected tiny ELF64 < 4 KB, got {} bytes",
-        art.elf_size_bytes
-    );
-
-    // 2. Run `mem_sum_squares(5)`: (1 + 4 + 9 + 16 + 25) + fib(10)=55 - 100 = 55 + 55 - 100 = 10
-    let run_ok = run_strata_elf_target(&store, &ws, "mem_sum_squares", &["5"]).unwrap();
-    assert_eq!(run_ok.exit_code, 0);
-    assert_eq!(run_ok.stdout.trim(), "10");
-
-    // 3. Test negative result formatting (`10 - 35 = -25`)
-    let run_neg = run_strata_elf_target(&store, &ws, "neg_diff", &["10", "35"]).unwrap();
-    assert_eq!(run_neg.exit_code, 0);
-    assert_eq!(run_neg.stdout.trim(), "-25");
-
-    // 4. Test boundary `req n >= 1 && n <= 100` rejection (`0` -> exit code 2)
-    let run_bad = run_strata_elf_target(&store, &ws, "mem_sum_squares", &["0"]).unwrap();
-    assert_eq!(run_bad.exit_code, 2);
 
     let _ = fs::remove_dir_all(&ws);
 }

@@ -1,16 +1,15 @@
 #![deny(clippy::todo, clippy::unimplemented, dead_code, unused_must_use)]
 
 use infimum_lang::abi::{generate_js_abi, generate_json_abi, generate_rust_abi};
-use infimum_lang::codegen::{build_native_binary, run_native_binary};
 use infimum_lang::diag::{InfimumDiagnostic, Span};
 use infimum_lang::parser::parse_module_from_path;
-use infimum_lang::showcase::{build_showcase_assets, serve_showcase_http};
-use infimum_lang::store::GraphStore;
-use infimum_lang::strata_elf::{build_strata_elf_target, run_strata_elf_target};
-use infimum_lang::strata_wasm::{
-    build_strata_wasm_from_module_with_cache, build_strata_wasm_target,
+use infimum_lang::passport_crypto::{
+    compute_key_id, decode_key_32, encode_hex, generate_keypair, verify_passport_signature,
 };
-use infimum_lang::wasm::{build_wasm_module, WasmArtifact};
+use infimum_lang::store::GraphStore;
+use infimum_lang::strata_wasm::{
+    build_strata_wasm_from_module_signed, build_strata_wasm_target,
+};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -135,28 +134,74 @@ fn run_cli(args: &[&str], json_mode: bool, no_cache: bool) -> Result<(), Infimum
             Ok(())
         }
         ["compile-wasm", file_path, "-o", out_path] => {
-            let module = parse_module_from_path(Path::new(file_path))?;
-            let mut store = GraphStore::open(&cwd)?;
-            let art = build_strata_wasm_from_module_with_cache(
-                &mut store,
-                &module,
-                Path::new(out_path),
+            run_compile_wasm(&cwd, file_path, out_path, None, use_cache, json_mode)
+        }
+        ["compile-wasm", file_path, "-o", out_path, "--sign-key", key_path] => {
+            run_compile_wasm(
+                &cwd,
+                file_path,
+                out_path,
+                Some(Path::new(key_path)),
                 use_cache,
-            )?;
+                json_mode,
+            )
+        }
+        ["keygen", "--out-dir", out_dir] => {
+            let dir = Path::new(out_dir);
+            fs::create_dir_all(dir).map_err(|e| {
+                InfimumDiagnostic::new(
+                    "E085_KEYGEN_IO",
+                    "keygen",
+                    format!("Failed to create key directory '{}': {e}", dir.display()),
+                    Span::zero(),
+                    "Check write permissions on target directory",
+                )
+            })?;
+            let (sk, pk) = generate_keypair();
+            let key_id = compute_key_id(&pk);
+            let sk_path = dir.join("infimum_signing.key");
+            let pk_path = dir.join("infimum_signing.pub");
+            fs::write(&sk_path, format!("{}\n", encode_hex(&sk))).map_err(|e| {
+                InfimumDiagnostic::new(
+                    "E085_KEYGEN_IO",
+                    "keygen",
+                    format!("Failed to write secret key '{}': {e}", sk_path.display()),
+                    Span::zero(),
+                    "Check write permissions on target directory",
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&sk_path, fs::Permissions::from_mode(0o600));
+            }
+            fs::write(&pk_path, format!("{}\n", encode_hex(&pk))).map_err(|e| {
+                InfimumDiagnostic::new(
+                    "E085_KEYGEN_IO",
+                    "keygen",
+                    format!("Failed to write public key '{}': {e}", pk_path.display()),
+                    Span::zero(),
+                    "Check write permissions on target directory",
+                )
+            })?;
             if json_mode {
-                println!("{}", serde_json::to_string_pretty(&art).unwrap_or_default());
-            } else {
                 println!(
-                    "  Strata Direct Wasm -> {} [{} node(s), exports={:?}, {} bytes ({:.2} KB) in {:.2}ms, zero rustc]",
-                    art.wasm_path,
-                    art.compiled_nodes,
-                    art.exported_functions,
-                    art.wasm_size_bytes,
-                    art.wasm_size_bytes as f64 / 1024.0,
-                    art.build_us as f64 / 1000.0
+                    "{{\"alg\":\"Ed25519\",\"key_id\":\"{}\",\"secret_key_path\":\"{}\",\"public_key_path\":\"{}\",\"public_key\":\"{}\"}}",
+                    key_id,
+                    sk_path.display(),
+                    pk_path.display(),
+                    encode_hex(&pk)
                 );
+            } else {
+                println!("Generated Ed25519 signing keypair (key_id={key_id}):");
+                println!("  Secret key (0600): {}", sk_path.display());
+                println!("  Public key:        {}", pk_path.display());
             }
             Ok(())
+        }
+        ["verify-passport", ifw_path] => run_verify_passport(Path::new(ifw_path), None, json_mode),
+        ["verify-passport", ifw_path, "--pubkey", pub_path] => {
+            run_verify_passport(Path::new(ifw_path), Some(Path::new(pub_path)), json_mode)
         }
         ["export-abi", file_path, "--rust", "-o", out_path] => {
             let module = parse_module_from_path(Path::new(file_path))?;
@@ -242,102 +287,6 @@ fn run_cli(args: &[&str], json_mode: bool, no_cache: bool) -> Result<(), Infimum
                     art.wasm_size_bytes as f64 / 1024.0,
                     art.build_us as f64 / 1000.0
                 );
-            }
-            Ok(())
-        }
-        ["build-strata-elf", target, "-o", out_path] => {
-            let store = GraphStore::open(&cwd)?;
-            let art = build_strata_elf_target(&store, target, Path::new(out_path))?;
-            if json_mode {
-                println!("{}", serde_json::to_string_pretty(&art).unwrap_or_default());
-            } else {
-                println!(
-                    "  Strata Direct ELF64 -> {} [{} node(s), {} bytes ({:.2} KB) in {:.2}ms, zero rustc]",
-                    art.elf_path,
-                    art.compiled_nodes,
-                    art.elf_size_bytes,
-                    art.elf_size_bytes as f64 / 1024.0,
-                    art.build_us as f64 / 1000.0
-                );
-            }
-            Ok(())
-        }
-        ["run-strata", target, rest @ ..] => {
-            let store = GraphStore::open(&cwd)?;
-            let outcome = run_strata_elf_target(&store, &cwd, target, rest)?;
-            if json_mode {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&outcome).unwrap_or_default()
-                );
-            } else {
-                if !outcome.stdout.is_empty() {
-                    print!("{}", outcome.stdout);
-                }
-                if outcome.exit_code != 0 {
-                    return Err(InfimumDiagnostic::new(
-                        "E074_RUNTIME_REJECTED",
-                        "strata-elf",
-                        format!("Strata ELF '{}' exited with status {}", target, outcome.exit_code),
-                        Span::zero(),
-                        "Check CLI argument count and root 'req' preconditions",
-                    ));
-                }
-            }
-            Ok(())
-        }
-        ["build", target] => {
-            let store = GraphStore::open(&cwd)?;
-            let art = build_native_binary(&store, &cwd, target, None)?;
-            print_build_artifact(&art, json_mode);
-            Ok(())
-        }
-        ["build", target, "-o", out_path] => {
-            let store = GraphStore::open(&cwd)?;
-            let art = build_native_binary(&store, &cwd, target, Some(Path::new(out_path)))?;
-            print_build_artifact(&art, json_mode);
-            Ok(())
-        }
-        ["build", target, "--target", "wasm"] | ["build-wasm", target] => {
-            let store = GraphStore::open(&cwd)?;
-            let art = build_wasm_module(&store, &cwd, target, None)?;
-            print_wasm_artifact(&art, json_mode);
-            Ok(())
-        }
-        ["build", target, "--target", "wasm", "-o", out_path]
-        | ["build-wasm", target, "-o", out_path] => {
-            let store = GraphStore::open(&cwd)?;
-            let art = build_wasm_module(&store, &cwd, target, Some(Path::new(out_path)))?;
-            print_wasm_artifact(&art, json_mode);
-            Ok(())
-        }
-        ["run", target, rest @ ..] => {
-            let store = GraphStore::open(&cwd)?;
-            let outcome = run_native_binary(&store, &cwd, target, rest)?;
-            if json_mode {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&outcome).unwrap_or_default()
-                );
-            } else {
-                if !outcome.stdout.is_empty() {
-                    print!("{}", outcome.stdout);
-                }
-                if !outcome.stderr.is_empty() {
-                    eprint!("{}", outcome.stderr);
-                }
-                if outcome.exit_code != 0 {
-                    return Err(InfimumDiagnostic::new(
-                        "E074_RUNTIME_REJECTED",
-                        "runtime",
-                        format!(
-                            "Node '{}' exited with status {}",
-                            target, outcome.exit_code
-                        ),
-                        Span::zero(),
-                        "Ensure CLI arguments match parameter types and satisfy root 'req' preconditions",
-                    ));
-                }
             }
             Ok(())
         }
@@ -456,34 +405,6 @@ fn run_cli(args: &[&str], json_mode: bool, no_cache: bool) -> Result<(), Infimum
             }
             Ok(())
         }
-        ["build-showcase"] => {
-            let out_dir = cwd.join("showcase");
-            let bundle = build_showcase_assets(&cwd, &out_dir)?;
-            if json_mode {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&bundle).unwrap_or_default()
-                );
-            } else {
-                println!(
-                    "  Showcase assets built in {} (checkout.wasm = {:.1} KB, {} verified nodes)",
-                    out_dir.display(),
-                    bundle.wasm_size_bytes as f64 / 1024.0,
-                    bundle.ingested_nodes.len()
-                );
-            }
-            Ok(())
-        }
-        ["serve-showcase"] => {
-            let out_dir = cwd.join("showcase");
-            let _ = build_showcase_assets(&cwd, &out_dir)?;
-            serve_showcase_http(&out_dir, "127.0.0.1:8787")
-        }
-        ["serve-showcase", bind_addr] => {
-            let out_dir = cwd.join("showcase");
-            let _ = build_showcase_assets(&cwd, &out_dir)?;
-            serve_showcase_http(&out_dir, bind_addr)
-        }
         ["rename", old_alias, new_alias] => {
             let mut store = GraphStore::open(&cwd)?;
             let hash = store.rename_alias(old_alias, new_alias)?;
@@ -504,7 +425,7 @@ fn run_cli(args: &[&str], json_mode: bool, no_cache: bool) -> Result<(), Infimum
             "cli",
             "Invalid CLI arguments",
             Span::zero(),
-            "Usage: infimum <mcp | verify <f.ifm> | ingest <f.ifm> | compile-wasm <f.ifm> -o <out.wasm> | export-abi <f.ifm> --rust [-o <out.rs>] | build-strata-wasm <ref> -o <out.wasm> | build-strata-elf <ref> -o <out> | run-strata <ref> [args...] | build <ref> [-o out] | run <ref> [args...] | show <ref> | graph | passport <ref> | rename <old> <new>> [--json] [--no-cache]",
+            "Usage: infimum <mcp | verify <f.ifm> | test <f.ifm> | ingest <f.ifm> | compile-wasm <f.ifm> -o <out.ifw> [--sign-key <key>] | export-abi <f.ifm> --rust|--js [-o <out>] | build-strata-wasm <ref> -o <out.ifw> | passport <ref> | verify-passport <f.ifw> [--pubkey <pub>] | keygen --out-dir <dir> | show <ref> | graph | rename <old> <new>> [--json] [--no-cache]",
         )),
     }
 }
@@ -526,46 +447,116 @@ fn write_abi_output(out_path: &Path, content: &str) -> Result<(), InfimumDiagnos
     })
 }
 
-fn print_build_artifact(art: &infimum_lang::codegen::BuildArtifact, json_mode: bool) {
+fn run_compile_wasm(
+    cwd: &Path,
+    file_path: &str,
+    out_path: &str,
+    sign_key_path: Option<&Path>,
+    use_cache: bool,
+    json_mode: bool,
+) -> Result<(), InfimumDiagnostic> {
+    let sign_key = match sign_key_path {
+        Some(p) => {
+            let hex_str = fs::read_to_string(p).map_err(|e| {
+                InfimumDiagnostic::new(
+                    "E085_PASSPORT_SIGNATURE_INVALID",
+                    "compile-wasm",
+                    format!("Failed to read signing key '{}': {e}", p.display()),
+                    Span::zero(),
+                    "Ensure the --sign-key file exists and is readable",
+                )
+            })?;
+            Some(decode_key_32(&hex_str)?)
+        }
+        None => None,
+    };
+    let module = parse_module_from_path(Path::new(file_path))?;
+    let mut store = GraphStore::open(cwd)?;
+    let art = build_strata_wasm_from_module_signed(
+        &mut store,
+        &module,
+        Path::new(out_path),
+        use_cache,
+        sign_key.as_ref(),
+    )?;
     if json_mode {
-        println!("{}", serde_json::to_string_pretty(art).unwrap_or_default());
+        println!("{}", serde_json::to_string_pretty(&art).unwrap_or_default());
     } else {
-        let hit = if art.cache_hit {
-            "cache-hit"
+        let sig_note = if sign_key.is_some() {
+            ", Ed25519 signed"
         } else {
-            "compiled -O native"
+            ""
         };
         println!(
-            "  Built #{} ({}) -> {} [{} node(s), {} KB, {} in {}ms]",
-            art.short_hash,
-            art.entry_alias_or_ref,
-            art.binary_path,
-            art.compiled_nodes,
-            art.binary_size_bytes / 1024,
-            hit,
-            art.build_ms
-        );
-    }
-}
-
-fn print_wasm_artifact(art: &WasmArtifact, json_mode: bool) {
-    if json_mode {
-        println!("{}", serde_json::to_string_pretty(art).unwrap_or_default());
-    } else {
-        let hit = if art.cache_hit {
-            "cache-hit"
-        } else {
-            "compiled wasm32 -Oz"
-        };
-        println!(
-            "  Built Wasm #{} ({}) -> {} [{} node(s), {:.1} KB, {} in {}ms]",
-            art.short_hash,
-            art.entry_alias_or_ref,
+            "  Strata Direct Wasm -> {} [{} node(s), exports={:?}, {} bytes ({:.2} KB) in {:.2}ms, zero rustc{}]",
             art.wasm_path,
             art.compiled_nodes,
+            art.exported_functions,
+            art.wasm_size_bytes,
             art.wasm_size_bytes as f64 / 1024.0,
-            hit,
-            art.build_ms
+            art.build_us as f64 / 1000.0,
+            sig_note
         );
     }
+    Ok(())
+}
+
+fn run_verify_passport(
+    ifw_path: &Path,
+    pubkey_path: Option<&Path>,
+    json_mode: bool,
+) -> Result<(), InfimumDiagnostic> {
+    let ifw_bytes = fs::read(ifw_path).map_err(|e| {
+        InfimumDiagnostic::new(
+            "E040_FILE_READ",
+            "verify-passport",
+            format!("Cannot read '{}': {e}", ifw_path.display()),
+            Span::zero(),
+            "Verify the .ifw file path exists",
+        )
+    })?;
+    let mut trusted = Vec::new();
+    if let Some(p) = pubkey_path {
+        let hex_str = fs::read_to_string(p).map_err(|e| {
+            InfimumDiagnostic::new(
+                "E040_FILE_READ",
+                "verify-passport",
+                format!("Cannot read public key '{}': {e}", p.display()),
+                Span::zero(),
+                "Verify the --pubkey file path exists",
+            )
+        })?;
+        trusted.push(decode_key_32(&hex_str)?);
+    }
+    let verified = verify_passport_signature(&ifw_bytes, &trusted)?;
+    if json_mode {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&verified).unwrap_or_default()
+        );
+    } else {
+        println!("=== INFIMUM PASSPORT v{} VERIFIED ===", verified.passport.schema_version);
+        println!("  File:           {}", ifw_path.display());
+        println!("  Root Hash:      #{}", verified.passport.short_hash);
+        println!("  Wasm Code Hash: {} [OK]", verified.computed_wasm_code_hash);
+        println!("  Max Memory:     {} bytes", verified.passport.max_memory_bytes);
+        println!("  Z3 Obligations: {}", verified.passport.z3_obligations_proved);
+        println!(
+            "  Exports:        {}",
+            verified.passport.exported_functions.join(", ")
+        );
+        println!(
+            "  Pure:           {}",
+            if verified.passport.is_pure { "YES" } else { "NO" }
+        );
+        if let Some(sig) = &verified.signature {
+            println!(
+                "  Signature:      {} key_id={} [VERIFIED]",
+                sig.alg, sig.key_id
+            );
+        } else {
+            println!("  Signature:      none (unsigned)");
+        }
+    }
+    Ok(())
 }

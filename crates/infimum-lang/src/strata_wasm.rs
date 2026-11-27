@@ -43,8 +43,21 @@ pub fn build_strata_wasm_from_module_with_cache(
     out_path: &Path,
     use_cache: bool,
 ) -> Result<StrataWasmArtifact, InfimumDiagnostic> {
+    build_strata_wasm_from_module_signed(store, module, out_path, use_cache, None)
+}
+
+/// Compile a module to a pure `.ifw` / `.wasm` binary with Passport v2 (`blake3` code hash)
+/// and an optional Ed25519 signature (`"infimum.signature"` custom section).
+pub fn build_strata_wasm_from_module_signed(
+    store: &mut GraphStore,
+    module: &Module,
+    out_path: &Path,
+    use_cache: bool,
+    sign_key: Option<&[u8; 32]>,
+) -> Result<StrataWasmArtifact, InfimumDiagnostic> {
     let t0 = Instant::now();
     let entries = store.ingest_module_with_cache(module, use_cache)?;
+    let total_obligations: usize = entries.iter().map(|e| e.obligations_proved).sum();
 
     // Determine exported functions: any `export fn` in module, or the last function if none marked `export`
     let mut export_pairs: Vec<(String, String)> = Vec::new();
@@ -63,16 +76,23 @@ pub fn build_strata_wasm_from_module_with_cache(
     let root_hashes: Vec<String> = export_pairs.iter().map(|(_, h)| h.clone()).collect();
     let nodes = collect_multi_root_subgraph(store, &root_hashes)?;
 
-    // Embed SecurityPassport in Wasm custom section `infimum.passport`.
-    // For capsule UIs (`step_ui`/`init_app`), merge all exported external capabilities so none can be hidden.
-    let passport_bytes =
-        crate::store::build_merged_passport_bytes(&export_pairs, |alias| {
-            store.compute_passport(alias)
-        })?;
+    // Build merged SecurityPassport v2 across ALL exported functions.
+    let mut passport = crate::store::build_merged_passport(&export_pairs, |alias| {
+        store.compute_passport(alias)
+    })?;
+    if let Some(ref mut p) = passport {
+        p.total_reachable_nodes = nodes.len();
+        p.z3_obligations_proved = total_obligations;
+    }
 
     let layout_end_word = compute_module_layout_end_word(module);
-    let wasm_bytes =
-        emit_strata_wasm_bytes_with_layout_end(&nodes, &export_pairs, &passport_bytes, layout_end_word)?;
+    let wasm_bytes = emit_strata_wasm_bytes_v2(
+        &nodes,
+        &export_pairs,
+        passport,
+        layout_end_word,
+        sign_key,
+    )?;
 
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -113,10 +133,10 @@ pub fn build_strata_wasm_target(
     let export_pairs = vec![(export_name.clone(), root_hash.clone())];
 
     let nodes = collect_multi_root_subgraph(store, &[root_hash])?;
-    let passport = store.compute_passport(target_ref)?;
-    let passport_bytes = serde_json::to_vec(&passport).unwrap_or_default();
+    let mut passport = store.compute_passport(target_ref)?;
+    passport.total_reachable_nodes = nodes.len();
 
-    let wasm_bytes = emit_strata_wasm_bytes(&nodes, &export_pairs, &passport_bytes)?;
+    let wasm_bytes = emit_strata_wasm_bytes_v2(&nodes, &export_pairs, Some(passport), 0, None)?;
 
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -419,6 +439,23 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
     passport_json: &[u8],
     layout_end_word: u32,
 ) -> Result<Vec<u8>, InfimumDiagnostic> {
+    let passport: Option<crate::store::SecurityPassport> = if passport_json.is_empty() {
+        None
+    } else {
+        serde_json::from_slice(passport_json).ok()
+    };
+    emit_strata_wasm_bytes_v2(nodes, exports, passport, layout_end_word, None)
+}
+
+/// 2-phase Wasm 1.0 emitter with Passport v2 (`blake3` code hash over all non-custom sections)
+/// and optional Ed25519 signature custom section (`"infimum.signature"`).
+pub fn emit_strata_wasm_bytes_v2(
+    nodes: &[CanonicalNode],
+    exports: &[(String, String)],
+    passport: Option<crate::store::SecurityPassport>,
+    layout_end_word: u32,
+    sign_key: Option<&[u8; 32]>,
+) -> Result<Vec<u8>, InfimumDiagnostic> {
     let has_gpu_exports = exports.iter().any(|(name, _)| {
         name == "get_cmd_byte_offset" || name == "step_ui" || name == "ifw_abi_version"
     });
@@ -679,12 +716,47 @@ pub fn emit_strata_wasm_bytes_with_layout_end(
         push_section(&mut wasm, 11, &sec_data);
     }
 
-    // Custom Section 0: "infimum.passport" (embedded compile-time SecurityPassport JSON)
-    if !passport_json.is_empty() {
+    // Phase 1 complete: hash all non-custom Wasm sections (magic + version + sections 1..11).
+    let wasm_code_hash = blake3::hash(&wasm).to_hex().to_string();
+
+    // Phase 2: Custom Section 0: "infimum.passport" (Passport v2 JSON) + optional "infimum.signature"
+    if let Some(mut p) = passport {
+        p.schema_version = crate::store::PASSPORT_SCHEMA_VERSION;
+        if p.compiler_version.is_empty() {
+            p.compiler_version = env!("CARGO_PKG_VERSION").to_string();
+        }
+        p.wasm_code_hash = wasm_code_hash;
+        p.max_memory_bytes = (mem_pages as u64) * 65_536;
+        let passport_json = serde_json::to_vec(&p).map_err(|e| {
+            InfimumDiagnostic::new(
+                "E080_WASM_IO",
+                "strata-wasm",
+                format!("Failed to serialize SecurityPassport v2: {e}"),
+                Span::zero(),
+                "Internal passport serialization error",
+            )
+        })?;
         let mut sec_custom = Vec::new();
-        push_wasm_str(&mut sec_custom, "infimum.passport");
-        sec_custom.extend_from_slice(passport_json);
+        push_wasm_str(&mut sec_custom, crate::passport_crypto::PASSPORT_SECTION_NAME);
+        sec_custom.extend_from_slice(&passport_json);
         push_section(&mut wasm, 0, &sec_custom);
+
+        if let Some(sk) = sign_key {
+            let sig_block = crate::passport_crypto::sign_passport(&passport_json, sk);
+            let sig_json = serde_json::to_vec(&sig_block).map_err(|e| {
+                InfimumDiagnostic::new(
+                    "E080_WASM_IO",
+                    "strata-wasm",
+                    format!("Failed to serialize Ed25519 signature block: {e}"),
+                    Span::zero(),
+                    "Internal signature serialization error",
+                )
+            })?;
+            let mut sec_sig = Vec::new();
+            push_wasm_str(&mut sec_sig, crate::passport_crypto::SIGNATURE_SECTION_NAME);
+            sec_sig.extend_from_slice(&sig_json);
+            push_section(&mut wasm, 0, &sec_sig);
+        }
     }
 
     Ok(wasm)

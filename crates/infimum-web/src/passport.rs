@@ -4,6 +4,7 @@
 //! instantiating the module. Any capsule requesting unauthorized capabilities
 //! is rejected before byte 0 executes.
 
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -69,11 +70,23 @@ impl CapabilityEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecurityPassport {
     #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub compiler_version: String,
+    #[serde(default)]
     pub entrypoint: String,
     #[serde(default)]
     pub root_hash: String,
     #[serde(default)]
     pub short_hash: String,
+    #[serde(default)]
+    pub wasm_code_hash: String,
+    #[serde(default)]
+    pub z3_obligations_proved: usize,
+    #[serde(default)]
+    pub max_memory_bytes: u64,
+    #[serde(default)]
+    pub exported_functions: Vec<String>,
     #[serde(default)]
     pub aliases: Vec<String>,
     #[serde(default)]
@@ -86,6 +99,14 @@ pub struct SecurityPassport {
     pub effects: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<CapabilityEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SignatureBlock {
+    alg: String,
+    key_id: String,
+    public_key: String,
+    signature: String,
 }
 
 impl SecurityPassport {
@@ -124,6 +145,9 @@ pub struct CapabilityPolicy {
     /// Explicit key=value launch arguments passed via `--cap-arg=KEY=VAL`.
     /// Never exposes arbitrary OS environment variables to capsules.
     pub cap_args: BTreeMap<String, String>,
+    /// Optional trusted Ed25519 public keys (`--require-signature <pubkey>`).
+    /// When non-empty, the capsule MUST carry a valid `"infimum.signature"` signed by one of these keys.
+    pub trusted_pubkeys: Vec<[u8; 32]>,
 }
 
 impl CapabilityPolicy {
@@ -144,6 +168,7 @@ impl Default for CapabilityPolicy {
             allowed_net_domains: BTreeSet::new(),
             allowed_fs_roots: Vec::new(),
             cap_args: BTreeMap::new(),
+            trusted_pubkeys: Vec::new(),
         }
     }
 }
@@ -152,8 +177,11 @@ impl Default for CapabilityPolicy {
 pub enum GatekeeperError {
     InvalidWasmMagic,
     MalformedSection,
+    DuplicateCustomSection(&'static str),
     MissingPassport,
     InvalidPassportJson(String),
+    WasmHashMismatch { expected: String, actual: String },
+    InvalidSignature(String),
     UnauthorizedCapability(String),
 }
 
@@ -162,10 +190,21 @@ impl std::fmt::Display for GatekeeperError {
         match self {
             Self::InvalidWasmMagic => write!(f, "Invalid WebAssembly binary magic header"),
             Self::MalformedSection => write!(f, "Malformed WebAssembly section structure"),
+            Self::DuplicateCustomSection(name) => write!(
+                f,
+                "Blocked: duplicate custom section `{name}` (possible section-smuggling attack)"
+            ),
             Self::MissingPassport => {
                 write!(f, "Blocked: capsule is missing required `infimum.passport` section")
             }
             Self::InvalidPassportJson(e) => write!(f, "Corrupted `infimum.passport` JSON: {e}"),
+            Self::WasmHashMismatch { expected, actual } => write!(
+                f,
+                "Blocked: Wasm code hash mismatch (passport={expected}, computed={actual})"
+            ),
+            Self::InvalidSignature(e) => {
+                write!(f, "Blocked: Ed25519 signature verification failed: {e}")
+            }
             Self::UnauthorizedCapability(cap) => {
                 write!(f, "Blocked by infimum.passport Gatekeeper: unauthorized capability `{cap}`")
             }
@@ -174,6 +213,58 @@ impl std::fmt::Display for GatekeeperError {
 }
 
 impl std::error::Error for GatekeeperError {}
+
+pub fn decode_pubkey_hex_32(hex_str: &str) -> Result<[u8; 32], String> {
+    let trimmed = hex_str.trim();
+    if !trimmed.len().is_multiple_of(2) {
+        return Err("Public key hex must have even length".to_string());
+    }
+    let bytes = trimmed.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.as_chunks::<2>().0 {
+        let hi = match pair[0] {
+            b'0'..=b'9' => pair[0] - b'0',
+            b'a'..=b'f' => pair[0] - b'a' + 10,
+            b'A'..=b'F' => pair[0] - b'A' + 10,
+            _ => return Err(format!("Invalid hex char '{}'", pair[0] as char)),
+        };
+        let lo = match pair[1] {
+            b'0'..=b'9' => pair[1] - b'0',
+            b'a'..=b'f' => pair[1] - b'a' + 10,
+            b'A'..=b'F' => pair[1] - b'A' + 10,
+            _ => return Err(format!("Invalid hex char '{}'", pair[1] as char)),
+        };
+        out.push((hi << 4) | lo);
+    }
+    out.try_into()
+        .map_err(|_| "Ed25519 public key must be exactly 32 bytes (64 hex chars)".to_string())
+}
+
+fn decode_sig_hex_64(hex_str: &str) -> Result<[u8; 64], String> {
+    let trimmed = hex_str.trim();
+    if !trimmed.len().is_multiple_of(2) {
+        return Err("Signature hex must have even length".to_string());
+    }
+    let bytes = trimmed.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.as_chunks::<2>().0 {
+        let hi = match pair[0] {
+            b'0'..=b'9' => pair[0] - b'0',
+            b'a'..=b'f' => pair[0] - b'a' + 10,
+            b'A'..=b'F' => pair[0] - b'A' + 10,
+            _ => return Err("Invalid hex char in signature".to_string()),
+        };
+        let lo = match pair[1] {
+            b'0'..=b'9' => pair[1] - b'0',
+            b'a'..=b'f' => pair[1] - b'a' + 10,
+            b'A'..=b'F' => pair[1] - b'A' + 10,
+            _ => return Err("Invalid hex char in signature".to_string()),
+        };
+        out.push((hi << 4) | lo);
+    }
+    out.try_into()
+        .map_err(|_| "Ed25519 signature must be exactly 64 bytes".to_string())
+}
 
 fn read_leb_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, GatekeeperError> {
     let mut result: u32 = 0;
@@ -192,14 +283,25 @@ fn read_leb_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, GatekeeperError
     }
 }
 
-/// Extract raw JSON bytes of the custom section `infimum.passport` from a Wasm binary.
-pub fn extract_passport_raw(wasm_bytes: &[u8]) -> Result<Option<Vec<u8>>, GatekeeperError> {
+struct ExtractedSections {
+    passport_raw: Option<Vec<u8>>,
+    signature_raw: Option<Vec<u8>>,
+    computed_wasm_code_hash: String,
+}
+
+fn extract_sections_and_hash(wasm_bytes: &[u8]) -> Result<ExtractedSections, GatekeeperError> {
     if wasm_bytes.len() < 8 || &wasm_bytes[0..4] != b"\x00asm" {
         return Err(GatekeeperError::InvalidWasmMagic);
     }
 
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&wasm_bytes[0..8]);
+
+    let mut passport_raw: Option<Vec<u8>> = None;
+    let mut signature_raw: Option<Vec<u8>> = None;
     let mut cursor = 8usize;
     while cursor < wasm_bytes.len() {
+        let sec_start = cursor;
         let sec_id = wasm_bytes[cursor];
         cursor += 1;
         let sec_len = read_leb_u32(wasm_bytes, &mut cursor)? as usize;
@@ -210,7 +312,9 @@ pub fn extract_passport_raw(wasm_bytes: &[u8]) -> Result<Option<Vec<u8>>, Gateke
             return Err(GatekeeperError::MalformedSection);
         }
 
-        if sec_id == 0 {
+        if sec_id != 0 {
+            hasher.update(&wasm_bytes[sec_start..sec_end]);
+        } else {
             // Custom section: name_len + utf8 name + payload
             let mut inner = cursor;
             let name_len = read_leb_u32(wasm_bytes, &mut inner)? as usize;
@@ -222,23 +326,42 @@ pub fn extract_passport_raw(wasm_bytes: &[u8]) -> Result<Option<Vec<u8>>, Gateke
             }
             if let Ok(name) = std::str::from_utf8(&wasm_bytes[inner..name_end]) {
                 if name == "infimum.passport" {
-                    return Ok(Some(wasm_bytes[name_end..sec_end].to_vec()));
+                    if passport_raw.is_some() {
+                        return Err(GatekeeperError::DuplicateCustomSection("infimum.passport"));
+                    }
+                    passport_raw = Some(wasm_bytes[name_end..sec_end].to_vec());
+                } else if name == "infimum.signature" {
+                    if signature_raw.is_some() {
+                        return Err(GatekeeperError::DuplicateCustomSection("infimum.signature"));
+                    }
+                    signature_raw = Some(wasm_bytes[name_end..sec_end].to_vec());
                 }
             }
         }
         cursor = sec_end;
     }
 
-    Ok(None)
+    Ok(ExtractedSections {
+        passport_raw,
+        signature_raw,
+        computed_wasm_code_hash: hasher.finalize().to_hex().to_string(),
+    })
 }
 
-/// Inspect and enforce `infimum.passport` against the active host capability policy.
+/// Extract raw JSON bytes of the custom section `infimum.passport` from a Wasm binary.
+#[allow(dead_code)]
+pub fn extract_passport_raw(wasm_bytes: &[u8]) -> Result<Option<Vec<u8>>, GatekeeperError> {
+    Ok(extract_sections_and_hash(wasm_bytes)?.passport_raw)
+}
+
+/// Inspect and enforce `infimum.passport` (including Passport v2 `wasm_code_hash` and optional
+/// Ed25519 signature verification) against the active host capability policy.
 pub fn verify_capsule_passport(
     wasm_bytes: &[u8],
     policy: &CapabilityPolicy,
 ) -> Result<SecurityPassport, GatekeeperError> {
-    let raw_opt = extract_passport_raw(wasm_bytes)?;
-    let passport = match raw_opt {
+    let extracted = extract_sections_and_hash(wasm_bytes)?;
+    let (passport, passport_json) = match extracted.passport_raw {
         Some(raw) => {
             let p = serde_json::from_slice::<SecurityPassport>(&raw)
                 .map_err(|e| GatekeeperError::InvalidPassportJson(e.to_string()))?;
@@ -252,15 +375,69 @@ pub fn verify_capsule_passport(
                         .to_string(),
                 ));
             }
-            p
+            if (p.schema_version >= 2 || !p.wasm_code_hash.is_empty())
+                && p.wasm_code_hash != extracted.computed_wasm_code_hash
+            {
+                return Err(GatekeeperError::WasmHashMismatch {
+                    expected: p.wasm_code_hash,
+                    actual: extracted.computed_wasm_code_hash,
+                });
+            }
+            (p, Some(raw))
         }
         None => {
-            if policy.require_passport {
+            if policy.require_passport || !policy.trusted_pubkeys.is_empty() {
                 return Err(GatekeeperError::MissingPassport);
             }
-            SecurityPassport::default()
+            (SecurityPassport::default(), None)
         }
     };
+
+    let require_sig = !policy.trusted_pubkeys.is_empty();
+    match (extracted.signature_raw, passport_json) {
+        (None, _) if require_sig => {
+            return Err(GatekeeperError::InvalidSignature(
+                "Missing `infimum.signature` section (required by --require-signature)".to_string(),
+            ));
+        }
+        (Some(sig_raw), Some(p_json)) => {
+            let sig_block: SignatureBlock = serde_json::from_slice(&sig_raw)
+                .map_err(|e| GatekeeperError::InvalidSignature(format!("Invalid JSON: {e}")))?;
+            if sig_block.alg != "Ed25519" {
+                return Err(GatekeeperError::InvalidSignature(format!(
+                    "Unsupported algorithm '{}'",
+                    sig_block.alg
+                )));
+            }
+            let pub_bytes = decode_pubkey_hex_32(&sig_block.public_key)
+                .map_err(GatekeeperError::InvalidSignature)?;
+            if require_sig && !policy.trusted_pubkeys.iter().any(|k| k == &pub_bytes) {
+                return Err(GatekeeperError::InvalidSignature(format!(
+                    "Public key (key_id={}) is not trusted",
+                    sig_block.key_id
+                )));
+            }
+            let expected_kid = &blake3::hash(&pub_bytes).to_hex()[..16];
+            if sig_block.key_id != expected_kid {
+                return Err(GatekeeperError::InvalidSignature(
+                    "key_id does not match public_key hash".to_string(),
+                ));
+            }
+            let sig_arr = decode_sig_hex_64(&sig_block.signature)
+                .map_err(GatekeeperError::InvalidSignature)?;
+            let vk = VerifyingKey::from_bytes(&pub_bytes)
+                .map_err(|e| GatekeeperError::InvalidSignature(e.to_string()))?;
+            let sig = Signature::from_bytes(&sig_arr);
+            let mut dh = blake3::Hasher::new();
+            dh.update(b"infimum-passport-v2\0");
+            dh.update(&p_json);
+            let digest = *dh.finalize().as_bytes();
+            vk.verify(&digest, &sig).map_err(|_| {
+                GatekeeperError::InvalidSignature("Ed25519 signature check failed".to_string())
+            })?;
+        }
+        _ => {}
+    }
 
     // Enforce every declared effect & capability via the Z3-proved `passport_core.ifw` Gatekeeper.
     let (engine, module) = passport_module();
