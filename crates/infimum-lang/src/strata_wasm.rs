@@ -457,6 +457,165 @@ fn stmt_uses_host_call(stmt: &Stmt) -> bool {
     }
 }
 
+fn expr_uses_dec_div(expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary { op, lhs, rhs } => {
+            *op == BinOp::DecDiv || expr_uses_dec_div(lhs) || expr_uses_dec_div(rhs)
+        }
+        Expr::Unary { expr: e, .. }
+        | Expr::MemLoad { index: e, .. }
+        | Expr::MemLoad64 { index: e, .. }
+        | Expr::ByteLoad { index: e, .. }
+        | Expr::TupleField { expr: e, .. }
+        | Expr::SlicePtr(e)
+        | Expr::SliceLen(e)
+        | Expr::StrToBytes(e)
+        | Expr::StrFromBytes(e)
+        | Expr::SecretWrap(e)
+        | Expr::Reveal { expr: e, .. }
+        | Expr::OptionSome { value: e, .. }
+        | Expr::ResultOk { value: e, .. }
+        | Expr::ResultErr { code: e, .. }
+        | Expr::Return(e) => expr_uses_dec_div(e),
+        Expr::MemStore { index, value, .. }
+        | Expr::MemStore64 { index, value, .. }
+        | Expr::ByteStore { index, value, .. }
+        | Expr::SliceLit {
+            ptr: index,
+            len: value,
+            ..
+        }
+        | Expr::BoundsCheck {
+            index,
+            len: value,
+            ..
+        } => expr_uses_dec_div(index) || expr_uses_dec_div(value),
+        Expr::RangeCheck { lo, hi, len } => {
+            expr_uses_dec_div(lo) || expr_uses_dec_div(hi) || expr_uses_dec_div(len)
+        }
+        Expr::Call { args, .. } | Expr::Perform { args, .. } | Expr::TupleLit(args) => {
+            args.iter().any(expr_uses_dec_div)
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            expr_uses_dec_div(cond)
+                || expr_uses_dec_div(then_branch)
+                || expr_uses_dec_div(else_branch)
+        }
+        Expr::MatchTagged {
+            scrutinee,
+            ok_body,
+            err_body,
+            ..
+        } => {
+            expr_uses_dec_div(scrutinee)
+                || expr_uses_dec_div(ok_body)
+                || expr_uses_dec_div(err_body)
+        }
+        Expr::Block { stmts, tail } => {
+            stmts.iter().any(stmt_uses_dec_div) || expr_uses_dec_div(tail)
+        }
+        Expr::IntLit(_)
+        | Expr::FixedLit(_)
+        | Expr::DecLit(_)
+        | Expr::BoolLit(_)
+        | Expr::UnitLit
+        | Expr::StrLit(_)
+        | Expr::Var(_)
+        | Expr::OptionNone { .. } => false,
+    }
+}
+
+fn stmt_uses_dec_div(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => {
+            expr_uses_dec_div(value)
+        }
+        Stmt::Expr(e) => expr_uses_dec_div(e),
+        Stmt::While { cond, body, .. } => {
+            expr_uses_dec_div(cond) || body.iter().any(stmt_uses_dec_div)
+        }
+    }
+}
+
+/// Emit the Wasm function body for `$__ifm_dec_div(a: i64, b: i64) -> i64`:
+/// Exact, 100% overflow-free computation of `((a as i128) * 10_000 /_trunc (b as i128)) as i64`
+/// for all `|a|, |b| <= 9e18` (and up to `i64::MAX`) via 14-step unsigned binary shift-and-add
+/// modulo `|b|` with subtraction-guarded doubling (`cur >= ub - cur`).
+fn emit_dec_div_helper_body() -> Vec<u8> {
+    // Params:  0 = a, 1 = b
+    // Locals:  2 = neg, 3 = ua, 4 = ub, 5 = q0, 6 = cur, 7 = cur_q, 8 = q, 9 = rem_acc, 10 = m, 11 = diff
+    let mut b = Vec::with_capacity(200);
+    push_u32_leb(&mut b, 1); // 1 local decl group
+    push_u32_leb(&mut b, 10); // 10 i64 locals (2..=11)
+    b.push(WASM_TYPE_I64);
+
+    // neg = ((a ^ b) < 0) as i64
+    b.extend_from_slice(&[0x20, 0, 0x20, 1, 0x85, 0x42, 0, 0x53, 0xAD, 0x21, 2]);
+    // ua = if a < 0 { 0 - a } else { a }
+    b.extend_from_slice(&[0x42, 0, 0x20, 0, 0x7D, 0x20, 0, 0x20, 0, 0x42, 0, 0x53, 0x1B, 0x21, 3]);
+    // ub = if b < 0 { 0 - b } else { b }
+    b.extend_from_slice(&[0x42, 0, 0x20, 1, 0x7D, 0x20, 1, 0x20, 1, 0x42, 0, 0x53, 0x1B, 0x21, 4]);
+    // q0 = ua /_u ub
+    b.extend_from_slice(&[0x20, 3, 0x20, 4, 0x80, 0x21, 5]);
+    // cur = ua %_u ub
+    b.extend_from_slice(&[0x20, 3, 0x20, 4, 0x82, 0x21, 6]);
+    // m = 10_000
+    b.push(0x42);
+    push_i64_leb(&mut b, 10_000);
+    b.extend_from_slice(&[0x21, 10]);
+
+    // loop (void)
+    b.extend_from_slice(&[0x03, 0x40]);
+    // if (m & 1) != 0
+    b.extend_from_slice(&[0x20, 10, 0x42, 1, 0x83, 0x42, 0, 0x52, 0x04, 0x40]);
+    //   q += cur_q
+    b.extend_from_slice(&[0x20, 8, 0x20, 7, 0x7C, 0x21, 8]);
+    //   diff = ub - cur
+    b.extend_from_slice(&[0x20, 4, 0x20, 6, 0x7D, 0x21, 11]);
+    //   if rem_acc >=_u diff
+    b.extend_from_slice(&[0x20, 9, 0x20, 11, 0x59, 0x04, 0x40]);
+    //     rem_acc = rem_acc - diff; q += 1
+    b.extend_from_slice(&[0x20, 9, 0x20, 11, 0x7D, 0x21, 9]);
+    b.extend_from_slice(&[0x20, 8, 0x42, 1, 0x7C, 0x21, 8]);
+    //   else: rem_acc = rem_acc + cur
+    b.push(0x05);
+    b.extend_from_slice(&[0x20, 9, 0x20, 6, 0x7C, 0x21, 9]);
+    b.push(0x0B); // end if rem_acc >= diff
+    b.push(0x0B); // end if (m & 1) != 0
+
+    // m >>= 1; if m != 0
+    b.extend_from_slice(&[0x20, 10, 0x42, 1, 0x88, 0x22, 10, 0x42, 0, 0x52, 0x04, 0x40]);
+    //   cur_q = cur_q + cur_q
+    b.extend_from_slice(&[0x20, 7, 0x20, 7, 0x7C, 0x21, 7]);
+    //   diff = ub - cur
+    b.extend_from_slice(&[0x20, 4, 0x20, 6, 0x7D, 0x21, 11]);
+    //   if cur >=_u diff
+    b.extend_from_slice(&[0x20, 6, 0x20, 11, 0x59, 0x04, 0x40]);
+    //     cur = cur - diff; cur_q += 1
+    b.extend_from_slice(&[0x20, 6, 0x20, 11, 0x7D, 0x21, 6]);
+    b.extend_from_slice(&[0x20, 7, 0x42, 1, 0x7C, 0x21, 7]);
+    //   else: cur = cur + cur
+    b.push(0x05);
+    b.extend_from_slice(&[0x20, 6, 0x20, 6, 0x7C, 0x21, 6]);
+    b.push(0x0B); // end if cur >= diff
+    b.extend_from_slice(&[0x0C, 1]); // br 1 (continue loop)
+    b.push(0x0B); // end if m != 0
+    b.push(0x0B); // end loop
+
+    // mag = q0 * 10_000 + q  (store in local 8)
+    b.extend_from_slice(&[0x20, 5, 0x42]);
+    push_i64_leb(&mut b, 10_000);
+    b.extend_from_slice(&[0x7E, 0x20, 8, 0x7C, 0x21, 8]);
+    // return if neg != 0 { 0 - mag } else { mag }
+    b.extend_from_slice(&[0x42, 0, 0x20, 8, 0x7D, 0x20, 8, 0x20, 2, 0x42, 0, 0x52, 0x1B]);
+    b.push(0x0B); // end func
+    b
+}
+
 pub fn emit_strata_wasm_bytes(
     nodes: &[CanonicalNode],
     exports: &[(String, String)],
@@ -629,6 +788,18 @@ pub fn emit_strata_wasm_bytes_v2(
         wrapper_specs.push((exp_name.clone(), target_idx, arity, is_unit));
     }
 
+    // 3. Optional internal `$__ifm_dec_div(i64, i64) -> i64` helper (placed after wrappers so export indices never shift)
+    let uses_dec_div = nodes.iter().any(|n| expr_uses_dec_div(&n.ast.body));
+    let dec_div_func_idx: Option<u32> = if uses_dec_div {
+        let sig = vec![0x60, 2, WASM_TYPE_I64, WASM_TYPE_I64, 1, WASM_TYPE_I64];
+        let tidx = intern_sig(&mut type_entries, sig);
+        let fidx = import_offset + func_type_indices.len() as u32;
+        func_type_indices.push(tidx);
+        Some(fidx)
+    } else {
+        None
+    };
+
     let mut wasm = Vec::with_capacity(4096);
     // Wasm 1.0 header
     wasm.extend_from_slice(b"\x00asm\x01\x00\x00\x00");
@@ -705,6 +876,7 @@ pub fn emit_strata_wasm_bytes_v2(
             &multi_val_block_types,
             &mut str_pool,
             mem_word_mask,
+            dec_div_func_idx,
         )?;
         push_u32_leb(&mut sec_code, body_bytes.len() as u32);
         sec_code.extend_from_slice(&body_bytes);
@@ -730,6 +902,11 @@ pub fn emit_strata_wasm_bytes_v2(
 
         push_u32_leb(&mut sec_code, wbody.len() as u32);
         sec_code.extend_from_slice(&wbody);
+    }
+    if dec_div_func_idx.is_some() {
+        let helper_body = emit_dec_div_helper_body();
+        push_u32_leb(&mut sec_code, helper_body.len() as u32);
+        sec_code.extend_from_slice(&helper_body);
     }
     push_section(&mut wasm, 10, &sec_code);
 
@@ -803,6 +980,7 @@ struct FnCodegenCtx<'a> {
     multi_val_block_types: &'a BTreeMap<usize, u32>,
     str_pool: &'a mut StrataStrPool,
     mem_word_mask: i32,
+    dec_div_func_idx: Option<u32>,
     local_map: BTreeMap<String, u32>,
     tuple_locals: BTreeMap<String, Vec<u32>>,
     var_types: BTreeMap<String, Type>,
@@ -1064,6 +1242,7 @@ fn compile_node_body(
     multi_val_block_types: &BTreeMap<usize, u32>,
     str_pool: &mut StrataStrPool,
     mem_word_mask: i32,
+    dec_div_func_idx: Option<u32>,
 ) -> Result<Vec<u8>, InfimumDiagnostic> {
     let f: &FnDef = &node.ast;
     let self_ret_arity = type_slot_count(&f.ret_type);
@@ -1097,6 +1276,7 @@ fn compile_node_body(
         multi_val_block_types,
         str_pool,
         mem_word_mask,
+        dec_div_func_idx,
         local_map,
         tuple_locals,
         var_types,
@@ -1631,67 +1811,21 @@ fn emit_expr(
                 out.push(0x7C); // i64.add
             }
             BinOp::DecDiv => {
-                // Overflow-free exact 2-step decomposition for `(a * 10_000) /_trunc b`:
-                //   q0 = a / b, r0 = a % b
-                //   t1 = r0 * 100
-                //   q1 = t1 / b, r1 = t1 % b
-                //   res = q0 * 10_000 + q1 * 100 + (r1 * 100) / b
-                let la = *ctx.local_map.get("__ifm_dec_a").unwrap();
-                let lb = *ctx.local_map.get("__ifm_dec_b").unwrap();
-                let lacc = *ctx.local_map.get("__ifm_dec_t0").unwrap();
-                let lr = *ctx.local_map.get("__ifm_dec_t1").unwrap();
+                // Overflow-free exact `((a as i128) * 10_000 /_trunc (b as i128)) as i64`
+                // via internal `$__ifm_dec_div` helper (zero i64 wraparound for all |a|,|b| <= 9e18).
                 emit_expr(lhs, ctx, out)?;
-                out.push(0x21); // local.set a
-                push_u32_leb(out, la);
                 emit_expr(rhs, ctx, out)?;
-                out.push(0x21); // local.set b
-                push_u32_leb(out, lb);
-                // acc = (a / b) * 10_000
-                out.push(0x20);
-                push_u32_leb(out, la);
-                out.push(0x20);
-                push_u32_leb(out, lb);
-                out.push(0x7F); // i64.div_s
-                out.push(0x42);
-                push_i64_leb(out, 10_000);
-                out.push(0x7E);
-                out.push(0x21);
-                push_u32_leb(out, lacc);
-                // r = (a % b) * 100
-                out.push(0x20);
-                push_u32_leb(out, la);
-                out.push(0x20);
-                push_u32_leb(out, lb);
-                out.push(0x81); // i64.rem_s
-                out.push(0x42);
-                push_i64_leb(out, 100);
-                out.push(0x7E);
-                out.push(0x21);
-                push_u32_leb(out, lr);
-                // acc + (r / b) * 100 + ((r % b) * 100) / b
-                out.push(0x20);
-                push_u32_leb(out, lacc);
-                out.push(0x20);
-                push_u32_leb(out, lr);
-                out.push(0x20);
-                push_u32_leb(out, lb);
-                out.push(0x7F);
-                out.push(0x42);
-                push_i64_leb(out, 100);
-                out.push(0x7E);
-                out.push(0x7C); // i64.add
-                out.push(0x20);
-                push_u32_leb(out, lr);
-                out.push(0x20);
-                push_u32_leb(out, lb);
-                out.push(0x81);
-                out.push(0x42);
-                push_i64_leb(out, 100);
-                out.push(0x7E);
-                out.push(0x20);
-                push_u32_leb(out, lb);
-                out.push(0x7F);
-                out.push(0x7C); // i64.add
+                let fidx = ctx.dec_div_func_idx.ok_or_else(|| {
+                    InfimumDiagnostic::new(
+                        "E085_STRATA_INTERNAL",
+                        "strata-wasm",
+                        "Internal error: $__ifm_dec_div helper was not registered",
+                        Span::zero(),
+                        "Please report this compiler bug",
+                    )
+                })?;
+                out.push(0x10); // call $__ifm_dec_div
+                push_u32_leb(out, fidx);
             }
             _ => {
                 emit_expr(lhs, ctx, out)?;

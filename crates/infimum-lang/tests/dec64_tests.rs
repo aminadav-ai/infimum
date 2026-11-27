@@ -423,3 +423,57 @@ fn std_dec_rounding_format_and_parse_verify_and_run() {
     assert_eq!(results.len(), 1);
     assert!(results[0].passed, "std/dec test failed: {:?}", results[0]);
 }
+
+#[test]
+fn dec64_div_large_operands_exact_no_i64_wraparound_in_wasm() {
+    let ws = temp_ws("dec64_div_large");
+    let mut store = GraphStore::open(&ws).unwrap();
+
+    let src = r#"
+        export fn div_safe(a: dec64, b: dec64) -> dec64
+          req dec64_raw(a) >= -8999999999999990000 && dec64_raw(a) <= 8999999999999990000
+          req dec64_raw(b) >= 10000 || dec64_raw(b) <= -10000
+          req dec64_raw(b) >= -9000000000000000000 && dec64_raw(b) <= 9000000000000000000
+        {
+          a / b
+        }
+
+        test "dec64 division matches i128 on 10^17 / 2*10^17 and all sign combinations" {
+          let a = dec64_from_raw(100000000000000000);
+          let b = dec64_from_raw(200000000000000000);
+          assert(dec64_raw(div_safe(a, b)) == 5000);
+          assert(dec64_raw(div_safe(-a, b)) == -5000);
+          assert(dec64_raw(div_safe(a, -b)) == -5000);
+          assert(dec64_raw(div_safe(-a, -b)) == 5000);
+        }
+    "#;
+
+    let module = parse_module(src).expect("parse ok");
+    let ifw_path = ws.join("dec64_div_large.ifw");
+    build_strata_wasm_from_module(&mut store, &module, &ifw_path).expect("verify+wasm ok");
+
+    // 1. Interpreter (i128 reference)
+    let results = run_module_tests(&module);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].passed, "eval test failed: {:?}", results[0]);
+
+    // 2. Real Wasm execution via Node.js — must match i128 bit-for-bit on ALL edge cases!
+    let cases: &[(i64, i64)] = &[
+        (100_000_000_000_000_000, 200_000_000_000_000_000),   // 0.5000d (previously wrapped to -0.4223d!)
+        (-100_000_000_000_000_000, 200_000_000_000_000_000),  // -0.5000d
+        (100_000_000_000_000_000, -200_000_000_000_000_000),  // -0.5000d
+        (-100_000_000_000_000_000, -200_000_000_000_000_000), // +0.5000d
+        (8_999_999_999_999_990_000, 9_000_000_000_000_000_000), // near 9e18 limit -> 0.9999d
+        (1_000_000_000_000_000_000, 3_000_000_000_000_000_000), // 1/3 -> 0.3333d
+        (-7_777_777_777_777_777_777, 1_111_111_111_111_111_111), // -7.0000d
+        (123_456_789_012_345_678, 987_654_321_098_765_432),
+    ];
+    for &(a, b) in cases {
+        let expected = ((a as i128 * 10_000) / (b as i128)) as i64;
+        let actual = run_wasm_i64_export_via_node(&ifw_path, "div_safe_i64", &[a, b]);
+        assert_eq!(
+            actual, expected,
+            "Wasm DecDiv mismatch for a={a}, b={b}: got {actual}, expected {expected}"
+        );
+    }
+}
