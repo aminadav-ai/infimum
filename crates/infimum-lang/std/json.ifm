@@ -1,17 +1,614 @@
 // Copyright (c) 2026 Yehuda Aminadav
 // SPDX-License-Identifier: Apache-2.0
 //
-// Infimum Standard Library: std/json.ifm
-// Z3-safe zero-allocation JSON scanner and decoder over UTF-32 linear-memory buffers.
+// Infimum Standard Library: std/json.ifm (v2)
+// Zero-allocation, Z3-verified UTF-8 `[u8]` JSON Reader + safe escaping `JsonWriter`,
+// using native `str`, `dec64`, `Option<T>`, and `Result<T, i64>`.
+// Also retains legacy `json_u32_*` helpers for UTF-32 `words[N]` buffers.
 
 use "std/math.ifm";
 use "std/buf.ifm";
+use "std/slice.ifm";
+use "std/utf8.ifm";
+use "std/dec.ifm";
+
+pub enum JsonErr {
+  InvalidSyntax = 1001,
+  KeyNotFound   = 1002,
+  TypeMismatch  = 1003,
+  BufferFull    = 1004,
+  NumberRange   = 1005,
+}
+
+pub struct JsonElem {
+  start: word,
+  end: word,
+  next: word,
+}
+
+pub struct JsonWriter {
+  pos: word,
+  need_comma: word,
+  err: word,
+}
 
 pub fn json_is_ws(cp: i64) -> bool {
   cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r'
 }
 
-pub fn json_skip_ws(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+pub fn json_hex_val(c: i64) -> i64 {
+  if c >= '0' && c <= '9' { c - '0' }
+  else if c >= 'a' && c <= 'f' { 10 + (c - 'a') }
+  else if c >= 'A' && c <= 'F' { 10 + (c - 'A') }
+  else { -1 }
+}
+
+// ============================================================================
+// 1. UTF-8 `[u8]` Zero-Copy JSON Reader (v2)
+// ============================================================================
+
+pub fn json_skip_ws_bytes(src: [u8], pos: i64) -[Mem]-> i64
+  ens result >= 0 && result <= src.len
+{
+  let mut i = if pos < 0 { 0 } else if pos > src.len { src.len } else { pos };
+  while i >= 0 && i < src.len max 65536 {
+    if json_is_ws(src[i]) {
+      i += 1;
+    } else {
+      break;
+    }
+  }
+  if i < 0 { 0 } else if i > src.len { src.len } else { i }
+}
+
+/// Given `pos` pointing to opening `"`, return byte index immediately after closing `"`.
+pub fn json_skip_string_bytes(src: [u8], pos: i64) -[Mem]-> i64
+  ens result >= 0 && result <= src.len
+{
+  if pos < 0 || pos >= src.len || src[pos] != '"' {
+    if pos < 0 { 0 } else if pos > src.len { src.len } else { pos }
+  } else {
+    let mut i = pos + 1;
+    while i >= 0 && i < src.len max 65536 {
+      let b = src[i];
+      if b == '\\' {
+        i += 2;
+      } else if b == '"' {
+        i += 1;
+        break;
+      } else {
+        i += 1;
+      }
+    }
+    if i < 0 { 0 } else if i > src.len { src.len } else { i }
+  }
+}
+
+/// Skip any JSON value starting at `pos` in UTF-8 byte slice `src`.
+pub fn json_skip_value_bytes(src: [u8], pos: i64) -[Mem]-> i64
+  ens result >= 0 && result <= src.len
+{
+  let s = json_skip_ws_bytes(src, pos);
+  if s >= src.len {
+    src.len
+  } else {
+    let ch = src[s];
+    if ch == '"' {
+      json_skip_string_bytes(src, s)
+    } else if ch == '{' || ch == '[' {
+      let mut i = s + 1;
+      let mut depth = 1;
+      while i >= 0 && i < src.len && depth > 0 max 65536 {
+        let c = src[i];
+        if c == '"' {
+          i = json_skip_string_bytes(src, i);
+        } else if c == '{' || c == '[' {
+          depth += 1;
+          i += 1;
+        } else if c == '}' || c == ']' {
+          depth -= 1;
+          i += 1;
+        } else {
+          i += 1;
+        }
+      }
+      if i < 0 { 0 } else if i > src.len { src.len } else { i }
+    } else {
+      let mut i = s;
+      while i >= 0 && i < src.len max 256 {
+        let c = src[i];
+        if json_is_ws(c) || c == ',' || c == '}' || c == ']' {
+          break;
+        }
+        i += 1;
+      }
+      if i < 0 { 0 } else if i > src.len { src.len } else { i }
+    }
+  }
+}
+
+/// Find a top-level key inside a JSON object starting at `obj_pos` (`{`).
+/// Returns `Some(val_byte_pos)` or `None`.
+pub fn json_find_key(src: [u8], obj_pos: i64, key: str) -[Mem]-> Option<i64> {
+  let s = json_skip_ws_bytes(src, obj_pos);
+  if s >= src.len || src[s] != '{' {
+    None
+  } else {
+    let kb = key.as_bytes();
+    let mut i = json_skip_ws_bytes(src, s + 1);
+    let mut found = -1;
+    while i >= 0 && i < src.len max 1024 {
+      let c = src[i];
+      if c == '}' {
+        break;
+      } else if c == ',' {
+        i = json_skip_ws_bytes(src, i + 1);
+      } else if c == '"' {
+        let key_end = json_skip_string_bytes(src, i);
+        let k_start = i + 1;
+        let k_end = key_end - 1;
+        let after_key = json_skip_ws_bytes(src, key_end);
+        if after_key < src.len && src[after_key] == ':' {
+          let val_start = json_skip_ws_bytes(src, after_key + 1);
+          if k_start >= 0 && k_start <= k_end && k_end <= src.len
+            && bytes_eq(src[k_start..k_end], kb)
+          {
+            found = val_start;
+            break;
+          } else {
+            let next_v = json_skip_value_bytes(src, val_start);
+            if next_v <= i {
+              break;
+            }
+            i = json_skip_ws_bytes(src, next_v);
+          }
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+    if found >= 0 && found < src.len {
+      Some(found)
+    } else {
+      None
+    }
+  }
+}
+
+/// Parse a top-level signed 64-bit integer field `key` from JSON object `src`.
+pub fn json_get_int(src: [u8], key: str) -[Mem]-> Result<i64, i64> {
+  match json_find_key(src, 0, key) {
+    None => Err(JsonErr::KeyNotFound),
+    Some(pos) => {
+      if pos < 0 || pos >= src.len {
+        Err(JsonErr::InvalidSyntax)
+      } else {
+        let mut i = pos;
+        let mut neg = false;
+        if src[i] == '-' {
+          neg = true;
+          i += 1;
+        }
+        let mut seen = false;
+        let mut acc = 0;
+        let mut overflow = false;
+        while i >= 0 && i < src.len max 24 {
+          let c = src[i];
+          if c >= '0' && c <= '9' {
+            let d = c - '0';
+            seen = true;
+            if acc > 922337203685477580 || (acc == 922337203685477580 && d > 7) {
+              overflow = true;
+              break;
+            }
+            acc = acc * 10 + d;
+            i += 1;
+          } else {
+            break;
+          }
+        }
+        if !seen {
+          Err(JsonErr::TypeMismatch)
+        } else if overflow {
+          Err(JsonErr::NumberRange)
+        } else if neg {
+          Ok(-acc)
+        } else {
+          Ok(acc)
+        }
+      }
+    }
+  }
+}
+
+/// Parse a top-level exact decimal `dec64` field `key` from JSON object `src`
+/// (supports integers like `100` and decimals like `19.99` or `-0.0725`).
+pub fn json_get_dec64(src: [u8], key: str) -[Mem]-> Result<dec64, i64> {
+  match json_find_key(src, 0, key) {
+    None => Err(JsonErr::KeyNotFound),
+    Some(pos) => {
+      let end = json_skip_value_bytes(src, pos);
+      if pos < 0 || pos >= end || end > src.len {
+        Err(JsonErr::InvalidSyntax)
+      } else {
+        let b0 = src[pos];
+        if (b0 >= '0' && b0 <= '9') || b0 == '-' {
+          match dec64_parse(src[pos..end]) {
+            Ok(v) => Ok(v),
+            Err(_) => Err(JsonErr::NumberRange),
+          }
+        } else {
+          Err(JsonErr::TypeMismatch)
+        }
+      }
+    }
+  }
+}
+
+/// Parse a top-level boolean field `key` (`true` / `false`) from JSON object `src`.
+pub fn json_get_bool(src: [u8], key: str) -[Mem]-> Result<bool, i64> {
+  match json_find_key(src, 0, key) {
+    None => Err(JsonErr::KeyNotFound),
+    Some(pos) => {
+      let end = json_skip_value_bytes(src, pos);
+      if pos < 0 || pos >= end || end > src.len {
+        Err(JsonErr::InvalidSyntax)
+      } else if bytes_eq(src[pos..end], "true".as_bytes()) {
+        Ok(true)
+      } else if bytes_eq(src[pos..end], "false".as_bytes()) {
+        Ok(false)
+      } else {
+        Err(JsonErr::TypeMismatch)
+      }
+    }
+  }
+}
+
+/// Zero-copy string field extractor for unescaped JSON strings (e.g. `"USD"`, `"approved"`).
+pub fn json_get_str_raw(src: [u8], key: str) -[Mem]-> Result<str, i64> {
+  match json_find_key(src, 0, key) {
+    None => Err(JsonErr::KeyNotFound),
+    Some(pos) => {
+      if pos < 0 || pos >= src.len || src[pos] != '"' {
+        Err(JsonErr::TypeMismatch)
+      } else {
+        let end = json_skip_string_bytes(src, pos);
+        let lo = pos + 1;
+        let hi = end - 1;
+        if lo >= 0 && lo <= hi && hi <= src.len {
+          Ok(src[lo..hi].as_str())
+        } else {
+          Err(JsonErr::InvalidSyntax)
+        }
+      }
+    }
+  }
+}
+
+/// Decode a JSON string starting at `val_pos` (pointing to `"`) into UTF-8 byte slice `dst`.
+/// Handles `\"`, `\\`, `\/`, `\n`, `\r`, `\t`, and `\uXXXX` Unicode escapes via `std/utf8.ifm`.
+/// Returns `Ok(bytes_written)` or `Err(JsonErr::TypeMismatch | JsonErr::BufferFull)`.
+pub fn json_decode_str(src: [u8], val_pos: i64, dst: [u8]) -[Mem]-> Result<i64, i64> {
+  let s = json_skip_ws_bytes(src, val_pos);
+  if s >= src.len || src[s] != '"' {
+    Err(JsonErr::TypeMismatch)
+  } else {
+    let mut i = s + 1;
+    let mut out_pos = 0;
+    let mut overflow = false;
+    while i >= 0 && i < src.len max 65536 {
+      let c = src[i];
+      if c == '"' {
+        break;
+      } else if c == '\\' && i + 1 < src.len {
+        let nx = src[i + 1];
+        if nx == 'n' {
+          if out_pos >= 0 && out_pos < dst.len {
+            dst[out_pos] = u8(10);
+            out_pos += 1;
+          } else {
+            overflow = true;
+            break;
+          }
+          i += 2;
+        } else if nx == 'r' {
+          if out_pos >= 0 && out_pos < dst.len {
+            dst[out_pos] = u8(13);
+            out_pos += 1;
+          } else {
+            overflow = true;
+            break;
+          }
+          i += 2;
+        } else if nx == 't' {
+          if out_pos >= 0 && out_pos < dst.len {
+            dst[out_pos] = u8(9);
+            out_pos += 1;
+          } else {
+            overflow = true;
+            break;
+          }
+          i += 2;
+        } else if nx == 'u' && i + 5 < src.len {
+          let h0 = json_hex_val(src[i + 2]);
+          let h1 = json_hex_val(src[i + 3]);
+          let h2 = json_hex_val(src[i + 4]);
+          let h3 = json_hex_val(src[i + 5]);
+          if h0 >= 0 && h1 >= 0 && h2 >= 0 && h3 >= 0 {
+            let cp = (h0 << 12) | (h1 << 8) | (h2 << 4) | h3;
+            let written = utf8_encode(cp, dst, out_pos);
+            if written <= 0 {
+              overflow = true;
+              break;
+            }
+            out_pos += written;
+            i += 6;
+          } else {
+            if out_pos >= 0 && out_pos < dst.len {
+              dst[out_pos] = u8(nx);
+              out_pos += 1;
+            } else {
+              overflow = true;
+              break;
+            }
+            i += 2;
+          }
+        } else {
+          if out_pos >= 0 && out_pos < dst.len {
+            dst[out_pos] = u8(nx);
+            out_pos += 1;
+          } else {
+            overflow = true;
+            break;
+          }
+          i += 2;
+        }
+      } else {
+        if out_pos >= 0 && out_pos < dst.len {
+          dst[out_pos] = u8(c);
+          out_pos += 1;
+        } else {
+          overflow = true;
+          break;
+        }
+        i += 1;
+      }
+    }
+    if overflow {
+      Err(JsonErr::BufferFull)
+    } else {
+      Ok(out_pos)
+    }
+  }
+}
+
+/// Extract a nested JSON object `{ ... }` subslice for `key` (zero-copy).
+pub fn json_get_object(src: [u8], key: str) -[Mem]-> Result<[u8], i64> {
+  match json_find_key(src, 0, key) {
+    None => Err(JsonErr::KeyNotFound),
+    Some(pos) => {
+      if pos < 0 || pos >= src.len || src[pos] != '{' {
+        Err(JsonErr::TypeMismatch)
+      } else {
+        let end = json_skip_value_bytes(src, pos);
+        if pos <= end && end <= src.len {
+          Ok(src[pos..end])
+        } else {
+          Err(JsonErr::InvalidSyntax)
+        }
+      }
+    }
+  }
+}
+
+/// Extract a nested JSON array `[ ... ]` subslice for `key` (zero-copy).
+pub fn json_get_array(src: [u8], key: str) -[Mem]-> Result<[u8], i64> {
+  match json_find_key(src, 0, key) {
+    None => Err(JsonErr::KeyNotFound),
+    Some(pos) => {
+      if pos < 0 || pos >= src.len || src[pos] != '[' {
+        Err(JsonErr::TypeMismatch)
+      } else {
+        let end = json_skip_value_bytes(src, pos);
+        if pos <= end && end <= src.len {
+          Ok(src[pos..end])
+        } else {
+          Err(JsonErr::InvalidSyntax)
+        }
+      }
+    }
+  }
+}
+
+/// Step through a JSON array `[ ... ]` starting at `cursor` (pass `0` initially).
+/// Returns `Some(JsonElem { start, end, next })` where `arr[start..end]` is the element slice,
+/// or `None` when the end of the array is reached.
+pub fn json_array_iter_next(arr: [u8], cursor: i64) -[Mem]-> Option<JsonElem> {
+  let mut i = json_skip_ws_bytes(arr, cursor);
+  if i == 0 && i < arr.len && arr[i] == '[' {
+    i = json_skip_ws_bytes(arr, i + 1);
+  } else if i < arr.len && arr[i] == ',' {
+    i = json_skip_ws_bytes(arr, i + 1);
+  }
+  if i >= arr.len || arr[i] == ']' {
+    None
+  } else {
+    let end = json_skip_value_bytes(arr, i);
+    if i >= 0 && i < end && end <= arr.len {
+      let next = json_skip_ws_bytes(arr, end);
+      Some(JsonElem { start: i, end: end, next: next })
+    } else {
+      None
+    }
+  }
+}
+
+// ============================================================================
+// 2. Safe Escaping `JsonWriter` (Z3-Verified Bounds, 0 Heap)
+// ============================================================================
+
+fn jw_put_byte(dst: [u8], w: JsonWriter, b: i64) -[Mem]-> JsonWriter {
+  if w.err != 0 {
+    w
+  } else if w.pos >= 0 && w.pos < dst.len {
+    dst[w.pos] = u8(b);
+    JsonWriter { pos: w.pos + 1, need_comma: w.need_comma, err: 0 }
+  } else {
+    JsonWriter { pos: w.pos, need_comma: w.need_comma, err: JsonErr::BufferFull }
+  }
+}
+
+fn jw_put_raw_bytes(dst: [u8], w: JsonWriter, s: [u8]) -[Mem]-> JsonWriter {
+  if w.err != 0 {
+    w
+  } else if w.pos < 0 || w.pos + s.len > dst.len {
+    JsonWriter { pos: w.pos, need_comma: w.need_comma, err: JsonErr::BufferFull }
+  } else {
+    let base = w.pos;
+    for i in 0..s.len max 16384 {
+      if base + i >= 0 && base + i < dst.len {
+        dst[base + i] = s[i];
+      }
+    }
+    JsonWriter { pos: base + s.len, need_comma: w.need_comma, err: 0 }
+  }
+}
+
+fn jw_hex_char(n: i64) -> i64 {
+  let d = n & 15;
+  if d < 10 { 48 + d } else { 87 + d }
+}
+
+fn jw_put_escaped_str(dst: [u8], w_in: JsonWriter, s: str) -[Mem]-> JsonWriter {
+  let sb = s.as_bytes();
+  let mut w = jw_put_byte(dst, w_in, '"');
+  for i in 0..sb.len max 16384 {
+    if w.err != 0 {
+      break;
+    }
+    let b = sb[i];
+    if b == '"' {
+      w = jw_put_byte(dst, w, '\\');
+      w = jw_put_byte(dst, w, '"');
+    } else if b == '\\' {
+      w = jw_put_byte(dst, w, '\\');
+      w = jw_put_byte(dst, w, '\\');
+    } else if b == '\n' {
+      w = jw_put_byte(dst, w, '\\');
+      w = jw_put_byte(dst, w, 'n');
+    } else if b == '\r' {
+      w = jw_put_byte(dst, w, '\\');
+      w = jw_put_byte(dst, w, 'r');
+    } else if b == '\t' {
+      w = jw_put_byte(dst, w, '\\');
+      w = jw_put_byte(dst, w, 't');
+    } else if b < 32 {
+      w = jw_put_byte(dst, w, '\\');
+      w = jw_put_byte(dst, w, 'u');
+      w = jw_put_byte(dst, w, '0');
+      w = jw_put_byte(dst, w, '0');
+      w = jw_put_byte(dst, w, jw_hex_char(b >> 4));
+      w = jw_put_byte(dst, w, jw_hex_char(b & 15));
+    } else {
+      w = jw_put_byte(dst, w, b);
+    }
+  }
+  jw_put_byte(dst, w, '"')
+}
+
+fn jw_write_key(dst: [u8], w_in: JsonWriter, key: str) -[Mem]-> JsonWriter {
+  let mut w = w_in;
+  if w.need_comma != 0 {
+    w = jw_put_byte(dst, w, ',');
+  }
+  w = jw_put_escaped_str(dst, w, key);
+  w = jw_put_byte(dst, w, ':');
+  JsonWriter { pos: w.pos, need_comma: 1, err: w.err }
+}
+
+/// Begin writing a JSON object `{` into `dst`.
+pub fn jw_begin_obj(dst: [u8]) -[Mem]-> JsonWriter {
+  let w0 = JsonWriter { pos: 0, need_comma: 0, err: 0 };
+  jw_put_byte(dst, w0, '{')
+}
+
+/// Write a `"key": int` field into `dst`.
+pub fn jw_kv_int(dst: [u8], w_in: JsonWriter, key: str, val: i64) -[Mem]-> JsonWriter {
+  let mut w = jw_write_key(dst, w_in, key);
+  if w.err != 0 {
+    w
+  } else {
+    let neg = val < 0;
+    let abs_hi = if neg { -(val / 10) } else { val / 10 };
+    let last_d = if neg { -(val % 10) } else { val % 10 };
+    if neg {
+      w = jw_put_byte(dst, w, '-');
+    }
+    if abs_hi > 0 {
+      let mut div = 1;
+      while div <= abs_hi / 10 max 19 {
+        div = div * 10;
+      }
+      while div > 0 max 19 {
+        w = jw_put_byte(dst, w, 48 + (abs_hi / div) % 10);
+        div = div / 10;
+      }
+    }
+    jw_put_byte(dst, w, 48 + last_d)
+  }
+}
+
+/// Write a `"key": dec64` field (exact 4 decimal places) into `dst`.
+pub fn jw_kv_dec64(dst: [u8], w_in: JsonWriter, key: str, val: dec64) -[Mem]-> JsonWriter {
+  let w = jw_write_key(dst, w_in, key);
+  let p = w.pos;
+  if w.err != 0 {
+    w
+  } else if p >= 0 && p <= dst.len {
+    let n = dec64_format(val, dst[p..dst.len]);
+    if n <= 0 {
+      JsonWriter { pos: p, need_comma: 1, err: JsonErr::BufferFull }
+    } else {
+      JsonWriter { pos: p + n, need_comma: 1, err: 0 }
+    }
+  } else {
+    JsonWriter { pos: p, need_comma: 1, err: JsonErr::BufferFull }
+  }
+}
+
+/// Write a `"key": bool` (`true` / `false`) field into `dst`.
+pub fn jw_kv_bool(dst: [u8], w_in: JsonWriter, key: str, val: bool) -[Mem]-> JsonWriter {
+  let w = jw_write_key(dst, w_in, key);
+  if val {
+    jw_put_raw_bytes(dst, w, "true".as_bytes())
+  } else {
+    jw_put_raw_bytes(dst, w, "false".as_bytes())
+  }
+}
+
+/// Write a `"key": "escaped_val"` string field into `dst`.
+pub fn jw_kv_str(dst: [u8], w_in: JsonWriter, key: str, val: str) -[Mem]-> JsonWriter {
+  let w = jw_write_key(dst, w_in, key);
+  jw_put_escaped_str(dst, w, val)
+}
+
+/// Close the JSON object `}` and return `Ok(total_bytes)` or `Err(JsonErr::BufferFull)`.
+pub fn jw_end_obj(dst: [u8], w_in: JsonWriter) -[Mem]-> Result<i64, i64> {
+  let w = jw_put_byte(dst, w_in, '}');
+  if w.err != 0 {
+    Err(w.err)
+  } else {
+    Ok(w.pos)
+  }
+}
+
+// ============================================================================
+// 3. Legacy UTF-32 `words[N]` JSON Scanner Helpers (for agent_core / std_tests)
+// ============================================================================
+
+pub fn json_u32_skip_ws(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   let mut i = clamp_i64(pos, 0, max_i64(n, 0));
   while i < n max 16384 {
     if json_is_ws(mem_load(buf_ptr + 1 + i)) {
@@ -23,8 +620,7 @@ pub fn json_skip_ws(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   i
 }
 
-// Given `pos` pointing to opening `"`, return index immediately after closing `"`.
-pub fn json_skip_string(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+pub fn json_u32_skip_string(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   if pos < 0 || pos >= n || mem_load(buf_ptr + 1 + pos) != '"' {
     pos
   } else {
@@ -44,22 +640,21 @@ pub fn json_skip_string(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   }
 }
 
-// Skip any JSON value (string, number, bool, null, object, array) starting at `pos`.
-pub fn json_skip_value(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
-  let s = json_skip_ws(buf_ptr, pos, n);
+pub fn json_u32_skip_value(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+  let s = json_u32_skip_ws(buf_ptr, pos, n);
   if s >= n {
     n
   } else {
     let ch = mem_load(buf_ptr + 1 + s);
     if ch == '"' {
-      json_skip_string(buf_ptr, s, n)
+      json_u32_skip_string(buf_ptr, s, n)
     } else if ch == '{' || ch == '[' {
       let mut i = s + 1;
       let mut depth = 1;
       while i < n && depth > 0 max 16384 {
         let c = mem_load(buf_ptr + 1 + i);
         if c == '"' {
-          i = json_skip_string(buf_ptr, i, n);
+          i = json_u32_skip_string(buf_ptr, i, n);
         } else if c == '{' || c == '[' {
           depth += 1;
           i += 1;
@@ -85,9 +680,8 @@ pub fn json_skip_value(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   }
 }
 
-// Parse a signed integer starting at `pos`.
-pub fn json_parse_int(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
-  let mut i = json_skip_ws(buf_ptr, pos, n);
+pub fn json_u32_parse_int(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
+  let mut i = json_u32_skip_ws(buf_ptr, pos, n);
   let mut neg = false;
   if i < n && mem_load(buf_ptr + 1 + i) == '-' {
     neg = true;
@@ -106,17 +700,9 @@ pub fn json_parse_int(buf_ptr: i64, pos: i64, n: i64) -[Mem]-> i64 {
   if neg { -acc } else { acc }
 }
 
-pub fn json_hex_val(c: i64) -> i64 {
-  if c >= '0' && c <= '9' { c - '0' }
-  else if c >= 'a' && c <= 'f' { 10 + (c - 'a') }
-  else if c >= 'A' && c <= 'F' { 10 + (c - 'A') }
-  else { -1 }
-}
-
-// Decode a JSON string starting at `pos` (pointing to `"`) into `dst_ptr`. Returns decoded length.
-pub fn json_decode_string(src_ptr: i64, pos: i64, n: i64, dst_ptr: i64, dst_max: i64) -[Mem]-> i64 {
+pub fn json_u32_decode_string(src_ptr: i64, pos: i64, n: i64, dst_ptr: i64, dst_max: i64) -[Mem]-> i64 {
   buf_clear(dst_ptr);
-  let s = json_skip_ws(src_ptr, pos, n);
+  let s = json_u32_skip_ws(src_ptr, pos, n);
   if s >= n || mem_load(src_ptr + 1 + s) != '"' {
     0
   } else {
@@ -162,34 +748,31 @@ pub fn json_decode_string(src_ptr: i64, pos: i64, n: i64, dst_ptr: i64, dst_max:
   }
 }
 
-// Find a top-level key inside a JSON object starting at `obj_pos` (pointing to `{`).
-// `key_ptr` is a length-prefixed UTF-32 buffer containing the raw key name.
-// Returns the start index of the value, or -1 if not found.
-pub fn json_find_key(src_ptr: i64, obj_pos: i64, n: i64, key_ptr: i64, key_max: i64) -[Mem]-> i64 {
-  let s = json_skip_ws(src_ptr, obj_pos, n);
+pub fn json_u32_find_key(src_ptr: i64, obj_pos: i64, n: i64, key_ptr: i64, key_max: i64) -[Mem]-> i64 {
+  let s = json_u32_skip_ws(src_ptr, obj_pos, n);
   let klen = buf_len(key_ptr, key_max);
   if s >= n || mem_load(src_ptr + 1 + s) != '{' {
     -1
   } else {
-    let mut i = json_skip_ws(src_ptr, s + 1, n);
+    let mut i = json_u32_skip_ws(src_ptr, s + 1, n);
     let mut found = -1;
     while i < n max 512 {
       let c = mem_load(src_ptr + 1 + i);
       if c == '}' {
         break;
       } else if c == ',' {
-        i = json_skip_ws(src_ptr, i + 1, n);
+        i = json_u32_skip_ws(src_ptr, i + 1, n);
       } else if c == '"' {
-        let key_end = json_skip_string(src_ptr, i, n);
+        let key_end = json_u32_skip_string(src_ptr, i, n);
         let raw_len = max_i64(key_end - i - 2, 0);
-        let after_key = json_skip_ws(src_ptr, key_end, n);
+        let after_key = json_u32_skip_ws(src_ptr, key_end, n);
         if after_key < n && mem_load(src_ptr + 1 + after_key) == ':' {
-          let val_start = json_skip_ws(src_ptr, after_key + 1, n);
+          let val_start = json_u32_skip_ws(src_ptr, after_key + 1, n);
           if buf_eq_slice(src_ptr, i + 1, raw_len, key_ptr, 0, klen) {
             found = val_start;
             break;
           } else {
-            i = json_skip_ws(src_ptr, json_skip_value(src_ptr, val_start, n), n);
+            i = json_u32_skip_ws(src_ptr, json_u32_skip_value(src_ptr, val_start, n), n);
           }
         } else {
           break;

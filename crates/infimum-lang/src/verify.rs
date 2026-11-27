@@ -1982,7 +1982,6 @@ where
 
 /// Verify a node and collect up to `max_errors` violated obligations in a single pass
 /// so LLM agents can repair multiple contract/bounds errors in one turn.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn verify_node_collect_all<F>(
     raw_fn: &FnDef,
     canon_node: &CanonicalNode,

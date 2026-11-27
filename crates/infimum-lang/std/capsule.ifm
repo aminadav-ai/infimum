@@ -36,7 +36,7 @@ pub fn cap_input(in_len: i64) -[Mem]-> [u8]
 pub fn cap_output_buf() -[Mem]-> [u8]
   ens result.len == CAP_MAX_OUTPUT_BYTES
 {
-  CapsuleIo.output_buf[..]
+  CapsuleIo.output_buf[0..CAP_MAX_OUTPUT_BYTES]
 }
 
 /// Read the Zero-Trust Vault secret injected into `CapsuleIo.secret_buf` as a taint-tracked `Secret<str>`.

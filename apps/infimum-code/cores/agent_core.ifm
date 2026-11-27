@@ -98,7 +98,7 @@ export fn calc_cost_milli_ils_ifm(in_tok: i64, cached_tok: i64, out_tok: i64) -[
 
 fn find_json_key_str(pos: i64, n: i64, key: str) -[Mem]-> i64 {
   buf_set_str(AgentMem::key_buf, 64, key);
-  json_find_key(AgentMem::json_in, pos, n, AgentMem::key_buf, 64)
+  json_u32_find_key(AgentMem::json_in, pos, n, AgentMem::key_buf, 64)
 }
 
 // Extract `.error.message` from either `{ "error": { "message": "..." } }` or
@@ -106,18 +106,18 @@ fn find_json_key_str(pos: i64, n: i64, key: str) -[Mem]-> i64 {
 export fn extract_api_error_ifm(raw_len: i64) -[Mem]-> i64 {
   let n = clamp_i64(raw_len, 0, 16384);
   buf_clear(AgentMem::json_out);
-  let mut obj_pos = json_skip_ws(AgentMem::json_in, 0, n);
+  let mut obj_pos = json_u32_skip_ws(AgentMem::json_in, 0, n);
   if obj_pos < n && buf_get_cp(AgentMem::json_in, obj_pos) == '[' {
-    obj_pos = json_skip_ws(AgentMem::json_in, obj_pos + 1, n);
+    obj_pos = json_u32_skip_ws(AgentMem::json_in, obj_pos + 1, n);
   }
   let err_val = find_json_key_str(obj_pos, n, "error");
   if err_val >= 0 {
     if buf_get_cp(AgentMem::json_in, err_val) == '"' {
-      json_decode_string(AgentMem::json_in, err_val, n, AgentMem::json_out, 2048)
+      json_u32_decode_string(AgentMem::json_in, err_val, n, AgentMem::json_out, 2048)
     } else {
       let msg_val = find_json_key_str(err_val, n, "message");
       if msg_val >= 0 {
-        json_decode_string(AgentMem::json_in, msg_val, n, AgentMem::json_out, 2048)
+        json_u32_decode_string(AgentMem::json_in, msg_val, n, AgentMem::json_out, 2048)
       } else {
         0
       }

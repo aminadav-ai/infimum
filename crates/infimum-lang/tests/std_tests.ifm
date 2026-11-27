@@ -68,17 +68,17 @@ test "std/json find_key, parse_int, and decode_string" {
 
   buf_clear(StdTestMem::key_buf);
   buf_push_cp(StdTestMem::key_buf, 32, 'n');
-  let v_n = json_find_key(j, 0, n, StdTestMem::key_buf, 32);
+  let v_n = json_u32_find_key(j, 0, n, StdTestMem::key_buf, 32);
   assert(v_n >= 0);
-  assert(json_parse_int(j, v_n, n) == -7);
+  assert(json_u32_parse_int(j, v_n, n) == -7);
 
   buf_clear(StdTestMem::key_buf);
   buf_push_cp(StdTestMem::key_buf, 32, 'm');
   buf_push_cp(StdTestMem::key_buf, 32, 's');
   buf_push_cp(StdTestMem::key_buf, 32, 'g');
-  let v_m = json_find_key(j, 0, n, StdTestMem::key_buf, 32);
+  let v_m = json_u32_find_key(j, 0, n, StdTestMem::key_buf, 32);
   assert(v_m >= 0);
-  let dlen = json_decode_string(j, v_m, n, StdTestMem::buf_b, 128);
+  let dlen = json_u32_decode_string(j, v_m, n, StdTestMem::buf_b, 128);
   assert(dlen == 4);
   assert(buf_get_cp(StdTestMem::buf_b, 2) == '\n');
 }
@@ -303,7 +303,7 @@ test "std/json unicode \\uXXXX decoding and std/input KeySpecial" {
   buf_push_cp(src, 32, '1');
   buf_push_cp(src, 32, '0');
   buf_push_cp(src, 32, '"');
-  let dn = json_decode_string(src, 0, 8, dst, 32);
+  let dn = json_u32_decode_string(src, 0, 8, dst, 32);
   assert(dn == 1);
   assert(buf_get_cp(dst, 0) == 1040);
   assert(KeySpecial::Enter == 2 && KeySpecial::CtrlA == 20 && KEY_Z == 8192);
