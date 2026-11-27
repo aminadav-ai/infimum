@@ -30,6 +30,7 @@ serde_json = "1"
 arboard = "3"
 blake3 = "1.5"
 ed25519-dalek = { version = "2", default-features = false, features = ["fast"] }
+infimum-rt = { path = "../infimum-rt" }
 pollster = "0.4"
 wasmi = "0.40"
 wgpu = "24"

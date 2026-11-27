@@ -202,6 +202,12 @@ fn escape_curl_config_str(s: &str) -> String {
     out
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_url_authority(url: &str) -> Option<(&str, &str, Option<&str>)> {
+    infimum_rt::net::parse_url_authority(url)
+}
+
+#[cfg(target_arch = "wasm32")]
 fn parse_url_authority(url: &str) -> Option<(&str, &str, Option<&str>)> {
     if url
         .bytes()

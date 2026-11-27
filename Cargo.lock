@@ -903,6 +903,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "infimum-rt"
+version = "0.3.0"
+dependencies = [
+ "blake3",
+ "infimum-lang",
+ "serde",
+ "serde_json",
+ "wasmi",
+]
+
+[[package]]
 name = "infimum-web"
 version = "0.3.0"
 dependencies = [
@@ -912,6 +923,7 @@ dependencies = [
  "console_error_panic_hook",
  "ed25519-dalek",
  "fontdue",
+ "infimum-rt",
  "jpeg-decoder",
  "js-sys",
  "png 0.17.16",
