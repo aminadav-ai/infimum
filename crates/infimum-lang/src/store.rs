@@ -3,7 +3,7 @@ use crate::canon::{canonicalize_fn, CanonicalNode};
 use crate::diag::{InfimumDiagnostic, Span};
 use crate::typecheck::{typecheck_node, DirectSecretSink};
 use crate::verify::{
-    compute_forma_proof_key, compute_proof_key, verify_node, z3_version_id, VerificationReport,
+    compute_forma_proof_key, compute_proof_key, verify_node_collect_all, z3_version_id, VerificationReport,
     PROOF_CACHE_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -476,17 +476,29 @@ impl GraphStore {
         module: &Module,
         use_cache: bool,
     ) -> Result<Vec<(String, CanonicalNode, VerificationReport)>, InfimumDiagnostic> {
-        let z3_version = z3_version_id()?;
+        self.stage_and_verify_module_all(module, use_cache, 1)
+            .map_err(|mut errs| errs.remove(0))
+    }
+
+    fn stage_and_verify_module_all(
+        &self,
+        module: &Module,
+        use_cache: bool,
+        max_errors: usize,
+    ) -> Result<Vec<(String, CanonicalNode, VerificationReport)>, Vec<InfimumDiagnostic>> {
+        let z3_version = z3_version_id().map_err(|e| vec![e])?;
         let mut cache_dirty = false;
 
-        if let Err(e) = self.verify_module_formas_with_cache(module, use_cache, &z3_version, &mut cache_dirty) {
+        if let Err(e) =
+            self.verify_module_formas_with_cache(module, use_cache, &z3_version, &mut cache_dirty)
+        {
             if cache_dirty {
                 let _ = self.save_proof_cache();
             }
-            return Err(e);
+            return Err(vec![e]);
         }
 
-        let order = topo_sort_functions(&module.functions)?;
+        let order = topo_sort_functions(&module.functions).map_err(|e| vec![e])?;
         let mut staged_aliases = self.aliases.clone();
         let mut staged_nodes: BTreeMap<String, CanonicalNode> = BTreeMap::new();
         let mut items: Vec<(usize, String, CanonicalNode, String, Option<VerificationReport>)> =
@@ -512,7 +524,8 @@ impl GraphStore {
                     })
                 },
                 &|prefix| self.resolve_hash_prefix(prefix),
-            )?;
+            )
+            .map_err(|e| vec![e])?;
 
             let loader = |dep_hash: &str| -> Result<CanonicalNode, InfimumDiagnostic> {
                 if let Some(mem_node) = staged_nodes.get(dep_hash) {
@@ -522,8 +535,9 @@ impl GraphStore {
                 }
             };
 
-            node.direct_secret_sinks = typecheck_node(&raw_fn.name, &node, &loader)?;
-            let proof_key = compute_proof_key(&node, &loader, &z3_version)?;
+            node.direct_secret_sinks =
+                typecheck_node(&raw_fn.name, &node, &loader).map_err(|e| vec![e])?;
+            let proof_key = compute_proof_key(&node, &loader, &z3_version).map_err(|e| vec![e])?;
             let cached_report = if use_cache {
                 self.proof_cache
                     .lock()
@@ -554,7 +568,8 @@ impl GraphStore {
             .collect();
 
         if !miss_positions.is_empty() {
-            let results: Mutex<Vec<(usize, Result<VerificationReport, InfimumDiagnostic>)>> =
+            type VerifyBatchItem = (usize, Result<VerificationReport, Vec<InfimumDiagnostic>>);
+            let results: Mutex<Vec<VerifyBatchItem>> =
                 Mutex::new(Vec::with_capacity(miss_positions.len()));
             let next_m = AtomicUsize::new(0);
             let threads = std::thread::available_parallelism()
@@ -584,7 +599,8 @@ impl GraphStore {
                             let pos = miss_positions[mi];
                             let (fn_idx, _, ref node, _, _) = items_ref[pos];
                             let raw_fn = &module.functions[fn_idx];
-                            let res = verify_node(raw_fn, node, &loader);
+                            let res =
+                                verify_node_collect_all(raw_fn, node, &loader, max_errors);
                             if let Ok(mut g) = results.lock() {
                                 g.push((pos, res));
                             }
@@ -595,7 +611,7 @@ impl GraphStore {
 
             let mut drained = results.into_inner().unwrap_or_default();
             drained.sort_by_key(|(pos, _)| *pos);
-            let mut first_err: Option<InfimumDiagnostic> = None;
+            let mut all_errs: Vec<InfimumDiagnostic> = Vec::new();
             for (pos, res) in drained {
                 match res {
                     Ok(report) => {
@@ -614,23 +630,25 @@ impl GraphStore {
                         }
                         items[pos].4 = Some(report);
                     }
-                    Err(e) => {
-                        if first_err.is_none() {
-                            first_err = Some(e);
+                    Err(mut errs) => {
+                        for e in errs.drain(..) {
+                            if all_errs.len() < max_errors.max(1) {
+                                all_errs.push(e);
+                            }
                         }
                     }
                 }
             }
-            if let Some(e) = first_err {
+            if !all_errs.is_empty() {
                 if cache_dirty {
                     let _ = self.save_proof_cache();
                 }
-                return Err(e);
+                return Err(all_errs);
             }
         }
 
         if cache_dirty {
-            self.save_proof_cache()?;
+            self.save_proof_cache().map_err(|e| vec![e])?;
         }
 
         let mut out = Vec::with_capacity(items.len());
@@ -640,6 +658,16 @@ impl GraphStore {
             }
         }
         Ok(out)
+    }
+
+    pub fn verify_module_collect_all(
+        &self,
+        module: &Module,
+        use_cache: bool,
+        max_errors: usize,
+    ) -> Result<Vec<VerificationReport>, Vec<InfimumDiagnostic>> {
+        let staged = self.stage_and_verify_module_all(module, use_cache, max_errors)?;
+        Ok(staged.into_iter().map(|(_, _, r)| r).collect())
     }
 
     pub fn verify_module_with_cache(

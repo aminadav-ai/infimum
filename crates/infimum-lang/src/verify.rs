@@ -1980,6 +1980,24 @@ where
     })
 }
 
+/// Verify a node and collect up to `max_errors` violated obligations in a single pass
+/// so LLM agents can repair multiple contract/bounds errors in one turn.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn verify_node_collect_all<F>(
+    raw_fn: &FnDef,
+    canon_node: &CanonicalNode,
+    load_callee: &F,
+    max_errors: usize,
+) -> Result<VerificationReport, Vec<InfimumDiagnostic>>
+where
+    F: Fn(&str) -> Result<CanonicalNode, InfimumDiagnostic>,
+{
+    let z3_bin = find_z3_binary().map_err(|e| vec![e])?;
+    verify_node_with_runner_all(raw_fn, canon_node, load_callee, &mut |script| {
+        run_z3(&z3_bin, script)
+    }, max_errors)
+}
+
 /// Platform-independent Z3 verifier entry point (used by both native CLI and `wasm32` `z3.wasm`).
 pub fn verify_node_with_runner<F, R>(
     raw_fn: &FnDef,
@@ -1991,6 +2009,34 @@ where
     F: Fn(&str) -> Result<CanonicalNode, InfimumDiagnostic>,
     R: FnMut(&str) -> Result<String, InfimumDiagnostic>,
 {
+    verify_node_with_runner_all(raw_fn, canon_node, load_callee, run_smt, 1)
+        .map_err(|mut errs| errs.remove(0))
+}
+
+/// Platform-independent Z3 verifier collecting up to `max_errors` diagnostics per function.
+pub fn verify_node_with_runner_all<F, R>(
+    raw_fn: &FnDef,
+    canon_node: &CanonicalNode,
+    load_callee: &F,
+    run_smt: &mut R,
+    max_errors: usize,
+) -> Result<VerificationReport, Vec<InfimumDiagnostic>>
+where
+    F: Fn(&str) -> Result<CanonicalNode, InfimumDiagnostic>,
+    R: FnMut(&str) -> Result<String, InfimumDiagnostic>,
+{
+    let enrich = |mut d: InfimumDiagnostic| -> InfimumDiagnostic {
+        d = d.with_function(raw_fn.name.clone());
+        if let Some(ref f) = raw_fn.source_file {
+            d = d.with_file(f.clone());
+        }
+        if let Some(sp) = raw_fn.span {
+            if d.span.line <= 1 && d.span.start == 0 {
+                d = d.with_span(sp);
+            }
+        }
+        d
+    };
     #[cfg(not(target_arch = "wasm32"))]
     let start = Instant::now();
     let canon_fn = &canon_node.ast;
@@ -2081,7 +2127,11 @@ where
     for req in &canon_fn.requires {
         let mut req_env = base_env.clone();
         let mut req_types = base_types.clone();
-        req_smts.push(builder.encode_expr(req, &mut req_env, &mut req_types, "true", false)?);
+        req_smts.push(
+            builder
+                .encode_expr(req, &mut req_env, &mut req_types, "true", false)
+                .map_err(|e| vec![enrich(e)])?,
+        );
     }
 
     // 1. Vacuous precondition guard: ensure `req` clauses are mutually satisfiable!
@@ -2091,9 +2141,9 @@ where
             vac_script.push_str(&format!("(assert {r})\n"));
         }
         vac_script.push_str("(check-sat)\n");
-        let vac_out = run_smt(&vac_script)?;
+        let vac_out = run_smt(&vac_script).map_err(|e| vec![enrich(e)])?;
         if vac_out.lines().next().map(str::trim) == Some("unsat") {
-            return Err(InfimumDiagnostic::new(
+            return Err(vec![enrich(InfimumDiagnostic::new(
                 "E052_VACUOUS_PRECONDITION",
                 "verify",
                 format!(
@@ -2102,7 +2152,7 @@ where
                 ),
                 Span::zero(),
                 "Remove contradictory 'req' constraints; vacuous contracts are rejected to prevent trivial proof cheating",
-            ));
+            ))]);
         }
     }
 
@@ -2117,8 +2167,9 @@ where
         let rl = builder.fresh_sym("ret_slice_len", &Type::I64);
         builder.assumptions.push(format!("(assert (>= {rp} 0))"));
         builder.assumptions.push(format!("(assert (>= {rl} 0))"));
-        if let Some((bp, bl)) =
-            builder.encode_slice_fields(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?
+        if let Some((bp, bl)) = builder
+            .encode_slice_fields(&canon_fn.body, &mut body_env, &mut body_types, "true", true)
+            .map_err(|e| vec![enrich(e)])?
         {
             builder.assumptions.push(format!("(assert (= {rp} {bp}))"));
             builder.assumptions.push(format!("(assert (= {rl} {bl}))"));
@@ -2128,7 +2179,9 @@ where
             ens_types.insert("$result#1".to_string(), Type::I64);
             builder.fresh_sym("slice_body", &Type::I64)
         } else {
-            let b = builder.encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?;
+            let b = builder
+                .encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)
+                .map_err(|e| vec![enrich(e)])?;
             ens_env.insert("$result#0".to_string(), rp);
             ens_env.insert("$result#1".to_string(), rl);
             ens_types.insert("$result#0".to_string(), Type::I64);
@@ -2136,23 +2189,24 @@ where
             b
         }
     } else if matches!(canon_fn.ret_type, Type::Option(_) | Type::Result(_)) {
-        if let Some(ts) = builder.encode_tagged_fields(
-            &canon_fn.body,
-            &mut body_env,
-            &mut body_types,
-            "true",
-            true,
-        )? {
+        if let Some(ts) = builder
+            .encode_tagged_fields(&canon_fn.body, &mut body_env, &mut body_types, "true", true)
+            .map_err(|e| vec![enrich(e)])?
+        {
             SmtBuilder::<F>::bind_tagged_in_env("$result", &ts, &mut ens_env, &mut ens_types);
             builder.fresh_sym("tagged_body", &Type::I64)
         } else {
-            let b = builder.encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?;
+            let b = builder
+                .encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)
+                .map_err(|e| vec![enrich(e)])?;
             let ts = builder.fresh_tagged_smt("ret_tagged", &canon_fn.ret_type);
             SmtBuilder::<F>::bind_tagged_in_env("$result", &ts, &mut ens_env, &mut ens_types);
             b
         }
     } else {
-        builder.encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)?
+        builder
+            .encode_expr(&canon_fn.body, &mut body_env, &mut body_types, "true", true)
+            .map_err(|e| vec![enrich(e)])?
     };
 
     // Encode postconditions (`ens`) as proof obligations
@@ -2166,7 +2220,9 @@ where
     {
         let mut cur_ens_env = ens_env.clone();
         let mut cur_ens_types = ens_types.clone();
-        let ens_smt = builder.encode_expr(canon_ens, &mut cur_ens_env, &mut cur_ens_types, "true", false)?;
+        let ens_smt = builder
+            .encode_expr(canon_ens, &mut cur_ens_env, &mut cur_ens_types, "true", false)
+            .map_err(|e| vec![enrich(e)])?;
         let pretty_raw = crate::canon::format_expr_human(raw_ens);
         builder.obligations.push(ProofObligation {
             guard_smt: "true".to_string(),
@@ -2215,6 +2271,8 @@ where
     query_vars.push(result_sym.to_string());
     let get_val_cmd = format!("(get-value ({}))\n", query_vars.join(" "));
 
+    let limit = max_errors.max(1);
+    let mut collected_errors: Vec<InfimumDiagnostic> = Vec::new();
     for ob in &builder.obligations {
         let mut script = base_script.clone();
         script.push_str(&format!(
@@ -2222,7 +2280,7 @@ where
             ob.guard_smt, ob.goal_smt
         ));
 
-        let out = run_smt(&script)?;
+        let out = run_smt(&script).map_err(|e| vec![enrich(e)])?;
         let first_line = out.lines().next().unwrap_or("").trim();
 
         match first_line {
@@ -2232,11 +2290,18 @@ where
             "sat" => {
                 script.push_str(&get_val_cmd);
                 let cex_out = run_smt(&script).unwrap_or(out);
-                let cex = extract_counterexample(&cex_out, &raw_fn.params);
-                return Err(build_violation_diagnostic(&raw_fn.name, &ob.kind, cex));
+                let cex = extract_counterexample(&cex_out, &raw_fn.params, &raw_fn.ret_type);
+                collected_errors.push(enrich(build_violation_diagnostic(
+                    &raw_fn.name,
+                    &ob.kind,
+                    cex,
+                )));
+                if collected_errors.len() >= limit {
+                    return Err(collected_errors);
+                }
             }
             other => {
-                return Err(InfimumDiagnostic::new(
+                collected_errors.push(enrich(InfimumDiagnostic::new(
                     "E057_SOLVER_INCONCLUSIVE",
                     "verify",
                     format!(
@@ -2245,9 +2310,15 @@ where
                     ),
                     Span::zero(),
                     "Simplify non-linear arithmetic in contract or split into smaller verified lemmas",
-                ));
+                )));
+                if collected_errors.len() >= limit {
+                    return Err(collected_errors);
+                }
             }
         }
+    }
+    if !collected_errors.is_empty() {
+        return Err(collected_errors);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2646,7 +2717,22 @@ pub(crate) fn run_z3(z3_bin: &PathBuf, script: &str) -> Result<String, InfimumDi
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn extract_counterexample(z3_out: &str, raw_params: &[Param]) -> BTreeMap<String, String> {
+fn format_dec64_cex(clean_val: &str) -> String {
+    if let Ok(raw) = clean_val.parse::<i64>() {
+        let sign = if raw < 0 { "-" } else { "" };
+        let whole = (raw / 10_000).unsigned_abs();
+        let frac = (raw % 10_000).unsigned_abs();
+        format!("{sign}{whole}.{frac:04}d (raw {raw})")
+    } else {
+        clean_val.to_string()
+    }
+}
+
+fn extract_counterexample(
+    z3_out: &str,
+    raw_params: &[Param],
+    ret_type: &Type,
+) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     let rest: String = z3_out.lines().skip(1).collect::<Vec<_>>().join(" ");
     let pairs = parse_sexp_pairs(&rest);
@@ -2656,13 +2742,23 @@ fn extract_counterexample(z3_out: &str, raw_params: &[Param]) -> BTreeMap<String
         if let Some(idx_str) = k.strip_prefix('p') {
             if let Ok(idx) = idx_str.parse::<usize>() {
                 if let Some(p) = raw_params.get(idx) {
-                    map.insert(p.name.clone(), clean_val);
+                    let formatted = if p.ty == Type::Dec64 {
+                        format_dec64_cex(&clean_val)
+                    } else {
+                        clean_val
+                    };
+                    map.insert(p.name.clone(), formatted);
                     continue;
                 }
             }
         }
         if k == "$result" {
-            map.insert("result".to_string(), clean_val);
+            let formatted = if *ret_type == Type::Dec64 {
+                format_dec64_cex(&clean_val)
+            } else {
+                clean_val
+            };
+            map.insert("result".to_string(), formatted);
         } else {
             map.insert(k, clean_val);
         }

@@ -45,6 +45,9 @@ pub(super) fn resolve_embedded_std(spec: &str) -> Option<(&'static str, &'static
             Some(("__std__/utf8.ifm", include_str!("../../std/utf8.ifm")))
         }
         "std/json" | "std/json.ifm" => Some(("__std__/json.ifm", include_str!("../../std/json.ifm"))),
+        "std/capsule" | "std/capsule.ifm" => {
+            Some(("__std__/capsule.ifm", include_str!("../../std/capsule.ifm")))
+        }
         "std/prelude" | "std/prelude.ifm" => {
             Some(("__std__/prelude.ifm", include_str!("../../std/prelude.ifm")))
         }

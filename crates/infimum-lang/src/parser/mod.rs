@@ -113,6 +113,7 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
     let entry_uid = graph.entry_uid;
     let has_std_gfx = graph.find_unit("__std__/gfx.ifm").is_some()
         || tables[entry_uid].scope.consts.contains_key("GPU_CMD_BYTE_OFFSET");
+    let has_std_capsule = graph.find_unit("__std__/capsule.ifm").is_some();
     let std_text_uid = graph.find_unit("__std__/text.ifm");
     let std_mesh3d_uid = graph.find_unit("__std__/mesh3d.ifm");
 
@@ -255,6 +256,46 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
     }
     for forma in &formas {
         functions.push(crate::forma::lower_forma_def(forma));
+    }
+
+    // 5b. Auto-generate Headless B2B Capsule ABI exports when std/capsule is loaded and cap_execute is exported
+    if has_std_capsule && functions.iter().any(|f| f.exported && f.name == "cap_execute") {
+        let existing: HashSet<String> = functions.iter().map(|f| f.name.clone()).collect();
+        if let Some(cap_layout) = resolver.layouts.values().find(|l| l.name == "CapsuleIo") {
+            let field_byte_off = |fname: &str| -> i64 {
+                cap_layout
+                    .fields
+                    .iter()
+                    .find(|f| f.name == fname)
+                    .map(|f| (if f.is_vec { f.offset + 1 } else { f.offset }) * 4)
+                    .unwrap_or(0)
+            };
+            let cap_exports: [(&str, i64); 7] = [
+                ("ifw_capsule_abi_version", 1),
+                ("ifw_cap_input_byte_offset", field_byte_off("input_buf")),
+                ("ifw_cap_input_cap_bytes", 65_536),
+                ("ifw_cap_output_byte_offset", field_byte_off("output_buf")),
+                ("ifw_cap_output_cap_bytes", 65_536),
+                ("ifw_cap_secret_byte_offset", field_byte_off("secret_buf")),
+                ("ifw_cap_secret_cap_bytes", 4_096),
+            ];
+            for (ename, val) in cap_exports {
+                if !existing.contains(ename) {
+                    functions.push(FnDef {
+                        name: ename.to_string(),
+                        exported: true,
+                        params: vec![],
+                        effects: vec![],
+                        ret_type: Type::I64,
+                        requires: vec![],
+                        ensures: vec![],
+                        body: Expr::IntLit(val),
+                        source_file: None,
+                        span: None,
+                    });
+                }
+            }
+        }
     }
 
     // 5. Auto-generate standard .ifw GPU runtime exports when std/gfx is loaded and step_ui is exported

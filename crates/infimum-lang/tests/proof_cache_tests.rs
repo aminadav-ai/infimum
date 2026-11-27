@@ -180,8 +180,11 @@ fn test_proof_cache_never_caches_failures_and_cli_no_cache_flag() {
         .output()
         .expect("run infimum verify #1");
     assert!(out1.status.success(), "stderr: {}", String::from_utf8_lossy(&out1.stderr));
-    let rep1: Vec<VerificationReport> =
+    let env1: serde_json::Value =
         serde_json::from_slice(&out1.stdout).expect("parse json report #1");
+    assert_eq!(env1["ok"], true);
+    let rep1: Vec<VerificationReport> =
+        serde_json::from_value(env1["reports"].clone()).expect("parse reports #1");
     assert_eq!(rep1.len(), 1);
     assert!(!rep1[0].cached);
 
@@ -191,8 +194,11 @@ fn test_proof_cache_never_caches_failures_and_cli_no_cache_flag() {
         .output()
         .expect("run infimum verify #2");
     assert!(out2.status.success());
-    let rep2: Vec<VerificationReport> =
+    let env2: serde_json::Value =
         serde_json::from_slice(&out2.stdout).expect("parse json report #2");
+    assert_eq!(env2["ok"], true);
+    let rep2: Vec<VerificationReport> =
+        serde_json::from_value(env2["reports"].clone()).expect("parse reports #2");
     assert_eq!(rep2.len(), 1);
     assert!(rep2[0].cached);
     assert_eq!(rep2[0].status, "PROVED (cached)");
@@ -203,8 +209,11 @@ fn test_proof_cache_never_caches_failures_and_cli_no_cache_flag() {
         .output()
         .expect("run infimum verify --no-cache");
     assert!(out3.status.success());
-    let rep3: Vec<VerificationReport> =
+    let env3: serde_json::Value =
         serde_json::from_slice(&out3.stdout).expect("parse json report #3");
+    assert_eq!(env3["ok"], true);
+    let rep3: Vec<VerificationReport> =
+        serde_json::from_value(env3["reports"].clone()).expect("parse reports #3");
     assert_eq!(rep3.len(), 1);
     assert!(!rep3[0].cached);
 

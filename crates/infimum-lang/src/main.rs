@@ -29,7 +29,15 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(diag) => {
             if json_mode {
-                eprintln!("{}", diag.to_json_pretty());
+                let env = infimum_lang::diag::JsonDiagnosticEnvelope {
+                    ok: false,
+                    phase: diag.phase.clone(),
+                    diagnostics: vec![diag],
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&env).unwrap_or_default()
+                );
             } else {
                 eprintln!("error {}", diag);
             }
@@ -85,16 +93,57 @@ fn run_cli(args: &[&str], json_mode: bool, no_cache: bool) -> Result<(), Infimum
             Ok(())
         }
         ["verify", file_path] => {
-            let module = parse_module_from_path(Path::new(file_path))?;
+            let src_text = fs::read_to_string(file_path).ok();
+            let enrich_line = |mut d: InfimumDiagnostic| -> InfimumDiagnostic {
+                if d.file.is_none() {
+                    d = d.with_file(*file_path);
+                }
+                if d.source_line.is_none() {
+                    if let Some(ref txt) = src_text {
+                        if let Some(line_txt) =
+                            infimum_lang::diag::extract_source_line(txt, d.span.line)
+                        {
+                            d = d.with_source_line(line_txt);
+                        }
+                    }
+                }
+                d
+            };
+            let module = parse_module_from_path(Path::new(file_path)).map_err(enrich_line)?;
             let store = GraphStore::open(&cwd)?;
-            let reports = store.verify_module_with_cache(&module, use_cache)?;
-
             if json_mode {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&reports).unwrap_or_default()
-                );
+                match store.verify_module_collect_all(&module, use_cache, 8) {
+                    Ok(reports) => {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "ok": true,
+                                "phase": "verify",
+                                "diagnostics": [],
+                                "reports": reports,
+                            }))
+                            .unwrap_or_default()
+                        );
+                    }
+                    Err(errs) => {
+                        let diagnostics: Vec<InfimumDiagnostic> =
+                            errs.into_iter().map(enrich_line).collect();
+                        let env = infimum_lang::diag::JsonDiagnosticEnvelope {
+                            ok: false,
+                            phase: "verify".to_string(),
+                            diagnostics,
+                        };
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&env).unwrap_or_default()
+                        );
+                        std::process::exit(1);
+                    }
+                }
             } else {
+                let reports = store
+                    .verify_module_with_cache(&module, use_cache)
+                    .map_err(enrich_line)?;
                 for r in reports {
                     println!(
                         "  #{}  {:<26} [Z3: {} in {}ms]",
@@ -480,7 +529,16 @@ fn run_compile_wasm(
         sign_key.as_ref(),
     )?;
     if json_mode {
-        println!("{}", serde_json::to_string_pretty(&art).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "phase": "compile-wasm",
+                "diagnostics": [],
+                "artifact": art,
+            }))
+            .unwrap_or_default()
+        );
     } else {
         let sig_note = if sign_key.is_some() {
             ", Ed25519 signed"
