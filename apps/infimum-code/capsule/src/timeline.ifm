@@ -194,7 +194,8 @@ pub fn tl_is_stub(base: i64) -[Mem]-> bool {
     let hdr = slice_i64(base, 7);
     let total_w = clamp_i64(hdr[0], 0, LIVE_TIMELINE_MAX_WORDS);
     let steps = clamp_i64(hdr[5] & 65535, 0, TL_MAX_STEPS);
-    total_w == TL_HEADER_WORDS && steps > 0
+    let th_len = clamp_i64(hdr[6], 0, TL_MAX_THOUGHT_CHARS);
+    total_w == TL_HEADER_WORDS && (steps > 0 || th_len > 0)
   }
 }
 
@@ -207,7 +208,7 @@ pub fn tl_body_layout(
   } else {
     let hdr = slice_i64(base, 7);
     let total_w = clamp_i64(hdr[0], 0, LIVE_TIMELINE_MAX_WORDS);
-    if total_w < TL_HEADER_WORDS {
+    if total_w <= TL_HEADER_WORDS {
       0
     } else {
       let sm_sz = sf(12);
