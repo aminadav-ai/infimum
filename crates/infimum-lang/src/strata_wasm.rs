@@ -190,10 +190,19 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
     let f = &node.ast;
     for p in &f.params {
         let param_ok = match &p.ty {
-            Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str | Type::Slice(_) => true,
-            Type::Tuple(ts) => ts
-                .iter()
-                .all(|t| matches!(t, Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str)),
+            Type::I64
+            | Type::U8
+            | Type::Fixed
+            | Type::Bool
+            | Type::Unit
+            | Type::Str
+            | Type::Slice(_) => true,
+            Type::Tuple(ts) => ts.iter().all(|t| {
+                matches!(
+                    t,
+                    Type::I64 | Type::U8 | Type::Fixed | Type::Bool | Type::Unit | Type::Str
+                )
+            }),
             _ => false,
         };
         if !param_ok {
@@ -210,10 +219,19 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
         }
     }
     let ret_ok = match &f.ret_type {
-        Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str | Type::Slice(_) => true,
-        Type::Tuple(ts) => ts
-            .iter()
-            .all(|t| matches!(t, Type::I64 | Type::Fixed | Type::Bool | Type::Unit | Type::Str)),
+        Type::I64
+        | Type::U8
+        | Type::Fixed
+        | Type::Bool
+        | Type::Unit
+        | Type::Str
+        | Type::Slice(_) => true,
+        Type::Tuple(ts) => ts.iter().all(|t| {
+            matches!(
+                t,
+                Type::I64 | Type::U8 | Type::Fixed | Type::Bool | Type::Unit | Type::Str
+            )
+        }),
         _ => false,
     };
     if !ret_ok {
@@ -287,10 +305,12 @@ fn collect_str_lits_expr<'a>(expr: &'a Expr, out: &mut BTreeSet<&'a str>) {
             collect_str_lits_expr(lhs, out);
             collect_str_lits_expr(rhs, out);
         }
-        Expr::Unary { expr: e, .. } | Expr::MemLoad { index: e, .. } => {
+        Expr::Unary { expr: e, .. }
+        | Expr::MemLoad { index: e, .. }
+        | Expr::ByteLoad { index: e, .. } => {
             collect_str_lits_expr(e, out);
         }
-        Expr::MemStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
             collect_str_lits_expr(index, out);
             collect_str_lits_expr(value, out);
         }
@@ -395,8 +415,10 @@ fn expr_uses_host_call(expr: &Expr) -> bool {
         Expr::Call { args, .. } => args.iter().any(expr_uses_host_call),
         Expr::Binary { lhs, rhs, .. } => expr_uses_host_call(lhs) || expr_uses_host_call(rhs),
         Expr::Unary { expr: e, .. } => expr_uses_host_call(e),
-        Expr::MemLoad { index, .. } => expr_uses_host_call(index),
-        Expr::MemStore { index, value, .. } => expr_uses_host_call(index) || expr_uses_host_call(value),
+        Expr::MemLoad { index, .. } | Expr::ByteLoad { index, .. } => expr_uses_host_call(index),
+        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
+            expr_uses_host_call(index) || expr_uses_host_call(value)
+        }
         Expr::If {
             cond,
             then_branch,
@@ -837,6 +859,7 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
         }
         Expr::Unary { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::ByteLoad { index: inner, .. }
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
         | Expr::TupleField { expr: inner, .. }
@@ -857,7 +880,7 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
             collect_expr_tuple_arities(hi, out);
             collect_expr_tuple_arities(len, out);
         }
-        Expr::MemStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
             collect_expr_tuple_arities(index, out);
             collect_expr_tuple_arities(value, out);
         }
@@ -1013,9 +1036,10 @@ fn prealloc_expr_locals(expr: &Expr, ctx: &mut FnCodegenCtx<'_>) {
         }
         Expr::Unary { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::ByteLoad { index: inner, .. }
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. } => prealloc_expr_locals(inner, ctx),
-        Expr::MemStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
             prealloc_expr_locals(index, ctx);
             prealloc_expr_locals(value, ctx);
         }
@@ -1168,6 +1192,20 @@ fn emit_safe_mem_addr_i32(
     Ok(())
 }
 
+fn emit_safe_byte_addr_i32(
+    byte_index_expr: &Expr,
+    ctx: &mut FnCodegenCtx<'_>,
+    out: &mut Vec<u8>,
+) -> Result<(), InfimumDiagnostic> {
+    emit_expr(byte_index_expr, ctx, out)?;
+    out.push(0xA7); // i32.wrap_i64
+    let byte_mask = (ctx.mem_word_mask << 2) | 3;
+    out.push(0x41); // i32.const byte_mask
+    push_i32_leb(out, byte_mask);
+    out.push(0x71); // i32.and
+    Ok(())
+}
+
 fn emit_expr(
     expr: &Expr,
     ctx: &mut FnCodegenCtx<'_>,
@@ -1246,6 +1284,12 @@ fn emit_expr(
             }
             UnaryOp::FixedToRaw | UnaryOp::RawToFixed => {
                 emit_expr(inner, ctx, out)?;
+            }
+            UnaryOp::ToU8 => {
+                emit_expr(inner, ctx, out)?;
+                out.push(0x42); // i64.const 255
+                push_i64_leb(out, 255);
+                out.push(0x83); // i64.and
             }
         },
         Expr::Binary { op, lhs, rhs } => match op {
@@ -1364,6 +1408,22 @@ fn emit_expr(
             emit_expr(value, ctx, out)?;
             out.push(0x3E); // i64.store32
             out.push(0x02); // align = 4 bytes
+            out.push(0x00); // offset = 0
+            // Push unit value `0_i64`
+            out.push(0x42);
+            push_i64_leb(out, 0);
+        }
+        Expr::ByteLoad { index, .. } => {
+            emit_safe_byte_addr_i32(index, ctx, out)?;
+            out.push(0x31); // i64.load8_u
+            out.push(0x00); // align = 1 byte
+            out.push(0x00); // offset = 0
+        }
+        Expr::ByteStore { index, value, .. } => {
+            emit_safe_byte_addr_i32(index, ctx, out)?;
+            emit_expr(value, ctx, out)?;
+            out.push(0x3C); // i64.store8
+            out.push(0x00); // align = 1 byte
             out.push(0x00); // offset = 0
             // Push unit value `0_i64`
             out.push(0x42);

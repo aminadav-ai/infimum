@@ -73,7 +73,7 @@ impl FormaSmtBuilder {
         for p in params {
             let smt_name = format!("fp_{}", p.name);
             let sort = match &p.ty {
-                Type::I64 | Type::Fixed => "Int",
+                Type::I64 | Type::U8 | Type::Fixed => "Int",
                 Type::Bool => "Bool",
                 Type::Str => "String",
                 Type::Unit => "Bool",
@@ -332,6 +332,7 @@ impl FormaSmtBuilder {
                     UnaryOp::IntToFixed => format!("(* {sub} 65536)"),
                     UnaryOp::FixedToInt => format!("(div {sub} 65536)"),
                     UnaryOp::FixedToRaw | UnaryOp::RawToFixed => sub,
+                    UnaryOp::ToU8 => format!("(mod {sub} 256)"),
                 }
             }
             Expr::Binary { op, lhs, rhs } => {
@@ -370,10 +371,12 @@ impl FormaSmtBuilder {
                 let e = self.encode_expr(else_branch);
                 format!("(ite {c} {t} {e})")
             }
-            Expr::Call { .. } | Expr::Perform { .. } | Expr::MemLoad { .. } => {
-                self.fresh_int("dyn")
-            }
+            Expr::Call { .. }
+            | Expr::Perform { .. }
+            | Expr::MemLoad { .. }
+            | Expr::ByteLoad { .. } => self.fresh_int("dyn"),
             Expr::MemStore { .. }
+            | Expr::ByteStore { .. }
             | Expr::Block { .. }
             | Expr::TupleLit(_)
             | Expr::TupleField { .. }

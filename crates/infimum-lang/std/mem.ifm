@@ -77,6 +77,66 @@ pub fn scratch_calloc(words: i64) -[Mem]-> i64
   }
 }
 
+/// Allocate a typed `[i64]` slice of `len` words from FrameScratch.
+/// Returns an empty slice (`len == 0`) if `len <= 0` or FrameScratch is exhausted.
+pub fn scratch_alloc_i64(len: i64) -[Mem]-> [i64] {
+  if len <= 0 {
+    slice_i64(SYS_SCRATCH_BASE_WORD, 0)
+  } else {
+    let ptr = scratch_alloc(len);
+    if ptr >= 0 {
+      slice_i64(ptr, len)
+    } else {
+      slice_i64(SYS_SCRATCH_BASE_WORD, 0)
+    }
+  }
+}
+
+/// Allocate and zero-initialize a typed `[i64]` slice (`1..=4096`) from FrameScratch.
+pub fn scratch_calloc_i64(len: i64) -[Mem]-> [i64] {
+  if len <= 0 || len > 4096 {
+    slice_i64(SYS_SCRATCH_BASE_WORD, 0)
+  } else {
+    let ptr = scratch_calloc(len);
+    if ptr >= 0 {
+      slice_i64(ptr, len)
+    } else {
+      slice_i64(SYS_SCRATCH_BASE_WORD, 0)
+    }
+  }
+}
+
+/// Allocate a typed `[u8]` byte slice of `len` bytes from FrameScratch.
+/// Returns an empty slice (`len == 0`) if `len <= 0` or FrameScratch is exhausted.
+pub fn scratch_alloc_u8(len: i64) -[Mem]-> [u8] {
+  if len <= 0 || len > 180224 {
+    slice_u8(SYS_SCRATCH_BASE_WORD * 4, 0)
+  } else {
+    let words = (len + 3) / 4;
+    let ptr = scratch_alloc(words);
+    if ptr >= 0 {
+      slice_u8(ptr * 4, len)
+    } else {
+      slice_u8(SYS_SCRATCH_BASE_WORD * 4, 0)
+    }
+  }
+}
+
+/// Allocate and zero-initialize a typed `[u8]` byte slice (`1..=16384`) from FrameScratch.
+pub fn scratch_calloc_u8(len: i64) -[Mem]-> [u8] {
+  if len <= 0 || len > 16384 {
+    slice_u8(SYS_SCRATCH_BASE_WORD * 4, 0)
+  } else {
+    let words = (len + 3) / 4;
+    let ptr = scratch_calloc(words);
+    if ptr >= 0 {
+      slice_u8(ptr * 4, len)
+    } else {
+      slice_u8(SYS_SCRATCH_BASE_WORD * 4, 0)
+    }
+  }
+}
+
 // ============================================================================
 // 2. Arena (Static Linear Bump Region over any `layout` buffer)
 // ============================================================================

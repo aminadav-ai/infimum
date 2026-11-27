@@ -976,7 +976,7 @@ fn type_has_secret(ty: &Type) -> bool {
         Type::Secret(_) => true,
         Type::Tuple(ts) => ts.iter().any(type_has_secret),
         Type::Slice(inner) => type_has_secret(inner),
-        Type::I64 | Type::Fixed | Type::Bool | Type::Str | Type::Unit => false,
+        Type::I64 | Type::U8 | Type::Fixed | Type::Bool | Type::Str | Type::Unit => false,
     }
 }
 
@@ -1002,8 +1002,12 @@ fn stmt_uses_secret(s: &Stmt) -> bool {
 fn expr_uses_secret(e: &Expr) -> bool {
     match e {
         Expr::SecretWrap(_) | Expr::Reveal { .. } => true,
-        Expr::Unary { expr: inner, .. } | Expr::MemLoad { index: inner, .. } => expr_uses_secret(inner),
-        Expr::MemStore { index, value, .. } => expr_uses_secret(index) || expr_uses_secret(value),
+        Expr::Unary { expr: inner, .. }
+        | Expr::MemLoad { index: inner, .. }
+        | Expr::ByteLoad { index: inner, .. } => expr_uses_secret(inner),
+        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
+            expr_uses_secret(index) || expr_uses_secret(value)
+        }
         Expr::Binary { lhs, rhs, .. } => expr_uses_secret(lhs) || expr_uses_secret(rhs),
         Expr::If {
             cond,
@@ -1063,13 +1067,20 @@ fn collect_named_calls(expr: &Expr, self_name: &str, out: &mut BTreeSet<String>)
         }
         Expr::Unary { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::ByteLoad { index: inner, .. }
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
         | Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
         | Expr::StrPtr(inner)
         | Expr::SliceLen(inner) => collect_named_calls(inner, self_name, out),
-        Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
+        Expr::SliceLit { ptr, len, .. }
+        | Expr::BoundsCheck { index: ptr, len, .. }
+        | Expr::ByteStore {
+            index: ptr,
+            value: len,
+            ..
+        } => {
             collect_named_calls(ptr, self_name, out);
             collect_named_calls(len, self_name, out);
         }

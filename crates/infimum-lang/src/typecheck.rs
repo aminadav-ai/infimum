@@ -133,7 +133,7 @@ where
         &mut sinks,
         false,
     )?;
-    if body_ty != f.ret_type {
+    if !types_compatible(&f.ret_type, &body_ty) {
         return Err(InfimumDiagnostic::new(
             "E060_TYPE_MISMATCH",
             "typecheck",
@@ -258,13 +258,14 @@ where
                 ));
             }
             match (op, &t) {
-                (UnaryOp::Neg, Type::I64) => Ok(Type::I64),
+                (UnaryOp::Neg, Type::I64 | Type::U8) => Ok(Type::I64),
                 (UnaryOp::Neg, Type::Fixed) => Ok(Type::Fixed),
                 (UnaryOp::Not, Type::Bool) => Ok(Type::Bool),
-                (UnaryOp::IntToFixed, Type::I64) => Ok(Type::Fixed),
+                (UnaryOp::IntToFixed, Type::I64 | Type::U8) => Ok(Type::Fixed),
                 (UnaryOp::FixedToInt, Type::Fixed) => Ok(Type::I64),
                 (UnaryOp::FixedToRaw, Type::Fixed) => Ok(Type::I64),
-                (UnaryOp::RawToFixed, Type::I64) => Ok(Type::Fixed),
+                (UnaryOp::RawToFixed, Type::I64 | Type::U8) => Ok(Type::Fixed),
+                (UnaryOp::ToU8, Type::I64 | Type::U8) => Ok(Type::U8),
                 _ => Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
@@ -310,7 +311,7 @@ where
             }
             match op {
                 BinOp::Add | BinOp::Sub => {
-                    if lt == Type::I64 && rt == Type::I64 {
+                    if is_int_like(&lt) && is_int_like(&rt) {
                         Ok(Type::I64)
                     } else if lt == Type::Fixed && rt == Type::Fixed {
                         Ok(Type::Fixed)
@@ -328,10 +329,10 @@ where
                     }
                 }
                 BinOp::Mul => {
-                    if lt == Type::I64 && rt == Type::I64 {
+                    if is_int_like(&lt) && is_int_like(&rt) {
                         Ok(Type::I64)
-                    } else if (lt == Type::Fixed && rt == Type::I64)
-                        || (lt == Type::I64 && rt == Type::Fixed)
+                    } else if (lt == Type::Fixed && is_int_like(&rt))
+                        || (is_int_like(&lt) && rt == Type::Fixed)
                     {
                         Ok(Type::Fixed)
                     } else {
@@ -347,9 +348,9 @@ where
                     }
                 }
                 BinOp::Div => {
-                    if lt == Type::I64 && rt == Type::I64 {
+                    if is_int_like(&lt) && is_int_like(&rt) {
                         Ok(Type::I64)
-                    } else if lt == Type::Fixed && rt == Type::I64 {
+                    } else if lt == Type::Fixed && is_int_like(&rt) {
                         Ok(Type::Fixed)
                     } else {
                         Err(InfimumDiagnostic::new(
@@ -385,7 +386,7 @@ where
                 | BinOp::BitXor
                 | BinOp::Shl
                 | BinOp::Shr => {
-                    if lt == Type::I64 && rt == Type::I64 {
+                    if is_int_like(&lt) && is_int_like(&rt) {
                         Ok(Type::I64)
                     } else {
                         Err(InfimumDiagnostic::new(
@@ -401,7 +402,7 @@ where
                     }
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    if (lt == Type::I64 && rt == Type::I64)
+                    if (is_int_like(&lt) && is_int_like(&rt))
                         || (lt == Type::Fixed && rt == Type::Fixed)
                     {
                         Ok(Type::Bool)
@@ -435,7 +436,7 @@ where
                     }
                 }
                 BinOp::Eq | BinOp::Ne => {
-                    if lt == rt {
+                    if types_compatible(&lt, &rt) {
                         Ok(Type::Bool)
                     } else {
                         Err(InfimumDiagnostic::new(
@@ -493,7 +494,7 @@ where
                 sinks,
                 in_contract,
             )?;
-            if tt != et {
+            if !types_compatible(&tt, &et) {
                 return Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
@@ -504,7 +505,11 @@ where
                     "Ensure both 'if' and 'else' branches return the exact same type",
                 ));
             }
-            Ok(tt)
+            if tt == Type::U8 && et == Type::I64 {
+                Ok(Type::I64)
+            } else {
+                Ok(tt)
+            }
         }
         Expr::Perform { effect, op, args } => {
             if in_contract {
@@ -602,7 +607,7 @@ where
                 ));
             }
             let idx_ty = check_expr(index, fn_name, self_node, env, load_callee, sinks, false)?;
-            if idx_ty != Type::I64 {
+            if !is_int_like(&idx_ty) {
                 return Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
@@ -624,7 +629,7 @@ where
                 ));
             }
             let idx_ty = check_expr(index, fn_name, self_node, env, load_callee, sinks, false)?;
-            if idx_ty != Type::I64 {
+            if !is_int_like(&idx_ty) {
                 return Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
@@ -646,13 +651,78 @@ where
                 ));
             }
             let expected_ty = if *fixed_ty { Type::Fixed } else { Type::I64 };
-            if val_ty != expected_ty {
+            if !types_compatible(&expected_ty, &val_ty) {
                 return Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
                     format!("Memory store in '{fn_name}' expects '{expected_ty}', found '{val_ty}'"),
                     Span::zero(),
                     format!("Provide a '{expected_ty}' value (use fixed(x) / fixed_to_int(x) if converting)"),
+                ));
+            }
+            Ok(Type::Unit)
+        }
+        Expr::ByteLoad { index, .. } => {
+            if in_contract {
+                return Err(InfimumDiagnostic::new(
+                    "E066_EFFECT_IN_CONTRACT",
+                    "typecheck",
+                    format!("'byte_load' is forbidden inside contracts of '{fn_name}'"),
+                    Span::zero(),
+                    "Contracts ('req'/'ens') must be pure mathematical specifications",
+                ));
+            }
+            let idx_ty = check_expr(index, fn_name, self_node, env, load_callee, sinks, false)?;
+            if !is_int_like(&idx_ty) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'byte_load' index in '{fn_name}' must be 'i64', found '{idx_ty}'"),
+                    Span::zero(),
+                    "Pass an i64 byte address to byte_load(addr)",
+                ));
+            }
+            Ok(Type::U8)
+        }
+        Expr::ByteStore { index, value, .. } => {
+            if in_contract {
+                return Err(InfimumDiagnostic::new(
+                    "E066_EFFECT_IN_CONTRACT",
+                    "typecheck",
+                    format!("'byte_store' is forbidden inside contracts of '{fn_name}'"),
+                    Span::zero(),
+                    "Contracts ('req'/'ens') must be pure mathematical specifications",
+                ));
+            }
+            let idx_ty = check_expr(index, fn_name, self_node, env, load_callee, sinks, false)?;
+            if !is_int_like(&idx_ty) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'byte_store' index in '{fn_name}' must be 'i64', found '{idx_ty}'"),
+                    Span::zero(),
+                    "Pass an i64 byte address to byte_store(addr, val)",
+                ));
+            }
+            let val_ty = check_expr(value, fn_name, self_node, env, load_callee, sinks, false)?;
+            if type_contains_secret(&val_ty) {
+                return Err(InfimumDiagnostic::new(
+                    "E063_RAW_SECRET_SINK_LEAK",
+                    "typecheck",
+                    format!(
+                        "Security violation in '{fn_name}': raw '{val_ty}' cannot be written to shared Strata linear memory"
+                    ),
+                    Span::zero(),
+                    "Never store raw Secret<T> values in shared framebuffer/linear memory",
+                ));
+            }
+            if !is_int_like(&val_ty) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("Byte store in '{fn_name}' expects 'u8' or 'i64', found '{val_ty}'"),
+                    Span::zero(),
+                    "Provide a u8 or i64 value in 0..=255",
                 ));
             }
             Ok(Type::Unit)
@@ -701,7 +771,7 @@ where
                     sinks,
                     in_contract,
                 )?;
-                if arg_ty != param.ty {
+                if !types_compatible(&param.ty, &arg_ty) {
                     return Err(InfimumDiagnostic::new(
                         "E061_ARG_TYPE_MISMATCH",
                         "typecheck",
@@ -949,7 +1019,7 @@ where
                     in_contract,
                 )?;
                 if let Some(decl_ty) = ty {
-                    if &val_ty != decl_ty {
+                    if !types_compatible(decl_ty, &val_ty) {
                         return Err(InfimumDiagnostic::new(
                             "E060_TYPE_MISMATCH",
                             "typecheck",
@@ -960,8 +1030,10 @@ where
                             format!("Change annotation to '{val_ty}' or fix initializer expression"),
                         ));
                     }
+                    env.bind(name.clone(), decl_ty.clone());
+                } else {
+                    env.bind(name.clone(), val_ty);
                 }
-                env.bind(name.clone(), val_ty);
             }
             Stmt::LetTuple { names, value } => {
                 let val_ty = check_expr(
@@ -1020,7 +1092,7 @@ where
                     sinks,
                     in_contract,
                 )?;
-                if val_ty != expected {
+                if !types_compatible(&expected, &val_ty) {
                     return Err(InfimumDiagnostic::new(
                         "E060_TYPE_MISMATCH",
                         "typecheck",
@@ -1133,11 +1205,28 @@ fn caller_covers_effect(caller_effects: &[crate::ast::EffectCap], req: &crate::a
         .any(|c| c.name == req.name && (c.scope.is_none() || c.scope == req.scope))
 }
 
+fn is_int_like(ty: &Type) -> bool {
+    matches!(ty, Type::I64 | Type::U8)
+}
+
+fn types_compatible(expected: &Type, actual: &Type) -> bool {
+    if expected == actual {
+        return true;
+    }
+    match (expected, actual) {
+        (Type::I64, Type::U8) | (Type::U8, Type::I64) => true,
+        (Type::Tuple(es), Type::Tuple(as_)) => {
+            es.len() == as_.len() && es.iter().zip(as_).all(|(e, a)| types_compatible(e, a))
+        }
+        _ => false,
+    }
+}
+
 pub fn type_contains_secret(ty: &Type) -> bool {
     match ty {
         Type::Secret(_) => true,
         Type::Tuple(ts) => ts.iter().any(type_contains_secret),
         Type::Slice(inner) => type_contains_secret(inner),
-        Type::I64 | Type::Fixed | Type::Bool | Type::Str | Type::Unit => false,
+        Type::I64 | Type::U8 | Type::Fixed | Type::Bool | Type::Str | Type::Unit => false,
     }
 }

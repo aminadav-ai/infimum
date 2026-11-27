@@ -143,12 +143,25 @@ pub fn generate_rust_abi(module: &Module) -> Result<String, InfimumDiagnostic> {
                 let f_upper = to_screaming_snake_case(&f.name);
                 let word_const = format!("{l_prefix}_{f_upper}_WORD");
                 let _ = writeln!(out, "pub const {word_const}: usize = {};", f.offset);
+                if f.elem_bytes == 1 {
+                    let byte_const = format!("{l_prefix}_{f_upper}_BYTE_OFFSET");
+                    let _ = writeln!(out, "pub const {byte_const}: usize = {word_const} * 4;");
+                }
                 if f.is_vec {
                     let data_const = format!("{l_prefix}_{f_upper}_DATA_WORD");
                     let cap_const = format!("{l_prefix}_{f_upper}_CAP");
                     let len_const = format!("{l_prefix}_{f_upper}_LEN");
                     let end_const = format!("{l_prefix}_{f_upper}_END");
                     let _ = writeln!(out, "pub const {data_const}: usize = {word_const} + 1;");
+                    if f.elem_bytes == 1 {
+                        let data_byte_const = format!("{l_prefix}_{f_upper}_DATA_BYTE_OFFSET");
+                        let cap_bytes_const = format!("{l_prefix}_{f_upper}_CAP_BYTES");
+                        let _ = writeln!(
+                            out,
+                            "pub const {data_byte_const}: usize = {data_const} * 4;"
+                        );
+                        let _ = writeln!(out, "pub const {cap_bytes_const}: usize = {};", f.cap);
+                    }
                     let _ = writeln!(out, "pub const {cap_const}: usize = {};", f.cap);
                     if f.stride > 1 {
                         let stride_const = format!("{l_prefix}_{f_upper}_STRIDE");
@@ -161,6 +174,10 @@ pub fn generate_rust_abi(module: &Module) -> Result<String, InfimumDiagnostic> {
                     );
                     regions.push((f.offset, f.offset + f.len, word_const, len_const));
                 } else if f.is_array {
+                    if f.elem_bytes == 1 {
+                        let cap_bytes_const = format!("{l_prefix}_{f_upper}_CAP_BYTES");
+                        let _ = writeln!(out, "pub const {cap_bytes_const}: usize = {};", f.cap);
+                    }
                     let len_const = format!("{l_prefix}_{f_upper}_LEN");
                     let end_const = format!("{l_prefix}_{f_upper}_END");
                     let _ = writeln!(out, "pub const {len_const}: usize = {};", f.len);
@@ -233,12 +250,25 @@ pub fn generate_js_abi(module: &Module) -> Result<String, InfimumDiagnostic> {
                 let f_upper = to_screaming_snake_case(&f.name);
                 let word_const = format!("{l_prefix}_{f_upper}_WORD");
                 let _ = writeln!(out, "export const {word_const} = {};", f.offset);
+                if f.elem_bytes == 1 {
+                    let byte_const = format!("{l_prefix}_{f_upper}_BYTE_OFFSET");
+                    let _ = writeln!(out, "export const {byte_const} = {word_const} * 4;");
+                }
                 if f.is_vec {
                     let data_const = format!("{l_prefix}_{f_upper}_DATA_WORD");
                     let cap_const = format!("{l_prefix}_{f_upper}_CAP");
                     let len_const = format!("{l_prefix}_{f_upper}_LEN");
                     let end_const = format!("{l_prefix}_{f_upper}_END");
                     let _ = writeln!(out, "export const {data_const} = {word_const} + 1;");
+                    if f.elem_bytes == 1 {
+                        let data_byte_const = format!("{l_prefix}_{f_upper}_DATA_BYTE_OFFSET");
+                        let cap_bytes_const = format!("{l_prefix}_{f_upper}_CAP_BYTES");
+                        let _ = writeln!(
+                            out,
+                            "export const {data_byte_const} = {data_const} * 4;"
+                        );
+                        let _ = writeln!(out, "export const {cap_bytes_const} = {};", f.cap);
+                    }
                     let _ = writeln!(out, "export const {cap_const} = {};", f.cap);
                     if f.stride > 1 {
                         let stride_const = format!("{l_prefix}_{f_upper}_STRIDE");
@@ -247,6 +277,10 @@ pub fn generate_js_abi(module: &Module) -> Result<String, InfimumDiagnostic> {
                     let _ = writeln!(out, "export const {len_const} = {};", f.len);
                     let _ = writeln!(out, "export const {end_const} = {word_const} + {len_const};");
                 } else if f.is_array {
+                    if f.elem_bytes == 1 {
+                        let cap_bytes_const = format!("{l_prefix}_{f_upper}_CAP_BYTES");
+                        let _ = writeln!(out, "export const {cap_bytes_const} = {};", f.cap);
+                    }
                     let len_const = format!("{l_prefix}_{f_upper}_LEN");
                     let end_const = format!("{l_prefix}_{f_upper}_END");
                     let _ = writeln!(out, "export const {len_const} = {};", f.len);

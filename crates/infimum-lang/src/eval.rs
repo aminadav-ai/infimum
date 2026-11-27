@@ -39,7 +39,7 @@ impl Val {
 
 struct Evaluator<'a> {
     fns: BTreeMap<&'a str, &'a FnDef>,
-    mem: Vec<i64>,
+    mem: Vec<u8>,
     str_pool: BTreeMap<String, i64>,
     str_pool_cursor: i64,
     steps: usize,
@@ -48,6 +48,7 @@ struct Evaluator<'a> {
 const MAX_EVAL_STEPS: usize = 5_000_000;
 const EVAL_STR_POOL_MIN_BASE: i64 = 2_030_000;
 const MAX_EVAL_MEM_WORDS: i64 = 16_777_216;
+const MAX_EVAL_MEM_BYTES: i64 = MAX_EVAL_MEM_WORDS * 4;
 
 impl<'a> Evaluator<'a> {
     fn new(module: &'a Module) -> Self {
@@ -59,11 +60,60 @@ impl<'a> Evaluator<'a> {
             .max(EVAL_STR_POOL_MIN_BASE);
         Self {
             fns,
-            mem: vec![0; 65536],
+            mem: vec![0u8; 65536 * 4],
             str_pool: BTreeMap::new(),
             str_pool_cursor,
             steps: 0,
         }
+    }
+
+    fn load_word(&self, word_idx: i64) -> Result<i64, String> {
+        if !(0..MAX_EVAL_MEM_WORDS).contains(&word_idx) {
+            return Err(format!("Out-of-bounds mem_load({word_idx})"));
+        }
+        let off = (word_idx as usize) * 4;
+        if off + 4 <= self.mem.len() {
+            let v = i32::from_le_bytes(self.mem[off..off + 4].try_into().unwrap());
+            Ok(i64::from(v))
+        } else {
+            Ok(0)
+        }
+    }
+
+    fn store_word(&mut self, word_idx: i64, val: i64) -> Result<(), String> {
+        if !(0..MAX_EVAL_MEM_WORDS).contains(&word_idx) {
+            return Err(format!("Out-of-bounds mem_store({word_idx})"));
+        }
+        let off = (word_idx as usize) * 4;
+        if off + 4 > self.mem.len() {
+            self.mem.resize(off + 4, 0);
+        }
+        self.mem[off..off + 4].copy_from_slice(&(val as i32).to_le_bytes());
+        Ok(())
+    }
+
+    fn load_byte(&self, byte_idx: i64) -> Result<i64, String> {
+        if !(0..MAX_EVAL_MEM_BYTES).contains(&byte_idx) {
+            return Err(format!("Out-of-bounds byte_load({byte_idx})"));
+        }
+        let off = byte_idx as usize;
+        Ok(if off < self.mem.len() {
+            i64::from(self.mem[off])
+        } else {
+            0
+        })
+    }
+
+    fn store_byte(&mut self, byte_idx: i64, val: i64) -> Result<(), String> {
+        if !(0..MAX_EVAL_MEM_BYTES).contains(&byte_idx) {
+            return Err(format!("Out-of-bounds byte_store({byte_idx})"));
+        }
+        let off = byte_idx as usize;
+        if off >= self.mem.len() {
+            self.mem.resize(off + 1, 0);
+        }
+        self.mem[off] = (val & 0xFF) as u8;
+        Ok(())
     }
 
     fn intern_str(&mut self, s: &str) -> Result<i64, String> {
@@ -76,12 +126,9 @@ impl<'a> Evaluator<'a> {
         if end > MAX_EVAL_MEM_WORDS {
             return Err("Test evaluator string pool exhausted".to_string());
         }
-        if (end as usize) > self.mem.len() {
-            self.mem.resize(end as usize, 0);
-        }
-        self.mem[ptr as usize] = chars.len() as i64;
+        self.store_word(ptr, chars.len() as i64)?;
         for (i, ch) in chars.iter().enumerate() {
-            self.mem[(ptr as usize) + 1 + i] = *ch;
+            self.store_word(ptr + 1 + i as i64, *ch)?;
         }
         self.str_pool_cursor = end + 1;
         self.str_pool.insert(s.to_string(), ptr);
@@ -230,6 +277,7 @@ impl<'a> Evaluator<'a> {
                     UnaryOp::IntToFixed => Ok(Val::Int(v.as_int()?.wrapping_mul(65536))),
                     UnaryOp::FixedToInt => Ok(Val::Int(v.as_int()? / 65536)),
                     UnaryOp::FixedToRaw | UnaryOp::RawToFixed => Ok(Val::Int(v.as_int()?)),
+                    UnaryOp::ToU8 => Ok(Val::Int(v.as_int()? & 0xFF)),
                 }
             }
             Expr::Binary { op, lhs, rhs } => {
@@ -346,11 +394,7 @@ impl<'a> Evaluator<'a> {
                         Val::Int(p) => p,
                         other => return Err(format!("Mem.store_str expected str, got {other:?}")),
                     };
-                    let u = slot as usize;
-                    if u >= self.mem.len() {
-                        self.mem.resize(u + 1, 0);
-                    }
-                    self.mem[u] = ptr;
+                    self.store_word(slot, ptr)?;
                     Ok(Val::Unit)
                 } else {
                     for a in args {
@@ -362,23 +406,22 @@ impl<'a> Evaluator<'a> {
             Expr::MemLoad { index, .. } => {
                 let idx_val = self.eval_expr(index, scopes, cur_fn)?;
                 let idx = self.val_as_int_or_str_ptr(idx_val)?;
-                if !(0..MAX_EVAL_MEM_WORDS).contains(&idx) {
-                    return Err(format!("Out-of-bounds mem_load({idx})"));
-                }
-                let u = idx as usize;
-                Ok(Val::Int(if u < self.mem.len() { self.mem[u] } else { 0 }))
+                Ok(Val::Int(self.load_word(idx)?))
             }
             Expr::MemStore { index, value, .. } => {
                 let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
                 let val = self.eval_expr(value, scopes, cur_fn)?.as_int()?;
-                if !(0..MAX_EVAL_MEM_WORDS).contains(&idx) {
-                    return Err(format!("Out-of-bounds mem_store({idx})"));
-                }
-                let u = idx as usize;
-                if u >= self.mem.len() {
-                    self.mem.resize(u + 1, 0);
-                }
-                self.mem[u] = val;
+                self.store_word(idx, val)?;
+                Ok(Val::Unit)
+            }
+            Expr::ByteLoad { index, .. } => {
+                let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
+                Ok(Val::Int(self.load_byte(idx)?))
+            }
+            Expr::ByteStore { index, value, .. } => {
+                let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
+                let val = self.eval_expr(value, scopes, cur_fn)?.as_int()?;
+                self.store_byte(idx, val)?;
                 Ok(Val::Unit)
             }
             Expr::SecretWrap(inner) | Expr::Reveal { expr: inner, .. } => {

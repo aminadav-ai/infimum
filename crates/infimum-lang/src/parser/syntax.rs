@@ -453,33 +453,34 @@ impl Parser {
             let (fname, fspan) = self.expect_ident("Expected layout field name")?;
             self.expect(&TokenKind::Colon, "Expected ':' after layout field name")?;
             let (kind_kw, _) = self.expect_ident(
-                "Expected 'word', 'words[N]', 'fixed', 'fixed[N]', 'vec<T>[CAP]', 'Struct', or 'Struct[N]'",
+                "Expected 'word', 'words[N]', 'bytes[N]', 'u8[N]', 'fixed', 'fixed[N]', 'vec<T>[CAP]', 'Struct', or 'Struct[N]'",
             )?;
-            let (struct_module, struct_type, is_array, is_vec, is_fixed, len_expr) =
+            let (struct_module, struct_type, is_array, is_vec, is_fixed, is_byte, len_expr) =
                 if kind_kw == "vec" && matches!(self.peek().kind, TokenKind::Lt) {
                     self.advance(); // '<'
                     let (elem_kw, elem_span) =
                         self.expect_ident("Expected element type inside 'vec<T>[CAP]'")?;
-                    let (sm, st, fx) = if matches!(self.peek().kind, TokenKind::ColonColon) {
+                    let (sm, st, fx, by) = if matches!(self.peek().kind, TokenKind::ColonColon) {
                         self.advance();
                         let (sname, _) = self.expect_ident(
                             "Expected struct name after '::' in 'vec<m::Struct>[CAP]'",
                         )?;
-                        (Some(elem_kw), Some(sname), false)
+                        (Some(elem_kw), Some(sname), false, false)
                     } else {
                         match elem_kw.as_str() {
-                            "word" | "i64" => (None, None, false),
-                            "fixed" => (None, None, true),
+                            "word" | "i64" => (None, None, false, false),
+                            "u8" | "byte" => (None, None, false, true),
+                            "fixed" => (None, None, true, false),
                             "Secret" => {
                                 return Err(InfimumDiagnostic::new(
                                     "E062_SECRET_IN_SLICE",
                                     "parse",
                                     "Secret<T> is not allowed inside 'vec<T>[CAP]'",
                                     elem_span,
-                                    "Store non-secret words, fixed, or structs in vec<T>[CAP]",
+                                    "Store non-secret words, u8, fixed, or structs in vec<T>[CAP]",
                                 ));
                             }
-                            other => (None, Some(other.to_string()), false),
+                            other => (None, Some(other.to_string()), false, false),
                         }
                     };
                     self.expect(
@@ -495,7 +496,7 @@ impl Parser {
                         &TokenKind::RBracket,
                         "Expected ']' after vec capacity",
                     )?;
-                    (sm, st, true, true, fx, Some(cap_expr))
+                    (sm, st, true, true, fx, by, Some(cap_expr))
                 } else if matches!(self.peek().kind, TokenKind::ColonColon) {
                     self.advance();
                     let (sname, _) =
@@ -504,13 +505,13 @@ impl Parser {
                         self.advance();
                         let len = self.parse_expr()?;
                         self.expect(&TokenKind::RBracket, "Expected ']' after struct array length")?;
-                        (Some(kind_kw), Some(sname), true, false, false, Some(len))
+                        (Some(kind_kw), Some(sname), true, false, false, false, Some(len))
                     } else {
-                        (Some(kind_kw), Some(sname), false, false, false, None)
+                        (Some(kind_kw), Some(sname), false, false, false, false, None)
                     }
                 } else {
                     match kind_kw.as_str() {
-                        "word" => (None, None, false, false, false, None),
+                        "word" => (None, None, false, false, false, false, None),
                         "words" => {
                             self.expect(
                                 &TokenKind::LBracket,
@@ -518,7 +519,26 @@ impl Parser {
                             )?;
                             let len = self.parse_expr()?;
                             self.expect(&TokenKind::RBracket, "Expected ']' after words length")?;
-                            (None, None, true, false, false, Some(len))
+                            (None, None, true, false, false, false, Some(len))
+                        }
+                        "bytes" => {
+                            self.expect(
+                                &TokenKind::LBracket,
+                                "Expected '[' after 'bytes' (e.g. bytes[4096])",
+                            )?;
+                            let len = self.parse_expr()?;
+                            self.expect(&TokenKind::RBracket, "Expected ']' after bytes length")?;
+                            (None, None, true, false, false, true, Some(len))
+                        }
+                        "u8" => {
+                            if matches!(self.peek().kind, TokenKind::LBracket) {
+                                self.advance();
+                                let len = self.parse_expr()?;
+                                self.expect(&TokenKind::RBracket, "Expected ']' after u8 array length")?;
+                                (None, None, true, false, false, true, Some(len))
+                            } else {
+                                (None, None, false, false, false, true, None)
+                            }
                         }
                         "fixed" => {
                             if matches!(self.peek().kind, TokenKind::LBracket) {
@@ -528,9 +548,9 @@ impl Parser {
                                     &TokenKind::RBracket,
                                     "Expected ']' after fixed array length",
                                 )?;
-                                (None, None, true, false, true, Some(len))
+                                (None, None, true, false, true, false, Some(len))
                             } else {
-                                (None, None, false, false, true, None)
+                                (None, None, false, false, true, false, None)
                             }
                         }
                         other => {
@@ -541,9 +561,9 @@ impl Parser {
                                     &TokenKind::RBracket,
                                     "Expected ']' after struct array length",
                                 )?;
-                                (None, Some(other.to_string()), true, false, false, Some(len))
+                                (None, Some(other.to_string()), true, false, false, false, Some(len))
                             } else {
-                                (None, Some(other.to_string()), false, false, false, None)
+                                (None, Some(other.to_string()), false, false, false, false, None)
                             }
                         }
                     }
@@ -568,6 +588,7 @@ impl Parser {
                 is_array,
                 is_vec,
                 is_fixed,
+                is_byte,
                 at_expr,
                 inv,
                 span: fspan,
@@ -811,6 +832,7 @@ impl Parser {
         )?;
         match tname.as_str() {
             "i64" => Ok(RawType::Builtin(Type::I64)),
+            "u8" => Ok(RawType::Builtin(Type::U8)),
             "fixed" => Ok(RawType::Builtin(Type::Fixed)),
             "bool" => Ok(RawType::Builtin(Type::Bool)),
             "str" | "String" => Ok(RawType::Builtin(Type::Str)),
@@ -868,6 +890,7 @@ impl Parser {
             self.expect_ident("Expected type name (i64, bool, str, unit, Secret<T>, (T1, T2))")?;
         match tname.as_str() {
             "i64" => Ok(Type::I64),
+            "u8" => Ok(Type::U8),
             "fixed" => Ok(Type::Fixed),
             "bool" => Ok(Type::Bool),
             "str" | "String" => Ok(Type::Str),

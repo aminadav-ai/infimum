@@ -471,7 +471,12 @@ where
                 args: cargs,
             })
         }
-        Expr::MemLoad { index, inv, fixed_ty } => {
+        Expr::MemLoad {
+            index,
+            inv,
+            fixed_ty,
+            region,
+        } => {
             perform_effects.insert("Mem".to_string());
             Ok(Expr::MemLoad {
                 index: Box::new(canon_expr(
@@ -485,9 +490,16 @@ where
                 )?),
                 inv: *inv,
                 fixed_ty: *fixed_ty,
+                region: *region,
             })
         }
-        Expr::MemStore { index, value, inv, fixed_ty } => {
+        Expr::MemStore {
+            index,
+            value,
+            inv,
+            fixed_ty,
+            region,
+        } => {
             perform_effects.insert("Mem".to_string());
             Ok(Expr::MemStore {
                 index: Box::new(canon_expr(
@@ -510,6 +522,50 @@ where
                 )?),
                 inv: *inv,
                 fixed_ty: *fixed_ty,
+                region: *region,
+            })
+        }
+        Expr::ByteLoad { index, region } => {
+            perform_effects.insert("Mem".to_string());
+            Ok(Expr::ByteLoad {
+                index: Box::new(canon_expr(
+                    index,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                region: *region,
+            })
+        }
+        Expr::ByteStore {
+            index,
+            value,
+            region,
+        } => {
+            perform_effects.insert("Mem".to_string());
+            Ok(Expr::ByteStore {
+                index: Box::new(canon_expr(
+                    index,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                value: Box::new(canon_expr(
+                    value,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                region: *region,
             })
         }
         Expr::SecretWrap(inner) => Ok(Expr::SecretWrap(Box::new(canon_expr(
@@ -906,6 +962,18 @@ fn format_expr(expr: &Expr, out: &mut String) {
         }
         Expr::MemStore { index, value, .. } => {
             out.push_str("mem_store(");
+            format_expr(index, out);
+            out.push_str(", ");
+            format_expr(value, out);
+            out.push(')');
+        }
+        Expr::ByteLoad { index, .. } => {
+            out.push_str("byte_load(");
+            format_expr(index, out);
+            out.push(')');
+        }
+        Expr::ByteStore { index, value, .. } => {
+            out.push_str("byte_store(");
             format_expr(index, out);
             out.push_str(", ");
             format_expr(value, out);

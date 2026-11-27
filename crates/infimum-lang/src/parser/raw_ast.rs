@@ -88,10 +88,13 @@ pub(super) struct LayoutFieldMeta {
     pub(super) is_array: bool,
     pub(super) is_vec: bool,
     pub(super) is_fixed: bool,
+    pub(super) is_byte: bool,
     pub(super) struct_type: Option<String>,
     pub(super) stride: i64,
     pub(super) count: i64,
     pub(super) inv: Option<(i64, i64)>,
+    pub(super) region_id: u32,
+    pub(super) data_region_id: u32,
 }
 
 pub(super) struct RawLayoutField {
@@ -102,6 +105,7 @@ pub(super) struct RawLayoutField {
     pub(super) is_array: bool,
     pub(super) is_vec: bool,
     pub(super) is_fixed: bool,
+    pub(super) is_byte: bool,
     pub(super) at_expr: Option<RawExpr>,
     pub(super) inv: Option<RawInv>,
     pub(super) span: Span,

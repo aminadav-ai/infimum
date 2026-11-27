@@ -1,9 +1,21 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub const REGION_RAW: u32 = 0;
+pub const REGION_SLICE_DATA: u32 = 1;
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+fn default_elem_bytes() -> i64 {
+    4
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Type {
     I64,
+    U8,
     Fixed,
     Bool,
     Str,
@@ -17,6 +29,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::I64 => write!(f, "i64"),
+            Type::U8 => write!(f, "u8"),
             Type::Fixed => write!(f, "fixed"),
             Type::Bool => write!(f, "bool"),
             Type::Str => write!(f, "str"),
@@ -66,6 +79,7 @@ pub enum UnaryOp {
     FixedToInt,
     FixedToRaw,
     RawToFixed,
+    ToU8,
 }
 
 impl UnaryOp {
@@ -77,6 +91,7 @@ impl UnaryOp {
             UnaryOp::FixedToInt => "fixed_to_int",
             UnaryOp::FixedToRaw => "fixed_raw",
             UnaryOp::RawToFixed => "fixed_from_raw",
+            UnaryOp::ToU8 => "u8",
         }
     }
 }
@@ -201,6 +216,8 @@ pub enum Expr {
         inv: Option<(i64, i64)>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         fixed_ty: bool,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        region: u32,
     },
     MemStore {
         index: Box<Expr>,
@@ -209,6 +226,19 @@ pub enum Expr {
         inv: Option<(i64, i64)>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         fixed_ty: bool,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        region: u32,
+    },
+    ByteLoad {
+        index: Box<Expr>,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        region: u32,
+    },
+    ByteStore {
+        index: Box<Expr>,
+        value: Box<Expr>,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        region: u32,
     },
     SecretWrap(Box<Expr>),
     Reveal {
@@ -301,6 +331,8 @@ pub struct LayoutField {
     pub cap: i64,
     #[serde(default)]
     pub stride: i64,
+    #[serde(default = "default_elem_bytes")]
+    pub elem_bytes: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

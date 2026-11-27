@@ -1269,6 +1269,7 @@ pub fn lower_forma_def(forma: &FormaDef) -> FnDef {
         value: Box::new(var("_f_hovered")),
         inv: None,
         fixed_ty: false,
+        region: 0,
     }));
 
     let tail = if forma.ret_type == Type::Unit {
@@ -2001,6 +2002,7 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                                 index: Box::new(var("ptr")),
         inv: None,
         fixed_ty: false,
+        region: 0,
                             },
                             Expr::IntLit(0),
                             Expr::IntLit(256),
@@ -2053,6 +2055,7 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                                 )),
         inv: None,
         fixed_ty: false,
+        region: 0,
                             },
                         },
                         Stmt::Assign {
@@ -2188,6 +2191,7 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                                 index: Box::new(var("ptr")),
         inv: None,
         fixed_ty: false,
+        region: 0,
                             },
                             Expr::IntLit(0),
                             Expr::IntLit(256),
@@ -2247,6 +2251,7 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                                         )),
         inv: None,
         fixed_ty: false,
+        region: 0,
                                     },
                                 },
                                 Stmt::Assign {
@@ -2381,6 +2386,7 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                                 )),
         inv: None,
         fixed_ty: false,
+        region: 0,
                             },
                         },
                         Stmt::Let {
@@ -2569,6 +2575,7 @@ fn mem_load(addr: i64) -> Expr {
         index: Box::new(Expr::IntLit(addr)),
         inv: None,
         fixed_ty: false,
+        region: 0,
     }
 }
 
@@ -2578,6 +2585,7 @@ fn mem_store_stmt(index: Expr, value: Expr) -> Stmt {
         value: Box::new(value),
         inv: None,
         fixed_ty: false,
+        region: 0,
     })
 }
 

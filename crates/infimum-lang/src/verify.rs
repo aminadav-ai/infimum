@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v4";
+pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v5";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationReport {
@@ -50,7 +50,12 @@ where
     assumptions: Vec<String>,
     obligations: Vec<ProofObligation>,
     fresh_counter: usize,
-    known_mem: BTreeMap<i64, String>,
+    /// Region-indexed known linear memory map: `(region_id, const_addr, is_byte) -> smt_val`.
+    /// - `region == 0` (`REGION_RAW`): raw `mem_load`/`mem_store` inside `std/`.
+    /// - `region == 1` (`REGION_SLICE_DATA`): write through an aliased `[T]`/`[u8]` slice parameter.
+    /// - even `region >= 2`: non-sliceable layout scalar or `vec.len` word.
+    /// - odd  `region >= 3`: sliceable layout array or `vec.data` buffer.
+    known_mem: BTreeMap<(u32, i64, bool), String>,
     var_min_addr: BTreeMap<String, i64>,
 }
 
@@ -111,9 +116,13 @@ where
     fn infer_expr_type(&self, expr: &Expr, types: &BTreeMap<String, Type>) -> Type {
         match expr {
             Expr::IntLit(_) | Expr::FixedLit(_) | Expr::MemLoad { .. } => Type::I64,
+            Expr::ByteLoad { .. } => Type::U8,
             Expr::BoolLit(_) => Type::Bool,
             Expr::StrLit(_) => Type::Str,
-            Expr::UnitLit | Expr::Perform { .. } | Expr::MemStore { .. } => Type::Unit,
+            Expr::UnitLit
+            | Expr::Perform { .. }
+            | Expr::MemStore { .. }
+            | Expr::ByteStore { .. } => Type::Unit,
             Expr::Var(name) => types.get(name).cloned().unwrap_or(Type::I64),
             Expr::SecretWrap(inner) | Expr::Reveal { expr: inner, .. } => {
                 self.infer_expr_type(inner, types)
@@ -154,20 +163,58 @@ where
     fn merge_known_mem(
         &mut self,
         cond_smt: &str,
-        then_mem: BTreeMap<i64, String>,
-        else_mem: BTreeMap<i64, String>,
+        then_mem: BTreeMap<(u32, i64, bool), String>,
+        else_mem: BTreeMap<(u32, i64, bool), String>,
     ) {
         self.known_mem.clear();
-        for (addr, tv) in then_mem {
-            if let Some(ev) = else_mem.get(&addr) {
+        for (key, tv) in then_mem {
+            if let Some(ev) = else_mem.get(&key) {
                 if tv == *ev {
-                    self.known_mem.insert(addr, tv);
+                    self.known_mem.insert(key, tv);
                 } else {
                     let phi = self.fresh_sym("mem_phi", &Type::I64);
                     self.assumptions
                         .push(format!("(assert (= {phi} (ite {cond_smt} {tv} {ev})))"));
-                    self.known_mem.insert(addr, phi);
+                    self.known_mem.insert(key, phi);
                 }
+            }
+        }
+    }
+
+    fn invalidate_known_mem_on_store(
+        &mut self,
+        region: u32,
+        index: &Expr,
+        is_byte: bool,
+        val_smt: String,
+    ) {
+        if region >= 2 {
+            if let Expr::IntLit(addr) = index {
+                self.known_mem.insert((region, *addr, is_byte), val_smt);
+            } else {
+                // Dynamic index inside a statically isolated layout region `region`:
+                // invalidate ONLY this region; all other layout fields, vec.len words,
+                // and arrays remain intact!
+                self.known_mem.retain(|&(r, _, _), _| r != region);
+            }
+        } else if region == crate::ast::REGION_SLICE_DATA {
+            // Write through a `[T]` / `[u8]` slice parameter can alias sliceable arrays/vec data
+            // (odd regions >= 3) or raw memory (region 0), but NEVER scalar layout fields or vec.len (even >= 2).
+            self.known_mem.retain(|&(r, _, _), _| r >= 2 && (r & 1) == 0);
+        } else {
+            // Raw `mem_store`/`byte_store` (`REGION_RAW == 0`) inside `std/`:
+            // drop all named layout regions (soundness) and apply address forwarding on region 0.
+            self.known_mem.retain(|&(r, _, _), _| r == 0);
+            if let Expr::IntLit(addr) = index {
+                self.known_mem.insert((0, *addr, is_byte), val_smt);
+            } else if !is_byte {
+                if let Some(min_a) = self.static_min_addr(index) {
+                    self.known_mem.retain(|&(_, addr, b), _| !b && addr < min_a);
+                } else {
+                    self.known_mem.clear();
+                }
+            } else {
+                self.known_mem.clear();
             }
         }
     }
@@ -577,6 +624,7 @@ where
                     UnaryOp::IntToFixed => Ok(format!("(* {sub} 65536)")),
                     UnaryOp::FixedToInt => Ok(format!("(ifm_div {sub} 65536)")),
                     UnaryOp::FixedToRaw | UnaryOp::RawToFixed => Ok(sub),
+                    UnaryOp::ToU8 => Ok(format!("(mod {sub} 256)")),
                 }
             }
             Expr::Binary { op, lhs, rhs } => {
@@ -743,36 +791,70 @@ where
                 self.known_mem.clear();
                 Ok("true".to_string())
             }
-            Expr::MemLoad { index, inv, .. } => {
+            Expr::MemLoad {
+                index, inv, region, ..
+            } => {
                 let _ = self.encode_expr(index, env, types, guard, emit_checks)?;
                 if let Expr::IntLit(addr) = index.as_ref() {
-                    if let Some(cached) = self.known_mem.get(addr) {
+                    if let Some(cached) = self.known_mem.get(&(*region, *addr, false)) {
                         return Ok(cached.clone());
                     }
                     let sym = self.fresh_sym("mem_rd", &Type::I64);
                     if let Some((lo, hi)) = inv {
-                        let lo_s = if *lo < 0 { format!("(- {})", -(*lo as i128)) } else { lo.to_string() };
-                        let hi_s = if *hi < 0 { format!("(- {})", -(*hi as i128)) } else { hi.to_string() };
-                        self.assumptions.push(format!("(assert (and (>= {sym} {lo_s}) (<= {sym} {hi_s})))"));
+                        let lo_s = if *lo < 0 {
+                            format!("(- {})", -(*lo as i128))
+                        } else {
+                            lo.to_string()
+                        };
+                        let hi_s = if *hi < 0 {
+                            format!("(- {})", -(*hi as i128))
+                        } else {
+                            hi.to_string()
+                        };
+                        self.assumptions
+                            .push(format!("(assert (and (>= {sym} {lo_s}) (<= {sym} {hi_s})))"));
                     }
-                    self.known_mem.insert(*addr, sym.clone());
+                    self.known_mem.insert((*region, *addr, false), sym.clone());
                     return Ok(sym);
                 }
                 let sym = self.fresh_sym("mem_rd", &Type::I64);
                 if let Some((lo, hi)) = inv {
-                    let lo_s = if *lo < 0 { format!("(- {})", -(*lo as i128)) } else { lo.to_string() };
-                    let hi_s = if *hi < 0 { format!("(- {})", -(*hi as i128)) } else { hi.to_string() };
-                    self.assumptions.push(format!("(assert (and (>= {sym} {lo_s}) (<= {sym} {hi_s})))"));
+                    let lo_s = if *lo < 0 {
+                        format!("(- {})", -(*lo as i128))
+                    } else {
+                        lo.to_string()
+                    };
+                    let hi_s = if *hi < 0 {
+                        format!("(- {})", -(*hi as i128))
+                    } else {
+                        hi.to_string()
+                    };
+                    self.assumptions
+                        .push(format!("(assert (and (>= {sym} {lo_s}) (<= {sym} {hi_s})))"));
                 }
                 Ok(sym)
             }
-            Expr::MemStore { index, value, inv, .. } => {
+            Expr::MemStore {
+                index,
+                value,
+                inv,
+                region,
+                ..
+            } => {
                 let _ = self.encode_expr(index, env, types, guard, emit_checks)?;
                 let v = self.encode_expr(value, env, types, guard, emit_checks)?;
                 if emit_checks {
                     if let Some((lo, hi)) = inv {
-                        let lo_s = if *lo < 0 { format!("(- {})", -(*lo as i128)) } else { lo.to_string() };
-                        let hi_s = if *hi < 0 { format!("(- {})", -(*hi as i128)) } else { hi.to_string() };
+                        let lo_s = if *lo < 0 {
+                            format!("(- {})", -(*lo as i128))
+                        } else {
+                            lo.to_string()
+                        };
+                        let hi_s = if *hi < 0 {
+                            format!("(- {})", -(*hi as i128))
+                        } else {
+                            hi.to_string()
+                        };
                         let goal = format!("(and (>= {v} {lo_s}) (<= {v} {hi_s}))");
                         self.obligations.push(ProofObligation {
                             guard_smt: guard.to_string(),
@@ -781,13 +863,42 @@ where
                         });
                     }
                 }
+                self.invalidate_known_mem_on_store(*region, index, false, v);
+                Ok("true".to_string())
+            }
+            Expr::ByteLoad { index, region } => {
+                let _ = self.encode_expr(index, env, types, guard, emit_checks)?;
                 if let Expr::IntLit(addr) = index.as_ref() {
-                    self.known_mem.insert(*addr, v);
-                } else if let Some(min_a) = self.static_min_addr(index) {
-                    self.known_mem.retain(|&addr, _| addr < min_a);
-                } else {
-                    self.known_mem.clear();
+                    if let Some(cached) = self.known_mem.get(&(*region, *addr, true)) {
+                        return Ok(cached.clone());
+                    }
+                    let sym = self.fresh_sym("byte_rd", &Type::U8);
+                    self.assumptions
+                        .push(format!("(assert (and (>= {sym} 0) (<= {sym} 255)))"));
+                    self.known_mem.insert((*region, *addr, true), sym.clone());
+                    return Ok(sym);
                 }
+                let sym = self.fresh_sym("byte_rd", &Type::U8);
+                self.assumptions
+                    .push(format!("(assert (and (>= {sym} 0) (<= {sym} 255)))"));
+                Ok(sym)
+            }
+            Expr::ByteStore {
+                index,
+                value,
+                region,
+            } => {
+                let _ = self.encode_expr(index, env, types, guard, emit_checks)?;
+                let v = self.encode_expr(value, env, types, guard, emit_checks)?;
+                if emit_checks {
+                    let goal = format!("(and (>= {v} 0) (<= {v} 255))");
+                    self.obligations.push(ProofObligation {
+                        guard_smt: guard.to_string(),
+                        goal_smt: goal,
+                        kind: ObligationKind::FieldInvariant { lo: 0, hi: 255 },
+                    });
+                }
+                self.invalidate_known_mem_on_store(*region, index, true, v);
                 Ok("true".to_string())
             }
             Expr::Call { target, args } => {
@@ -1172,6 +1283,7 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::ByteLoad { index: inner, .. }
         | Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
         | Expr::StrPtr(inner)
@@ -1189,7 +1301,7 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
             collect_mutated_vars_expr(lhs, out);
             collect_mutated_vars_expr(rhs, out);
         }
-        Expr::MemStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
             collect_mutated_vars_expr(index, out);
             collect_mutated_vars_expr(value, out);
         }
@@ -1270,6 +1382,9 @@ where
     for (i, p) in canon_fn.params.iter().enumerate() {
         let cname = format!("p{i}");
         param_decls.push(format!("(declare-const {cname} {})", smt_sort(&p.ty)));
+        if p.ty == Type::U8 {
+            param_decls.push(format!("(assert (and (>= {cname} 0) (<= {cname} 255)))"));
+        }
         base_env.insert(cname.clone(), cname.clone());
         base_types.insert(cname.clone(), p.ty.clone());
         if let Type::Tuple(ts) = &p.ty {
@@ -1553,7 +1668,7 @@ fn smt_prelude(param_decls: &[String], extra_decls: &[String]) -> String {
 
 fn smt_sort(ty: &Type) -> &'static str {
     match ty {
-        Type::I64 | Type::Fixed => "Int",
+        Type::I64 | Type::U8 | Type::Fixed => "Int",
         Type::Bool | Type::Unit => "Bool",
         Type::Str => "String",
         Type::Secret(inner) => smt_sort(inner),
