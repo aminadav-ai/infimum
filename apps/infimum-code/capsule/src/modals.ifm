@@ -206,7 +206,7 @@ forma SettingsModal(
   key_ph: str,
   is_online: bool
 )
-  req vw >= 680 && vh >= 460 && mw >= 460 && mh >= 480 && row_h >= 42 && row_h <= 58 && s_bh >= 28 && s_bh <= 42 && row_h >= s_bh && tbtn_w >= 110 && tbtn_w <= 170 && seg_w >= 120 && seg_w <= 210 && cur_w >= 86 && cur_w <= 130 && rst_w >= 76 && rst_w <= 110 && cdd_w >= 118 && cdd_rh >= 28 && cdd_rh <= 44 && s_h >= 12 && s_h <= 24 && s_l >= 10 && s_l <= 20 && s_s >= 10 && s_s <= 18 && mh >= 4 * row_h + 2 * s_s + 240
+  req vw >= 680 && vh >= 460 && mw >= 460 && mh >= 440 && row_h >= 42 && row_h <= 58 && s_bh >= 28 && s_bh <= 42 && row_h >= s_bh && tbtn_w >= 110 && tbtn_w <= 170 && seg_w >= 120 && seg_w <= 210 && cur_w >= 86 && cur_w <= 130 && rst_w >= 76 && rst_w <= 110 && cdd_w >= 118 && cdd_rh >= 28 && cdd_rh <= 44 && s_h >= 12 && s_h <= 24 && s_l >= 10 && s_l <= 20 && s_s >= 10 && s_s <= 18 && mh >= 3 * row_h + 2 * s_s + 240 && (!is_online || mh >= 4 * row_h + 2 * s_s + 240)
   -[Mem]-> i64
 {
   Box(x: 0, y: 0, w: vw, h: vh, bg: col_scrim) {
@@ -319,9 +319,15 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
     let s_s = 13;
     let s_bh = 34;
     let row_h = 48;
-    let min_mh = max_i64(480, 4 * row_h + 2 * s_s + 240);
+    let is_online = StudioMem.online_mode == 1;
+    let min_mh = if is_online {
+      max_i64(480, 4 * row_h + 2 * s_s + 240)
+    } else {
+      max_i64(440, 3 * row_h + 2 * s_s + 240)
+    };
+    let target_mh = if is_online { 565 } else { 515 };
     let mw = clamp_i64(640, 460, safe_w - 40);
-    let mh = clamp_i64(565, min_mh, max_i64(min_mh, safe_h - 32));
+    let mh = clamp_i64(target_mh, min_mh, max_i64(min_mh, safe_h - 32));
     let mx0 = (safe_w - mw) / 2;
     let my0 = (safe_h - mh) / 2;
 
@@ -346,7 +352,7 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
       safe_w, safe_h, mx0, my0, mw, mh, row_h, s_bh, tbtn_w, seg_w, cur_w, rst_w,
       cdd_x, cdd_y, cdd_w, cdd_rh, cur_dd_open,
       pack_rgba(0, 0, 0, 150), col_surf(th), col_surf2(th), col_bg(th), col_border(th),
-      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph, StudioMem.online_mode == 1
+      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph, is_online
     );
     let fc = forma_cursor();
     if fc != 0 {
