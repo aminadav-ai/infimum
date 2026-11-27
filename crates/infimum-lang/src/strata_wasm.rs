@@ -193,6 +193,7 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
             Type::I64
             | Type::U8
             | Type::Fixed
+            | Type::Dec64
             | Type::Bool
             | Type::Unit
             | Type::Str
@@ -200,7 +201,13 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
             Type::Tuple(ts) => ts.iter().all(|t| {
                 matches!(
                     t,
-                    Type::I64 | Type::U8 | Type::Fixed | Type::Bool | Type::Unit | Type::Str
+                    Type::I64
+                    | Type::U8
+                    | Type::Fixed
+                    | Type::Dec64
+                    | Type::Bool
+                    | Type::Unit
+                    | Type::Str
                 )
             }),
             _ => false,
@@ -222,6 +229,7 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
         Type::I64
         | Type::U8
         | Type::Fixed
+        | Type::Dec64
         | Type::Bool
         | Type::Unit
         | Type::Str
@@ -229,7 +237,13 @@ pub fn check_strata_compatible(node: &CanonicalNode) -> Result<(), InfimumDiagno
         Type::Tuple(ts) => ts.iter().all(|t| {
             matches!(
                 t,
-                Type::I64 | Type::U8 | Type::Fixed | Type::Bool | Type::Unit | Type::Str
+                Type::I64
+                | Type::U8
+                | Type::Fixed
+                | Type::Dec64
+                | Type::Bool
+                | Type::Unit
+                | Type::Str
             )
         }),
         _ => false,
@@ -307,10 +321,13 @@ fn collect_str_lits_expr<'a>(expr: &'a Expr, out: &mut BTreeSet<&'a str>) {
         }
         Expr::Unary { expr: e, .. }
         | Expr::MemLoad { index: e, .. }
+        | Expr::MemLoad64 { index: e, .. }
         | Expr::ByteLoad { index: e, .. } => {
             collect_str_lits_expr(e, out);
         }
-        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. }
+        | Expr::MemStore64 { index, value, .. }
+        | Expr::ByteStore { index, value, .. } => {
             collect_str_lits_expr(index, out);
             collect_str_lits_expr(value, out);
         }
@@ -410,8 +427,12 @@ fn expr_uses_host_call(expr: &Expr) -> bool {
         Expr::Call { args, .. } => args.iter().any(expr_uses_host_call),
         Expr::Binary { lhs, rhs, .. } => expr_uses_host_call(lhs) || expr_uses_host_call(rhs),
         Expr::Unary { expr: e, .. } => expr_uses_host_call(e),
-        Expr::MemLoad { index, .. } | Expr::ByteLoad { index, .. } => expr_uses_host_call(index),
-        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
+        Expr::MemLoad { index, .. }
+        | Expr::MemLoad64 { index, .. }
+        | Expr::ByteLoad { index, .. } => expr_uses_host_call(index),
+        Expr::MemStore { index, value, .. }
+        | Expr::MemStore64 { index, value, .. }
+        | Expr::ByteStore { index, value, .. } => {
             expr_uses_host_call(index) || expr_uses_host_call(value)
         }
         Expr::If {
@@ -855,6 +876,7 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
         }
         Expr::Unary { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::MemLoad64 { index: inner, .. }
         | Expr::ByteLoad { index: inner, .. }
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
@@ -877,7 +899,9 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
             collect_expr_tuple_arities(hi, out);
             collect_expr_tuple_arities(len, out);
         }
-        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. }
+        | Expr::MemStore64 { index, value, .. }
+        | Expr::ByteStore { index, value, .. } => {
             collect_expr_tuple_arities(index, out);
             collect_expr_tuple_arities(value, out);
         }
@@ -889,7 +913,12 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
         Expr::StrLit(_) => {
             out.insert(2);
         }
-        Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::UnitLit | Expr::Var(_) => {}
+        Expr::IntLit(_)
+        | Expr::FixedLit(_)
+        | Expr::DecLit(_)
+        | Expr::BoolLit(_)
+        | Expr::UnitLit
+        | Expr::Var(_) => {}
     }
 }
 
@@ -1039,16 +1068,26 @@ fn prealloc_expr_locals(expr: &Expr, ctx: &mut FnCodegenCtx<'_>) {
         }
         Expr::Unary { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::MemLoad64 { index: inner, .. }
         | Expr::ByteLoad { index: inner, .. }
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. } => prealloc_expr_locals(inner, ctx),
-        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. }
+        | Expr::MemStore64 { index, value, .. }
+        | Expr::ByteStore { index, value, .. } => {
             prealloc_expr_locals(index, ctx);
             prealloc_expr_locals(value, ctx);
         }
-        Expr::Binary { lhs, rhs, .. } => {
+        Expr::Binary { op, lhs, rhs } => {
             prealloc_expr_locals(lhs, ctx);
             prealloc_expr_locals(rhs, ctx);
+            if matches!(op, BinOp::DecMul | BinOp::DecDiv) {
+                for tmp in ["__ifm_dec_a", "__ifm_dec_b", "__ifm_dec_t0", "__ifm_dec_t1"] {
+                    if !ctx.local_map.contains_key(tmp) {
+                        ctx.alloc_local(Some(tmp));
+                    }
+                }
+            }
         }
         Expr::Call { args, .. } | Expr::Perform { args, .. } | Expr::TupleLit(args) => {
             for a in args {
@@ -1074,7 +1113,13 @@ fn prealloc_expr_locals(expr: &Expr, ctx: &mut FnCodegenCtx<'_>) {
             prealloc_expr_locals(hi, ctx);
             prealloc_expr_locals(len, ctx);
         }
-        Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::StrLit(_) | Expr::UnitLit | Expr::Var(_) => {}
+        Expr::IntLit(_)
+        | Expr::FixedLit(_)
+        | Expr::DecLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StrLit(_)
+        | Expr::UnitLit
+        | Expr::Var(_) => {}
     }
 }
 
@@ -1219,7 +1264,7 @@ fn emit_expr(
     out: &mut Vec<u8>,
 ) -> Result<(), InfimumDiagnostic> {
     match expr {
-        Expr::IntLit(v) | Expr::FixedLit(v) => {
+        Expr::IntLit(v) | Expr::FixedLit(v) | Expr::DecLit(v) => {
             out.push(0x42); // i64.const
             push_i64_leb(out, *v);
         }
@@ -1294,6 +1339,21 @@ fn emit_expr(
             UnaryOp::FixedToRaw | UnaryOp::RawToFixed => {
                 emit_expr(inner, ctx, out)?;
             }
+            UnaryOp::IntToDec64 => {
+                emit_expr(inner, ctx, out)?;
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x7E); // i64.mul
+            }
+            UnaryOp::Dec64ToInt => {
+                emit_expr(inner, ctx, out)?;
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x7F); // i64.div_s
+            }
+            UnaryOp::Dec64ToRaw | UnaryOp::RawToDec64 => {
+                emit_expr(inner, ctx, out)?;
+            }
             UnaryOp::ToU8 => {
                 emit_expr(inner, ctx, out)?;
                 out.push(0x42); // i64.const 255
@@ -1340,6 +1400,146 @@ fn emit_expr(
                 emit_expr(rhs, ctx, out)?;
                 out.push(0x7F); // i64.div_s
             }
+            BinOp::DecMul => {
+                // Overflow-free exact 128-bit decomposition for `(a * b) /_trunc 10_000`:
+                //   qa = a / 10_000, ra = a % 10_000
+                //   qb = b / 10_000, rb = b % 10_000
+                //   res = qa * qb * 10_000 + qa * rb + qb * ra + (ra * rb) / 10_000
+                let la = *ctx.local_map.get("__ifm_dec_a").unwrap();
+                let lb = *ctx.local_map.get("__ifm_dec_b").unwrap();
+                let lqa = *ctx.local_map.get("__ifm_dec_t0").unwrap();
+                let lqb = *ctx.local_map.get("__ifm_dec_t1").unwrap();
+                emit_expr(lhs, ctx, out)?;
+                out.push(0x21); // local.set a
+                push_u32_leb(out, la);
+                emit_expr(rhs, ctx, out)?;
+                out.push(0x21); // local.set b
+                push_u32_leb(out, lb);
+                // qa = a / 10_000
+                out.push(0x20);
+                push_u32_leb(out, la);
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x7F); // i64.div_s
+                out.push(0x21);
+                push_u32_leb(out, lqa);
+                // qb = b / 10_000
+                out.push(0x20);
+                push_u32_leb(out, lb);
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x7F); // i64.div_s
+                out.push(0x21);
+                push_u32_leb(out, lqb);
+                // term1: qa * qb * 10_000
+                out.push(0x20);
+                push_u32_leb(out, lqa);
+                out.push(0x20);
+                push_u32_leb(out, lqb);
+                out.push(0x7E);
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x7E);
+                // term2: qa * (b % 10_000)
+                out.push(0x20);
+                push_u32_leb(out, lqa);
+                out.push(0x20);
+                push_u32_leb(out, lb);
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x81); // i64.rem_s
+                out.push(0x7E);
+                out.push(0x7C); // i64.add
+                // term3: qb * (a % 10_000)
+                out.push(0x20);
+                push_u32_leb(out, lqb);
+                out.push(0x20);
+                push_u32_leb(out, la);
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x81); // i64.rem_s
+                out.push(0x7E);
+                out.push(0x7C); // i64.add
+                // term4: ((a % 10_000) * (b % 10_000)) / 10_000
+                out.push(0x20);
+                push_u32_leb(out, la);
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x81);
+                out.push(0x20);
+                push_u32_leb(out, lb);
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x81);
+                out.push(0x7E);
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x7F);
+                out.push(0x7C); // i64.add
+            }
+            BinOp::DecDiv => {
+                // Overflow-free exact 2-step decomposition for `(a * 10_000) /_trunc b`:
+                //   q0 = a / b, r0 = a % b
+                //   t1 = r0 * 100
+                //   q1 = t1 / b, r1 = t1 % b
+                //   res = q0 * 10_000 + q1 * 100 + (r1 * 100) / b
+                let la = *ctx.local_map.get("__ifm_dec_a").unwrap();
+                let lb = *ctx.local_map.get("__ifm_dec_b").unwrap();
+                let lacc = *ctx.local_map.get("__ifm_dec_t0").unwrap();
+                let lr = *ctx.local_map.get("__ifm_dec_t1").unwrap();
+                emit_expr(lhs, ctx, out)?;
+                out.push(0x21); // local.set a
+                push_u32_leb(out, la);
+                emit_expr(rhs, ctx, out)?;
+                out.push(0x21); // local.set b
+                push_u32_leb(out, lb);
+                // acc = (a / b) * 10_000
+                out.push(0x20);
+                push_u32_leb(out, la);
+                out.push(0x20);
+                push_u32_leb(out, lb);
+                out.push(0x7F); // i64.div_s
+                out.push(0x42);
+                push_i64_leb(out, 10_000);
+                out.push(0x7E);
+                out.push(0x21);
+                push_u32_leb(out, lacc);
+                // r = (a % b) * 100
+                out.push(0x20);
+                push_u32_leb(out, la);
+                out.push(0x20);
+                push_u32_leb(out, lb);
+                out.push(0x81); // i64.rem_s
+                out.push(0x42);
+                push_i64_leb(out, 100);
+                out.push(0x7E);
+                out.push(0x21);
+                push_u32_leb(out, lr);
+                // acc + (r / b) * 100 + ((r % b) * 100) / b
+                out.push(0x20);
+                push_u32_leb(out, lacc);
+                out.push(0x20);
+                push_u32_leb(out, lr);
+                out.push(0x20);
+                push_u32_leb(out, lb);
+                out.push(0x7F);
+                out.push(0x42);
+                push_i64_leb(out, 100);
+                out.push(0x7E);
+                out.push(0x7C); // i64.add
+                out.push(0x20);
+                push_u32_leb(out, lr);
+                out.push(0x20);
+                push_u32_leb(out, lb);
+                out.push(0x81);
+                out.push(0x42);
+                push_i64_leb(out, 100);
+                out.push(0x7E);
+                out.push(0x20);
+                push_u32_leb(out, lb);
+                out.push(0x7F);
+                out.push(0x7C); // i64.add
+            }
             _ => {
                 emit_expr(lhs, ctx, out)?;
                 emit_expr(rhs, ctx, out)?;
@@ -1348,7 +1548,9 @@ fn emit_expr(
                     BinOp::Sub => out.push(0x7D),
                     BinOp::Mul => out.push(0x7E),
                     BinOp::Div => out.push(0x7F),
-                    BinOp::FixedMul | BinOp::FixedDiv => unreachable!(),
+                    BinOp::FixedMul | BinOp::FixedDiv | BinOp::DecMul | BinOp::DecDiv => {
+                        unreachable!()
+                    }
                     BinOp::Mod => out.push(0x81),
                     BinOp::BitAnd => out.push(0x83),
                     BinOp::BitOr => out.push(0x84),
@@ -1433,6 +1635,22 @@ fn emit_expr(
             emit_expr(value, ctx, out)?;
             out.push(0x3C); // i64.store8
             out.push(0x00); // align = 1 byte
+            out.push(0x00); // offset = 0
+            // Push unit value `0_i64`
+            out.push(0x42);
+            push_i64_leb(out, 0);
+        }
+        Expr::MemLoad64 { index, .. } => {
+            emit_safe_mem_addr_i32(index, ctx, out)?;
+            out.push(0x29); // i64.load
+            out.push(0x02); // align = 4 bytes (word-aligned)
+            out.push(0x00); // offset = 0
+        }
+        Expr::MemStore64 { index, value, .. } => {
+            emit_safe_mem_addr_i32(index, ctx, out)?;
+            emit_expr(value, ctx, out)?;
+            out.push(0x37); // i64.store
+            out.push(0x02); // align = 4 bytes (word-aligned)
             out.push(0x00); // offset = 0
             // Push unit value `0_i64`
             out.push(0x42);

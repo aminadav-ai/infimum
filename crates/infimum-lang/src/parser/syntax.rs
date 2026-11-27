@@ -225,13 +225,13 @@ impl Parser {
         let (name, _) = self.expect_ident("Expected constant name after 'const'")?;
         self.expect(&TokenKind::Colon, "Expected ':' and type after constant name")?;
         let ty = self.parse_type()?;
-        if !matches!(ty, Type::I64 | Type::Fixed | Type::Bool) {
+        if !matches!(ty, Type::I64 | Type::Fixed | Type::Dec64 | Type::Bool) {
             return Err(InfimumDiagnostic::new(
                 "E064_CONST_EVAL",
                 "parse",
-                format!("Constant '{name}' has unsupported type '{ty}'; only 'i64', 'fixed', and 'bool' are allowed"),
+                format!("Constant '{name}' has unsupported type '{ty}'; only 'i64', 'fixed', 'dec64', and 'bool' are allowed"),
                 tok.span,
-                "Declare constants as 'const NAME: i64 = ...;', 'const G: fixed = 9.81;', or 'const FLAG: bool = ...;'",
+                "Declare constants as 'const NAME: i64 = ...;', 'const G: fixed = 9.81;', 'const TAX: dec64 = 0.0825d;', or 'const FLAG: bool = ...;'",
             ));
         }
         self.expect(&TokenKind::Assign, "Expected '=' in const declaration")?;
@@ -404,24 +404,27 @@ impl Parser {
         while !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Eof) {
             let (fname, fspan) = self.expect_ident("Expected struct field name")?;
             let mut is_fixed = false;
+            let mut is_dec64 = false;
             if matches!(self.peek().kind, TokenKind::Colon) {
                 self.advance();
                 let (fty, fty_span) =
-                    self.expect_ident("Expected 'word', 'i64', or 'fixed' for struct field type")?;
+                    self.expect_ident("Expected 'word', 'i64', 'fixed', or 'dec64' for struct field type")?;
                 if fty == "fixed" {
                     is_fixed = true;
+                } else if fty == "dec64" {
+                    is_dec64 = true;
                 } else if fty != "word" && fty != "i64" {
                     return Err(InfimumDiagnostic::new(
                         "E010_UNEXPECTED_TOKEN",
                         "parse",
-                        format!("Unsupported struct field type '{fty}'; expected 'word', 'i64', or 'fixed'"),
+                        format!("Unsupported struct field type '{fty}'; expected 'word', 'i64', 'fixed', or 'dec64'"),
                         fty_span,
-                        "Every struct field occupies 1 linear-memory word; declare it as 'field: word' or 'field: fixed'",
+                        "Declare struct fields as 'field: word', 'field: fixed', or 'field: dec64'",
                     ));
                 }
             }
             let inv = self.parse_opt_inv()?;
-            fields.push((fname, is_fixed, inv, fspan));
+            fields.push((fname, is_fixed, is_dec64, inv, fspan));
             if matches!(self.peek().kind, TokenKind::Comma) {
                 self.advance();
             } else {
@@ -455,32 +458,33 @@ impl Parser {
             let (kind_kw, _) = self.expect_ident(
                 "Expected 'word', 'words[N]', 'bytes[N]', 'u8[N]', 'fixed', 'fixed[N]', 'vec<T>[CAP]', 'Struct', or 'Struct[N]'",
             )?;
-            let (struct_module, struct_type, is_array, is_vec, is_fixed, is_byte, len_expr) =
+            let (struct_module, struct_type, is_array, is_vec, is_fixed, is_byte, is_dec64, len_expr) =
                 if kind_kw == "vec" && matches!(self.peek().kind, TokenKind::Lt) {
                     self.advance(); // '<'
                     let (elem_kw, elem_span) =
                         self.expect_ident("Expected element type inside 'vec<T>[CAP]'")?;
-                    let (sm, st, fx, by) = if matches!(self.peek().kind, TokenKind::ColonColon) {
+                    let (sm, st, fx, by, dc) = if matches!(self.peek().kind, TokenKind::ColonColon) {
                         self.advance();
                         let (sname, _) = self.expect_ident(
                             "Expected struct name after '::' in 'vec<m::Struct>[CAP]'",
                         )?;
-                        (Some(elem_kw), Some(sname), false, false)
+                        (Some(elem_kw), Some(sname), false, false, false)
                     } else {
                         match elem_kw.as_str() {
-                            "word" | "i64" => (None, None, false, false),
-                            "u8" | "byte" => (None, None, false, true),
-                            "fixed" => (None, None, true, false),
+                            "word" | "i64" => (None, None, false, false, false),
+                            "u8" | "byte" => (None, None, false, true, false),
+                            "fixed" => (None, None, true, false, false),
+                            "dec64" => (None, None, false, false, true),
                             "Secret" => {
                                 return Err(InfimumDiagnostic::new(
                                     "E062_SECRET_IN_SLICE",
                                     "parse",
                                     "Secret<T> is not allowed inside 'vec<T>[CAP]'",
                                     elem_span,
-                                    "Store non-secret words, u8, fixed, or structs in vec<T>[CAP]",
+                                    "Store non-secret words, u8, fixed, dec64, or structs in vec<T>[CAP]",
                                 ));
                             }
-                            other => (None, Some(other.to_string()), false, false),
+                            other => (None, Some(other.to_string()), false, false, false),
                         }
                     };
                     self.expect(
@@ -496,7 +500,7 @@ impl Parser {
                         &TokenKind::RBracket,
                         "Expected ']' after vec capacity",
                     )?;
-                    (sm, st, true, true, fx, by, Some(cap_expr))
+                    (sm, st, true, true, fx, by, dc, Some(cap_expr))
                 } else if matches!(self.peek().kind, TokenKind::ColonColon) {
                     self.advance();
                     let (sname, _) =
@@ -505,13 +509,13 @@ impl Parser {
                         self.advance();
                         let len = self.parse_expr()?;
                         self.expect(&TokenKind::RBracket, "Expected ']' after struct array length")?;
-                        (Some(kind_kw), Some(sname), true, false, false, false, Some(len))
+                        (Some(kind_kw), Some(sname), true, false, false, false, false, Some(len))
                     } else {
-                        (Some(kind_kw), Some(sname), false, false, false, false, None)
+                        (Some(kind_kw), Some(sname), false, false, false, false, false, None)
                     }
                 } else {
                     match kind_kw.as_str() {
-                        "word" => (None, None, false, false, false, false, None),
+                        "word" => (None, None, false, false, false, false, false, None),
                         "words" => {
                             self.expect(
                                 &TokenKind::LBracket,
@@ -519,7 +523,7 @@ impl Parser {
                             )?;
                             let len = self.parse_expr()?;
                             self.expect(&TokenKind::RBracket, "Expected ']' after words length")?;
-                            (None, None, true, false, false, false, Some(len))
+                            (None, None, true, false, false, false, false, Some(len))
                         }
                         "bytes" => {
                             self.expect(
@@ -528,16 +532,16 @@ impl Parser {
                             )?;
                             let len = self.parse_expr()?;
                             self.expect(&TokenKind::RBracket, "Expected ']' after bytes length")?;
-                            (None, None, true, false, false, true, Some(len))
+                            (None, None, true, false, false, true, false, Some(len))
                         }
                         "u8" => {
                             if matches!(self.peek().kind, TokenKind::LBracket) {
                                 self.advance();
                                 let len = self.parse_expr()?;
                                 self.expect(&TokenKind::RBracket, "Expected ']' after u8 array length")?;
-                                (None, None, true, false, false, true, Some(len))
+                                (None, None, true, false, false, true, false, Some(len))
                             } else {
-                                (None, None, false, false, false, true, None)
+                                (None, None, false, false, false, true, false, None)
                             }
                         }
                         "fixed" => {
@@ -548,9 +552,22 @@ impl Parser {
                                     &TokenKind::RBracket,
                                     "Expected ']' after fixed array length",
                                 )?;
-                                (None, None, true, false, true, false, Some(len))
+                                (None, None, true, false, true, false, false, Some(len))
                             } else {
-                                (None, None, false, false, true, false, None)
+                                (None, None, false, false, true, false, false, None)
+                            }
+                        }
+                        "dec64" => {
+                            if matches!(self.peek().kind, TokenKind::LBracket) {
+                                self.advance();
+                                let len = self.parse_expr()?;
+                                self.expect(
+                                    &TokenKind::RBracket,
+                                    "Expected ']' after dec64 array length",
+                                )?;
+                                (None, None, true, false, false, false, true, Some(len))
+                            } else {
+                                (None, None, false, false, false, false, true, None)
                             }
                         }
                         other => {
@@ -561,9 +578,9 @@ impl Parser {
                                     &TokenKind::RBracket,
                                     "Expected ']' after struct array length",
                                 )?;
-                                (None, Some(other.to_string()), true, false, false, false, Some(len))
+                                (None, Some(other.to_string()), true, false, false, false, false, Some(len))
                             } else {
-                                (None, Some(other.to_string()), false, false, false, false, None)
+                                (None, Some(other.to_string()), false, false, false, false, false, None)
                             }
                         }
                     }
@@ -589,6 +606,7 @@ impl Parser {
                 is_vec,
                 is_fixed,
                 is_byte,
+                is_dec64,
                 at_expr,
                 inv,
                 span: fspan,
@@ -834,6 +852,7 @@ impl Parser {
             "i64" => Ok(RawType::Builtin(Type::I64)),
             "u8" => Ok(RawType::Builtin(Type::U8)),
             "fixed" => Ok(RawType::Builtin(Type::Fixed)),
+            "dec64" => Ok(RawType::Builtin(Type::Dec64)),
             "bool" => Ok(RawType::Builtin(Type::Bool)),
             "str" | "String" => Ok(RawType::Builtin(Type::Str)),
             "unit" | "Unit" => Ok(RawType::Builtin(Type::Unit)),
@@ -892,6 +911,7 @@ impl Parser {
             "i64" => Ok(Type::I64),
             "u8" => Ok(Type::U8),
             "fixed" => Ok(Type::Fixed),
+            "dec64" => Ok(Type::Dec64),
             "bool" => Ok(Type::Bool),
             "str" | "String" => Ok(Type::Str),
             "unit" | "Unit" => Ok(Type::Unit),
@@ -1149,6 +1169,10 @@ impl Parser {
             TokenKind::Fixed(v) => {
                 self.advance();
                 Ok(RawExpr::FixedLit(v))
+            }
+            TokenKind::Dec(v) => {
+                self.advance();
+                Ok(RawExpr::DecLit(v))
             }
             TokenKind::LParen => {
                 self.advance();
@@ -1681,6 +1705,10 @@ impl Parser {
             TokenKind::Fixed(v) => {
                 self.advance();
                 Ok(RawExpr::FixedLit(v))
+            }
+            TokenKind::Dec(v) => {
+                self.advance();
+                Ok(RawExpr::DecLit(v))
             }
             TokenKind::True => {
                 self.advance();

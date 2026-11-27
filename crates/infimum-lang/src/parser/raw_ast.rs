@@ -69,7 +69,7 @@ pub(super) struct RawInv {
 pub(super) struct RawStruct {
     pub(super) name: String,
     pub(super) is_pub: bool,
-    pub(super) fields: Vec<(String, bool, Option<RawInv>, Span)>,
+    pub(super) fields: Vec<(String, bool, bool, Option<RawInv>, Span)>,
     pub(super) span: Span,
 }
 
@@ -78,6 +78,7 @@ pub(super) struct StructDef {
     pub(super) fields: BTreeMap<String, i64>,
     pub(super) field_invs: BTreeMap<String, (i64, i64)>,
     pub(super) field_fixed: BTreeSet<String>,
+    pub(super) field_dec64: BTreeSet<String>,
     pub(super) field_names: Vec<String>,
     pub(super) size: i64,
 }
@@ -89,6 +90,7 @@ pub(super) struct LayoutFieldMeta {
     pub(super) is_vec: bool,
     pub(super) is_fixed: bool,
     pub(super) is_byte: bool,
+    pub(super) is_dec64: bool,
     pub(super) struct_type: Option<String>,
     pub(super) stride: i64,
     pub(super) count: i64,
@@ -106,6 +108,7 @@ pub(super) struct RawLayoutField {
     pub(super) is_vec: bool,
     pub(super) is_fixed: bool,
     pub(super) is_byte: bool,
+    pub(super) is_dec64: bool,
     pub(super) at_expr: Option<RawExpr>,
     pub(super) inv: Option<RawInv>,
     pub(super) span: Span,
@@ -259,6 +262,7 @@ pub(crate) struct RawSliceRange {
 pub(crate) enum RawExpr {
     IntLit(i64),
     FixedLit(i64),
+    DecLit(i64),
     BoolLit(bool),
     StrLit(String),
     UnitLit,

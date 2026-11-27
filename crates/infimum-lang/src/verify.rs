@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v5";
+pub const PROOF_CACHE_SCHEMA_VERSION: &str = "infimum-z3-v6";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationReport {
@@ -31,6 +31,7 @@ enum ObligationKind {
     NonZeroDivisor,
     FieldInvariant { lo: i64, hi: i64 },
     SliceBounds { msg: String },
+    Dec64Overflow { op: &'static str },
 }
 
 #[derive(Debug, Clone)]
@@ -113,25 +114,39 @@ where
         sym
     }
 
+    fn push_dec64_overflow_check(&mut self, guard: &str, res_smt: &str, op: &'static str) {
+        self.obligations.push(ProofObligation {
+            guard_smt: guard.to_string(),
+            goal_smt: format!(
+                "(and (>= {res_smt} (- 9223372036854775808)) (<= {res_smt} 9223372036854775807))"
+            ),
+            kind: ObligationKind::Dec64Overflow { op },
+        });
+    }
+
     fn infer_expr_type(&self, expr: &Expr, types: &BTreeMap<String, Type>) -> Type {
         match expr {
             Expr::IntLit(_) | Expr::FixedLit(_) | Expr::MemLoad { .. } => Type::I64,
+            Expr::DecLit(_) | Expr::MemLoad64 { .. } => Type::Dec64,
             Expr::ByteLoad { .. } => Type::U8,
             Expr::BoolLit(_) => Type::Bool,
             Expr::StrLit(_) => Type::Str,
             Expr::UnitLit
             | Expr::Perform { .. }
             | Expr::MemStore { .. }
+            | Expr::MemStore64 { .. }
             | Expr::ByteStore { .. } => Type::Unit,
             Expr::Var(name) => types.get(name).cloned().unwrap_or(Type::I64),
             Expr::SecretWrap(inner) | Expr::Reveal { expr: inner, .. } => {
                 self.infer_expr_type(inner, types)
             }
-            Expr::Unary { op, .. } => match op {
+            Expr::Unary { op, expr: inner } => match op {
                 UnaryOp::Not => Type::Bool,
+                UnaryOp::Neg => self.infer_expr_type(inner, types),
+                UnaryOp::IntToDec64 | UnaryOp::RawToDec64 => Type::Dec64,
                 _ => Type::I64,
             },
-            Expr::Binary { op, .. } => match op {
+            Expr::Binary { op, lhs, .. } => match op {
                 BinOp::Eq
                 | BinOp::Ne
                 | BinOp::Lt
@@ -140,6 +155,8 @@ where
                 | BinOp::Ge
                 | BinOp::And
                 | BinOp::Or => Type::Bool,
+                BinOp::DecMul | BinOp::DecDiv => Type::Dec64,
+                BinOp::Add | BinOp::Sub => self.infer_expr_type(lhs, types),
                 _ => Type::I64,
             },
             Expr::If { then_branch, .. } => self.infer_expr_type(then_branch, types),
@@ -605,7 +622,7 @@ where
         emit_checks: bool,
     ) -> Result<String, InfimumDiagnostic> {
         match expr {
-            Expr::IntLit(v) | Expr::FixedLit(v) => {
+            Expr::IntLit(v) | Expr::FixedLit(v) | Expr::DecLit(v) => {
                 if *v < 0 {
                     Ok(format!("(- {})", v.unsigned_abs()))
                 } else {
@@ -630,11 +647,26 @@ where
             Expr::Unary { op, expr: inner } => {
                 let sub = self.encode_expr(inner, env, types, guard, emit_checks)?;
                 match op {
-                    UnaryOp::Neg => Ok(format!("(- {sub})")),
+                    UnaryOp::Neg => {
+                        let res = format!("(- {sub})");
+                        if emit_checks && self.infer_expr_type(inner, types) == Type::Dec64 {
+                            self.push_dec64_overflow_check(guard, &res, "-");
+                        }
+                        Ok(res)
+                    }
                     UnaryOp::Not => Ok(format!("(not {sub})")),
                     UnaryOp::IntToFixed => Ok(format!("(* {sub} 65536)")),
                     UnaryOp::FixedToInt => Ok(format!("(ifm_div {sub} 65536)")),
                     UnaryOp::FixedToRaw | UnaryOp::RawToFixed => Ok(sub),
+                    UnaryOp::IntToDec64 => {
+                        let res = format!("(* {sub} 10000)");
+                        if emit_checks {
+                            self.push_dec64_overflow_check(guard, &res, "dec64");
+                        }
+                        Ok(res)
+                    }
+                    UnaryOp::Dec64ToInt => Ok(format!("(ifm_div {sub} 10000)")),
+                    UnaryOp::Dec64ToRaw | UnaryOp::RawToDec64 => Ok(sub),
                     UnaryOp::ToU8 => Ok(format!("(mod {sub} 256)")),
                 }
             }
@@ -687,6 +719,30 @@ where
                         }
                         Ok(format!("(ifm_div (* {l} 65536) {r})"))
                     }
+                    BinOp::DecMul => {
+                        let r = self.encode_expr(rhs, env, types, guard, emit_checks)?;
+                        let res = format!("(ifm_div (* {l} {r}) 10000)");
+                        if emit_checks {
+                            self.push_dec64_overflow_check(guard, &res, "*");
+                        }
+                        Ok(res)
+                    }
+                    BinOp::DecDiv => {
+                        let r = self.encode_expr(rhs, env, types, guard, emit_checks)?;
+                        if emit_checks {
+                            self.obligations.push(ProofObligation {
+                                guard_smt: guard.to_string(),
+                                goal_smt: format!("(distinct {r} 0)"),
+                                kind: ObligationKind::NonZeroDivisor,
+                            });
+                        }
+                        let res = format!("(ifm_div (* {l} 10000) {r})");
+                        if emit_checks {
+                            let safe_guard = conjoin_guard(guard, &format!("(distinct {r} 0)"));
+                            self.push_dec64_overflow_check(&safe_guard, &res, "/");
+                        }
+                        Ok(res)
+                    }
                     BinOp::Div | BinOp::Mod => {
                         let r = self.encode_expr(rhs, env, types, guard, emit_checks)?;
                         if emit_checks {
@@ -735,6 +791,16 @@ where
                     }
                     other => {
                         let r = self.encode_expr(rhs, env, types, guard, emit_checks)?;
+                        if matches!(other, BinOp::Add | BinOp::Sub)
+                            && self.infer_expr_type(lhs, types) == Type::Dec64
+                        {
+                            let smt_op = if matches!(other, BinOp::Add) { "+" } else { "-" };
+                            let res = format!("({smt_op} {l} {r})");
+                            if emit_checks {
+                                self.push_dec64_overflow_check(guard, &res, smt_op);
+                            }
+                            return Ok(res);
+                        }
                         let smt_op = match other {
                             BinOp::Add => "+",
                             BinOp::Sub => "-",
@@ -748,6 +814,8 @@ where
                             BinOp::Div
                             | BinOp::FixedMul
                             | BinOp::FixedDiv
+                            | BinOp::DecMul
+                            | BinOp::DecDiv
                             | BinOp::Mod
                             | BinOp::And
                             | BinOp::Or
@@ -804,7 +872,8 @@ where
             }
             Expr::MemLoad {
                 index, inv, region, ..
-            } => {
+            }
+            | Expr::MemLoad64 { index, inv, region } => {
                 let _ = self.encode_expr(index, env, types, guard, emit_checks)?;
                 if let Expr::IntLit(addr) = index.as_ref() {
                     if let Some(cached) = self.known_mem.get(&(*region, *addr, false)) {
@@ -851,6 +920,12 @@ where
                 inv,
                 region,
                 ..
+            }
+            | Expr::MemStore64 {
+                index,
+                value,
+                inv,
+                region,
             } => {
                 let _ = self.encode_expr(index, env, types, guard, emit_checks)?;
                 let v = self.encode_expr(value, env, types, guard, emit_checks)?;
@@ -1282,6 +1357,7 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
     match expr {
         Expr::IntLit(_)
         | Expr::FixedLit(_)
+        | Expr::DecLit(_)
         | Expr::BoolLit(_)
         | Expr::StrLit(_)
         | Expr::UnitLit
@@ -1290,6 +1366,7 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::MemLoad64 { index: inner, .. }
         | Expr::ByteLoad { index: inner, .. }
         | Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
@@ -1309,7 +1386,9 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
             collect_mutated_vars_expr(lhs, out);
             collect_mutated_vars_expr(rhs, out);
         }
-        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. }
+        | Expr::MemStore64 { index, value, .. }
+        | Expr::ByteStore { index, value, .. } => {
             collect_mutated_vars_expr(index, out);
             collect_mutated_vars_expr(value, out);
         }
@@ -1392,6 +1471,10 @@ where
         param_decls.push(format!("(declare-const {cname} {})", smt_sort(&p.ty)));
         if p.ty == Type::U8 {
             param_decls.push(format!("(assert (and (>= {cname} 0) (<= {cname} 255)))"));
+        } else if p.ty == Type::Dec64 {
+            param_decls.push(format!(
+                "(assert (and (>= {cname} (- 9223372036854775808)) (<= {cname} 9223372036854775807)))"
+            ));
         }
         base_env.insert(cname.clone(), cname.clone());
         base_types.insert(cname.clone(), p.ty.clone());
@@ -1647,6 +1730,14 @@ fn build_violation_diagnostic(
             "Guard the index/range/length with an 'if' check or iterate with 'for i in 0..s.len max N'",
         )
         .with_counterexample(cex),
+        ObligationKind::Dec64Overflow { op } => InfimumDiagnostic::new(
+            "E057_DEC64_OVERFLOW",
+            "verify",
+            format!("dec64 arithmetic '{op}' in function '{fn_name}' may overflow signed 64-bit range (±922_337_203_685_477.5807d)"),
+            Span::zero(),
+            "Add a 'req' range constraint on dec64 inputs (e.g. 'req amount >= 0.0d && amount <= 1000000000.0d') or layout field 'inv'",
+        )
+        .with_counterexample(cex),
     }
 }
 
@@ -1676,7 +1767,7 @@ fn smt_prelude(param_decls: &[String], extra_decls: &[String]) -> String {
 
 fn smt_sort(ty: &Type) -> &'static str {
     match ty {
-        Type::I64 | Type::U8 | Type::Fixed => "Int",
+        Type::I64 | Type::U8 | Type::Fixed | Type::Dec64 => "Int",
         Type::Bool | Type::Unit => "Bool",
         Type::Secret(inner) => smt_sort(inner),
         Type::Tuple(_) | Type::Slice(_) | Type::Str => "Int",

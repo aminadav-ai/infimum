@@ -35,6 +35,7 @@ pub enum TokenKind {
     HashRef(String),
     Int(i64),
     Fixed(i64),
+    Dec(i64),
     Str(String),
 
     // Punctuation & Arrows
@@ -490,6 +491,70 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, InfimumDiagnostic> {
                     pos += 1;
                     col += 1;
                 }
+                let is_dec_suffix = pos < len
+                    && bytes[pos] == b'd'
+                    && !(pos + 1 < len
+                        && (bytes[pos + 1].is_ascii_alphanumeric() || bytes[pos + 1] == b'_'));
+                if is_dec_suffix {
+                    let frac_end = pos;
+                    pos += 1; // consume 'd'
+                    col += 1;
+                    let mut frac_val: i128 = 0;
+                    let mut frac_digits = 0u32;
+                    for c in src[frac_start..frac_end].chars() {
+                        if c == '_' {
+                            continue;
+                        }
+                        frac_digits += 1;
+                        if frac_digits > 4 {
+                            return Err(InfimumDiagnostic::new(
+                                "E003_DEC64_PRECISION",
+                                "lex",
+                                format!(
+                                    "dec64 literal '{}' supports at most 4 decimal places",
+                                    &src[start..pos]
+                                ),
+                                Span {
+                                    start,
+                                    end: pos,
+                                    line: start_line,
+                                    col: start_col,
+                                },
+                                "Use at most 4 digits after '.' for dec64 (scale 10^-4), e.g. 0.0725d",
+                            ));
+                        }
+                        frac_val = frac_val * 10 + (c as i128 - '0' as i128);
+                    }
+                    let pad = 10_i128.pow(4 - frac_digits);
+                    let total_dec = whole
+                        .checked_mul(10_000)
+                        .and_then(|w| w.checked_add(frac_val * pad))
+                        .and_then(|v| i64::try_from(v).ok())
+                        .ok_or_else(|| {
+                            InfimumDiagnostic::new(
+                                "E003_INT_OVERFLOW",
+                                "lex",
+                                format!("dec64 literal '{}' overflows i64", &src[start..pos]),
+                                Span {
+                                    start,
+                                    end: pos,
+                                    line: start_line,
+                                    col: start_col,
+                                },
+                                "Use a dec64 value within ±922_337_203_685_477.5807d",
+                            )
+                        })?;
+                    tokens.push(Token {
+                        kind: TokenKind::Dec(total_dec),
+                        span: Span {
+                            start,
+                            end: pos,
+                            line: start_line,
+                            col: start_col,
+                        },
+                    });
+                    continue;
+                }
                 let mut frac_val: i128 = 0;
                 let mut frac_scale: i128 = 1;
                 let mut frac_digits = 0u32;
@@ -524,6 +589,44 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, InfimumDiagnostic> {
                     })?;
                 tokens.push(Token {
                     kind: TokenKind::Fixed(total_q16),
+                    span: Span {
+                        start,
+                        end: pos,
+                        line: start_line,
+                        col: start_col,
+                    },
+                });
+                continue;
+            }
+            let is_int_dec_suffix = pos < len
+                && bytes[pos] == b'd'
+                && !(pos + 1 < len
+                    && (bytes[pos + 1].is_ascii_alphanumeric() || bytes[pos + 1] == b'_'));
+            if is_int_dec_suffix {
+                let clean: String = src[start..pos].chars().filter(|&c| c != '_').collect();
+                pos += 1; // consume 'd'
+                col += 1;
+                let total_dec = clean
+                    .parse::<i128>()
+                    .ok()
+                    .and_then(|w| w.checked_mul(10_000))
+                    .and_then(|v| i64::try_from(v).ok())
+                    .ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E003_INT_OVERFLOW",
+                            "lex",
+                            format!("dec64 literal '{}' overflows i64", &src[start..pos]),
+                            Span {
+                                start,
+                                end: pos,
+                                line: start_line,
+                                col: start_col,
+                            },
+                            "Use a dec64 value within ±922_337_203_685_477.5807d",
+                        )
+                    })?;
+                tokens.push(Token {
+                    kind: TokenKind::Dec(total_dec),
                     span: Span {
                         start,
                         end: pos,

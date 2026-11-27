@@ -24,6 +24,7 @@ pub(super) struct SliceElemMeta {
     pub(super) struct_canon: Option<String>,
     pub(super) stride: i64,
     pub(super) is_fixed: bool,
+    pub(super) is_dec64: bool,
     pub(super) is_byte: bool,
     pub(super) is_str: bool,
 }
@@ -35,6 +36,7 @@ impl SliceElemMeta {
             struct_canon: None,
             stride: 1,
             is_fixed: false,
+            is_dec64: false,
             is_byte: true,
             is_str: true,
         }
@@ -46,6 +48,7 @@ impl SliceElemMeta {
             struct_canon: None,
             stride: 1,
             is_fixed: false,
+            is_dec64: false,
             is_byte: true,
             is_str: false,
         }
@@ -368,6 +371,8 @@ impl ModuleResolver {
             .map(|fname| {
                 if sdef.field_fixed.contains(fname) {
                     Type::Fixed
+                } else if sdef.field_dec64.contains(fname) {
+                    Type::Dec64
                 } else {
                     Type::I64
                 }
@@ -383,6 +388,7 @@ impl ModuleResolver {
                 struct_canon: None,
                 stride: 1,
                 is_fixed: false,
+                is_dec64: false,
                 is_byte: false,
                 is_str: false,
             }),
@@ -392,6 +398,16 @@ impl ModuleResolver {
                 struct_canon: None,
                 stride: 1,
                 is_fixed: true,
+                is_dec64: false,
+                is_byte: false,
+                is_str: false,
+            }),
+            RawType::Builtin(Type::Dec64) => Ok(SliceElemMeta {
+                elem_ty: Type::Dec64,
+                struct_canon: None,
+                stride: 2,
+                is_fixed: false,
+                is_dec64: true,
                 is_byte: false,
                 is_str: false,
             }),
@@ -411,6 +427,7 @@ impl ModuleResolver {
                     struct_canon: Some(scanon),
                     stride: sdef.size,
                     is_fixed: false,
+                    is_dec64: false,
                     is_byte: false,
                     is_str: false,
                 })
@@ -522,6 +539,7 @@ impl ModuleResolver {
                 struct_canon: Some(sc.clone()),
                 stride: sdef.size,
                 is_fixed: false,
+                is_dec64: false,
                 is_byte: false,
                 is_str: false,
             })
@@ -533,6 +551,17 @@ impl ModuleResolver {
                 struct_canon: None,
                 stride: 1,
                 is_fixed: true,
+                is_dec64: false,
+                is_byte: false,
+                is_str: false,
+            })
+        } else if meta.is_dec64 {
+            Some(SliceElemMeta {
+                elem_ty: Type::Dec64,
+                struct_canon: None,
+                stride: 2,
+                is_fixed: false,
+                is_dec64: true,
                 is_byte: false,
                 is_str: false,
             })
@@ -542,6 +571,7 @@ impl ModuleResolver {
                 struct_canon: None,
                 stride: 1,
                 is_fixed: false,
+                is_dec64: false,
                 is_byte: false,
                 is_str: false,
             })
@@ -605,6 +635,7 @@ impl ModuleResolver {
                     struct_canon: None,
                     stride: 1,
                     is_fixed: false,
+                    is_dec64: false,
                     is_byte: false,
                     is_str: false,
                 }),
@@ -615,6 +646,16 @@ impl ModuleResolver {
                     struct_canon: None,
                     stride: 1,
                     is_fixed: true,
+                    is_dec64: false,
+                    is_byte: false,
+                    is_str: false,
+                }),
+                "slice_dec64" => Some(SliceElemMeta {
+                    elem_ty: Type::Dec64,
+                    struct_canon: None,
+                    stride: 2,
+                    is_fixed: false,
+                    is_dec64: true,
                     is_byte: false,
                     is_str: false,
                 }),
@@ -655,6 +696,7 @@ impl ModuleResolver {
             let foff = sdef.fields[fname];
             let finv = sdef.field_invs.get(fname).copied();
             let ffixed = sdef.field_fixed.contains(fname);
+            let fdec64 = sdef.field_dec64.contains(fname);
             let faddr = if foff == 0 {
                 Expr::Var(base_var.clone())
             } else {
@@ -664,12 +706,20 @@ impl ModuleResolver {
                     rhs: Box::new(Expr::IntLit(foff)),
                 }
             };
-            elems.push(Expr::MemLoad {
-                index: Box::new(faddr),
-                inv: finv,
-                fixed_ty: ffixed,
-                region,
-            });
+            if fdec64 {
+                elems.push(Expr::MemLoad64 {
+                    index: Box::new(faddr),
+                    inv: finv,
+                    region,
+                });
+            } else {
+                elems.push(Expr::MemLoad {
+                    index: Box::new(faddr),
+                    inv: finv,
+                    fixed_ty: ffixed,
+                    region,
+                });
+            }
         }
         Expr::Block {
             stmts: vec![Stmt::Let {
@@ -710,6 +760,7 @@ impl ModuleResolver {
             let foff = sdef.fields[fname];
             let finv = sdef.field_invs.get(fname).copied();
             let ffixed = sdef.field_fixed.contains(fname);
+            let fdec64 = sdef.field_dec64.contains(fname);
             let faddr = if foff == 0 {
                 Expr::Var(base_var.clone())
             } else {
@@ -719,16 +770,26 @@ impl ModuleResolver {
                     rhs: Box::new(Expr::IntLit(foff)),
                 }
             };
-            stmts.push(Stmt::Expr(Expr::MemStore {
-                index: Box::new(faddr),
-                value: Box::new(Expr::TupleField {
-                    expr: Box::new(Expr::Var(sv_tmp.clone())),
-                    index: fidx,
-                }),
-                inv: finv,
-                fixed_ty: ffixed,
-                region,
-            }));
+            let val_field = Box::new(Expr::TupleField {
+                expr: Box::new(Expr::Var(sv_tmp.clone())),
+                index: fidx,
+            });
+            if fdec64 {
+                stmts.push(Stmt::Expr(Expr::MemStore64 {
+                    index: Box::new(faddr),
+                    value: val_field,
+                    inv: finv,
+                    region,
+                }));
+            } else {
+                stmts.push(Stmt::Expr(Expr::MemStore {
+                    index: Box::new(faddr),
+                    value: val_field,
+                    inv: finv,
+                    fixed_ty: ffixed,
+                    region,
+                }));
+            }
         }
         stmts
     }
@@ -803,12 +864,14 @@ impl ModuleResolver {
         match expr {
             RawExpr::IntLit(v) => Ok(ConstValue::Int(*v)),
             RawExpr::FixedLit(v) => Ok(ConstValue::Fixed(*v)),
+            RawExpr::DecLit(v) => Ok(ConstValue::Dec64(*v)),
             RawExpr::BoolLit(b) => Ok(ConstValue::Bool(*b)),
             RawExpr::Var(name) => {
                 if let Some(sub) = self.forma_subst.get(name) {
                     match sub {
                         Expr::IntLit(v) => return Ok(ConstValue::Int(*v)),
                         Expr::FixedLit(v) => return Ok(ConstValue::Fixed(*v)),
+                        Expr::DecLit(v) => return Ok(ConstValue::Dec64(*v)),
                         Expr::BoolLit(b) => return Ok(ConstValue::Bool(*b)),
                         _ => {}
                     }
@@ -845,6 +908,10 @@ impl ModuleResolver {
                     (UnaryOp::Neg, ConstValue::Fixed(n)) => n
                         .checked_neg()
                         .map(ConstValue::Fixed)
+                        .ok_or_else(|| const_overflow("-", span)),
+                    (UnaryOp::Neg, ConstValue::Dec64(n)) => n
+                        .checked_neg()
+                        .map(ConstValue::Dec64)
                         .ok_or_else(|| const_overflow("-", span)),
                     (UnaryOp::Not, ConstValue::Bool(b)) => Ok(ConstValue::Bool(!b)),
                     _ => Err(InfimumDiagnostic::new(
@@ -895,6 +962,35 @@ impl ModuleResolver {
                         let q = (a as i128 * 65536) / (b as i128);
                         i64::try_from(q)
                             .map(ConstValue::Fixed)
+                            .map_err(|_| const_overflow("/", span))
+                    }
+                    (BinOp::Add, ConstValue::Dec64(a), ConstValue::Dec64(b)) => a
+                        .checked_add(b)
+                        .map(ConstValue::Dec64)
+                        .ok_or_else(|| const_overflow("+", span)),
+                    (BinOp::Sub, ConstValue::Dec64(a), ConstValue::Dec64(b)) => a
+                        .checked_sub(b)
+                        .map(ConstValue::Dec64)
+                        .ok_or_else(|| const_overflow("-", span)),
+                    (BinOp::Mul, ConstValue::Dec64(a), ConstValue::Dec64(b)) => {
+                        let prod = (a as i128 * b as i128) / 10_000;
+                        i64::try_from(prod)
+                            .map(ConstValue::Dec64)
+                            .map_err(|_| const_overflow("*", span))
+                    }
+                    (BinOp::Div, ConstValue::Dec64(a), ConstValue::Dec64(b)) => {
+                        if b == 0 {
+                            return Err(InfimumDiagnostic::new(
+                                "E064_CONST_EVAL",
+                                "const-eval",
+                                "Division by zero in dec64 constant expression",
+                                span,
+                                "Ensure divisor is non-zero",
+                            ));
+                        }
+                        let q = (a as i128 * 10_000) / (b as i128);
+                        i64::try_from(q)
+                            .map(ConstValue::Dec64)
                             .map_err(|_| const_overflow("/", span))
                     }
                     (BinOp::Mul, ConstValue::Int(a), ConstValue::Int(b)) => a
@@ -1016,7 +1112,7 @@ impl ModuleResolver {
 
     fn eval_const_i64(&self, expr: &RawExpr, span: Span, context: &str) -> Result<i64, InfimumDiagnostic> {
         match self.eval_const(expr, span)? {
-            ConstValue::Int(v) | ConstValue::Fixed(v) => Ok(v),
+            ConstValue::Int(v) | ConstValue::Fixed(v) | ConstValue::Dec64(v) => Ok(v),
             ConstValue::Bool(_) => Err(InfimumDiagnostic::new(
                 "E064_CONST_EVAL",
                 "const-eval",
@@ -1436,6 +1532,7 @@ impl ModuleResolver {
                     (&rc.ty, val),
                     (Type::I64, ConstValue::Int(_))
                         | (Type::Fixed, ConstValue::Fixed(_))
+                        | (Type::Dec64, ConstValue::Dec64(_))
                         | (Type::Bool, ConstValue::Bool(_))
                 );
                 if !matches_ty {
@@ -1506,9 +1603,11 @@ impl ModuleResolver {
                 let mut fields = BTreeMap::new();
                 let mut field_invs = BTreeMap::new();
                 let mut field_fixed = BTreeSet::new();
+                let mut field_dec64 = BTreeSet::new();
                 let mut field_names = Vec::with_capacity(rs.fields.len());
-                for (idx, (fname, is_fixed, finv, fspan)) in rs.fields.into_iter().enumerate() {
-                    if fields.insert(fname.clone(), idx as i64).is_some() {
+                let mut word_cursor: i64 = 0;
+                for (fname, is_fixed, is_dec64, finv, fspan) in rs.fields.into_iter() {
+                    if fields.insert(fname.clone(), word_cursor).is_some() {
                         return Err(InfimumDiagnostic::new(
                             "E065_DUPLICATE_DECL",
                             "layout",
@@ -1517,8 +1616,12 @@ impl ModuleResolver {
                             "Ensure all field names within a struct are unique",
                         ));
                     }
+                    word_cursor += if is_dec64 { 2 } else { 1 };
                     if is_fixed {
                         field_fixed.insert(fname.clone());
+                    }
+                    if is_dec64 {
+                        field_dec64.insert(fname.clone());
                     }
                     if let Some(ri) = finv {
                         let lo = self.eval_const_i64(&ri.lo, ri.span, "struct field invariant lower bound")?;
@@ -1537,13 +1640,14 @@ impl ModuleResolver {
                     }
                     field_names.push(fname);
                 }
-                let size = field_names.len() as i64;
+                let size = word_cursor;
                 self.structs.insert(
                     cname,
                     StructDef {
                         fields,
                         field_invs,
                         field_fixed,
+                        field_dec64,
                         field_names,
                         size,
                     },
@@ -1601,7 +1705,7 @@ impl ModuleResolver {
                             })?;
                             (Some(scanon), sdef.size)
                         }
-                        None => (None, 1),
+                        None => (None, if rf.is_dec64 { 2 } else { 1 }),
                     };
                     let count = match rf.len_expr {
                         Some(ref expr) => {
@@ -1710,6 +1814,7 @@ impl ModuleResolver {
                             is_array: rf.is_array,
                             is_vec: rf.is_vec,
                             is_fixed: rf.is_fixed,
+                            is_dec64: rf.is_dec64,
                             is_byte: rf.is_byte,
                             struct_type: resolved_struct_type,
                             stride,
@@ -1727,7 +1832,13 @@ impl ModuleResolver {
                         is_vec: rf.is_vec,
                         cap: count,
                         stride,
-                        elem_bytes: if rf.is_byte { 1 } else { 4 },
+                        elem_bytes: if rf.is_byte {
+                            1
+                        } else if rf.is_dec64 {
+                            8
+                        } else {
+                            4
+                        },
                     });
                 }
                 if auto_placed && cursor > self.auto_layout_cursor {
@@ -1924,6 +2035,31 @@ impl ModuleResolver {
             sdef.field_fixed.contains(sub)
         } else {
             meta.is_fixed
+        }
+    }
+
+    fn lookup_layout_dec64(
+        &self,
+        layout: &str,
+        field: &str,
+        subfield: Option<&str>,
+    ) -> bool {
+        let Some(meta) = self
+            .layout_field_meta
+            .get(&(layout.to_string(), field.to_string()))
+        else {
+            return false;
+        };
+        if let Some(sub) = subfield {
+            let Some(sname) = meta.struct_type.as_deref() else {
+                return false;
+            };
+            let Some(sdef) = self.structs.get(sname) else {
+                return false;
+            };
+            sdef.field_dec64.contains(sub)
+        } else {
+            meta.is_dec64
         }
     }
 
@@ -2458,15 +2594,22 @@ impl ModuleResolver {
                                     "Declare the struct before using it",
                                 )
                             })?;
-                            let fidx = *sdef.fields.get(field).ok_or_else(|| {
-                                InfimumDiagnostic::new(
-                                    "E063_UNKNOWN_FIELD",
-                                    "parse",
-                                    format!("Struct '{sname}' has no field '{field}'"),
-                                    *span,
-                                    format!("Available fields on '{sname}': {}", sdef.field_names.join(", ")),
-                                )
-                            })? as usize;
+                            let fidx = sdef
+                                .field_names
+                                .iter()
+                                .position(|n| n == field)
+                                .ok_or_else(|| {
+                                    InfimumDiagnostic::new(
+                                        "E063_UNKNOWN_FIELD",
+                                        "parse",
+                                        format!("Struct '{sname}' has no field '{field}'"),
+                                        *span,
+                                        format!(
+                                            "Available fields on '{sname}': {}",
+                                            sdef.field_names.join(", ")
+                                        ),
+                                    )
+                                })?;
                             let rhs = self.lower_expr(value, locals)?;
                             let new_fval = match op {
                                 None => rhs,
@@ -2592,29 +2735,41 @@ impl ModuleResolver {
                                     None
                                 };
                                 for (k, fname) in sdef.field_names.iter().enumerate() {
+                                    let foff = sdef.fields[fname];
                                     let f_addr = if let Some(ref bvar) = base_addr_var {
-                                        if k == 0 {
+                                        if foff == 0 {
                                             Expr::Var(bvar.clone())
                                         } else {
                                             Expr::Binary {
                                                 op: BinOp::Add,
                                                 lhs: Box::new(Expr::Var(bvar.clone())),
-                                                rhs: Box::new(Expr::IntLit(k as i64)),
+                                                rhs: Box::new(Expr::IntLit(foff)),
                                             }
                                         }
                                     } else {
-                                        Expr::IntLit(meta.offset + k as i64)
+                                        Expr::IntLit(meta.offset + foff)
                                     };
-                                    out.push(Stmt::Expr(Expr::MemStore {
-                                        index: Box::new(f_addr),
-                                        value: Box::new(Expr::TupleField {
-                                            expr: Box::new(Expr::Var(sv_tmp.clone())),
-                                            index: k,
-                                        }),
-                                        inv: sdef.field_invs.get(fname).copied(),
-                                        fixed_ty: sdef.field_fixed.contains(fname),
-                                        region: meta.data_region_id,
-                                    }));
+                                    let fval = Box::new(Expr::TupleField {
+                                        expr: Box::new(Expr::Var(sv_tmp.clone())),
+                                        index: k,
+                                    });
+                                    let finv = sdef.field_invs.get(fname).copied();
+                                    if sdef.field_dec64.contains(fname) {
+                                        out.push(Stmt::Expr(Expr::MemStore64 {
+                                            index: Box::new(f_addr),
+                                            value: fval,
+                                            inv: finv,
+                                            region: meta.data_region_id,
+                                        }));
+                                    } else {
+                                        out.push(Stmt::Expr(Expr::MemStore {
+                                            index: Box::new(f_addr),
+                                            value: fval,
+                                            inv: finv,
+                                            fixed_ty: sdef.field_fixed.contains(fname),
+                                            region: meta.data_region_id,
+                                        }));
+                                    }
                                 }
                                 idx += 1;
                                 continue;
@@ -2640,11 +2795,18 @@ impl ModuleResolver {
                     )?;
                     let field_inv = self.lookup_layout_inv(&lcanon, field, subfield.as_deref());
                     let field_fixed = self.lookup_layout_fixed(&lcanon, field, subfield.as_deref());
+                    let field_dec64 = self.lookup_layout_dec64(&lcanon, field, subfield.as_deref());
                     let rhs = self.lower_expr(value, locals)?;
                     let mk_load = |addr: Expr| -> Expr {
                         if field_is_byte {
                             Expr::ByteLoad {
                                 index: Box::new(addr),
+                                region: field_region,
+                            }
+                        } else if field_dec64 {
+                            Expr::MemLoad64 {
+                                index: Box::new(addr),
+                                inv: field_inv,
                                 region: field_region,
                             }
                         } else {
@@ -2661,6 +2823,13 @@ impl ModuleResolver {
                             Expr::ByteStore {
                                 index: Box::new(addr),
                                 value: Box::new(val),
+                                region: field_region,
+                            }
+                        } else if field_dec64 {
+                            Expr::MemStore64 {
+                                index: Box::new(addr),
+                                value: Box::new(val),
+                                inv: field_inv,
                                 region: field_region,
                             }
                         } else {
@@ -2798,6 +2967,7 @@ impl ModuleResolver {
                         })?;
                         let finv = sdef.field_invs.get(sf).copied();
                         let ffixed = sdef.field_fixed.contains(sf);
+                        let fdec64 = sdef.field_dec64.contains(sf);
                         let addr_var = format!("__ifm_sa_{}", self.addr_counter);
                         self.addr_counter += 1;
                         let faddr = if foff == 0 {
@@ -2820,22 +2990,39 @@ impl ModuleResolver {
                             None => rhs,
                             Some(binop) => Expr::Binary {
                                 op: *binop,
-                                lhs: Box::new(Expr::MemLoad {
-                                    index: Box::new(Expr::Var(addr_var.clone())),
-                                    inv: finv,
-                                    fixed_ty: ffixed,
-                                    region: crate::ast::REGION_SLICE_DATA,
+                                lhs: Box::new(if fdec64 {
+                                    Expr::MemLoad64 {
+                                        index: Box::new(Expr::Var(addr_var.clone())),
+                                        inv: finv,
+                                        region: crate::ast::REGION_SLICE_DATA,
+                                    }
+                                } else {
+                                    Expr::MemLoad {
+                                        index: Box::new(Expr::Var(addr_var.clone())),
+                                        inv: finv,
+                                        fixed_ty: ffixed,
+                                        region: crate::ast::REGION_SLICE_DATA,
+                                    }
                                 }),
                                 rhs: Box::new(rhs),
                             },
                         };
-                        out.push(Stmt::Expr(Expr::MemStore {
-                            index: Box::new(Expr::Var(addr_var)),
-                            value: Box::new(final_val),
-                            inv: finv,
-                            fixed_ty: ffixed,
-                            region: crate::ast::REGION_SLICE_DATA,
-                        }));
+                        if fdec64 {
+                            out.push(Stmt::Expr(Expr::MemStore64 {
+                                index: Box::new(Expr::Var(addr_var)),
+                                value: Box::new(final_val),
+                                inv: finv,
+                                region: crate::ast::REGION_SLICE_DATA,
+                            }));
+                        } else {
+                            out.push(Stmt::Expr(Expr::MemStore {
+                                index: Box::new(Expr::Var(addr_var)),
+                                value: Box::new(final_val),
+                                inv: finv,
+                                fixed_ty: ffixed,
+                                region: crate::ast::REGION_SLICE_DATA,
+                            }));
+                        }
                     } else if let Some(ref scanon) = smeta.struct_canon {
                         if op.is_some() {
                             return Err(InfimumDiagnostic::new(
@@ -2881,6 +3068,12 @@ impl ModuleResolver {
                                         index: Box::new(Expr::Var(addr_var.clone())),
                                         region: crate::ast::REGION_SLICE_DATA,
                                     }
+                                } else if smeta.is_dec64 {
+                                    Expr::MemLoad64 {
+                                        index: Box::new(Expr::Var(addr_var.clone())),
+                                        inv: None,
+                                        region: crate::ast::REGION_SLICE_DATA,
+                                    }
                                 } else {
                                     Expr::MemLoad {
                                         index: Box::new(Expr::Var(addr_var.clone())),
@@ -2896,6 +3089,13 @@ impl ModuleResolver {
                             Expr::ByteStore {
                                 index: Box::new(Expr::Var(addr_var)),
                                 value: Box::new(final_val),
+                                region: crate::ast::REGION_SLICE_DATA,
+                            }
+                        } else if smeta.is_dec64 {
+                            Expr::MemStore64 {
+                                index: Box::new(Expr::Var(addr_var)),
+                                value: Box::new(final_val),
+                                inv: None,
                                 region: crate::ast::REGION_SLICE_DATA,
                             }
                         } else {
@@ -3232,6 +3432,7 @@ impl ModuleResolver {
         match expr {
             RawExpr::IntLit(v) => Ok(Expr::IntLit(*v)),
             RawExpr::FixedLit(v) => Ok(Expr::FixedLit(*v)),
+            RawExpr::DecLit(v) => Ok(Expr::DecLit(*v)),
             RawExpr::BoolLit(b) => Ok(Expr::BoolLit(*b)),
             RawExpr::StrLit(s) => Ok(Expr::StrLit(s.clone())),
             RawExpr::UnitLit => Ok(Expr::UnitLit),
@@ -3245,6 +3446,7 @@ impl ModuleResolver {
                             return Ok(match cdef.value {
                                 ConstValue::Int(v) => Expr::IntLit(v),
                                 ConstValue::Fixed(v) => Expr::FixedLit(v),
+                                ConstValue::Dec64(v) => Expr::DecLit(v),
                                 ConstValue::Bool(b) => Expr::BoolLit(b),
                             });
                         }
@@ -3257,6 +3459,7 @@ impl ModuleResolver {
                 Ok(match v {
                     ConstValue::Int(n) => Expr::IntLit(n),
                     ConstValue::Fixed(n) => Expr::FixedLit(n),
+                    ConstValue::Dec64(n) => Expr::DecLit(n),
                     ConstValue::Bool(b) => Expr::BoolLit(b),
                 })
             }
@@ -3294,18 +3497,22 @@ impl ModuleResolver {
                                 "Declare the struct before using it",
                             )
                         })?;
-                        let fidx = *sdef.fields.get(field).ok_or_else(|| {
-                            InfimumDiagnostic::new(
-                                "E063_UNKNOWN_FIELD",
-                                "parse",
-                                format!("Struct '{sname}' has no field '{field}'"),
-                                *span,
-                                format!(
-                                    "Available fields on '{sname}': {}",
-                                    sdef.field_names.join(", ")
-                                ),
-                            )
-                        })? as usize;
+                        let fidx = sdef
+                            .field_names
+                            .iter()
+                            .position(|n| n == field)
+                            .ok_or_else(|| {
+                                InfimumDiagnostic::new(
+                                    "E063_UNKNOWN_FIELD",
+                                    "parse",
+                                    format!("Struct '{sname}' has no field '{field}'"),
+                                    *span,
+                                    format!(
+                                        "Available fields on '{sname}': {}",
+                                        sdef.field_names.join(", ")
+                                    ),
+                                )
+                            })?;
                         return Ok(Expr::TupleField {
                             expr: Box::new(Expr::Var(layout.clone())),
                             index: fidx,
@@ -3393,22 +3600,32 @@ impl ModuleResolver {
                                 let bvar = format!("__ifm_sladdr_{}", self.addr_counter);
                                 self.addr_counter += 1;
                                 let mut loads = Vec::with_capacity(sdef.field_names.len());
-                                for (k, fname) in sdef.field_names.iter().enumerate() {
-                                    let f_addr = if k == 0 {
+                                for fname in &sdef.field_names {
+                                    let foff = sdef.fields[fname];
+                                    let f_addr = if foff == 0 {
                                         Expr::Var(bvar.clone())
                                     } else {
                                         Expr::Binary {
                                             op: BinOp::Add,
                                             lhs: Box::new(Expr::Var(bvar.clone())),
-                                            rhs: Box::new(Expr::IntLit(k as i64)),
+                                            rhs: Box::new(Expr::IntLit(foff)),
                                         }
                                     };
-                                    loads.push(Expr::MemLoad {
-                                        index: Box::new(f_addr),
-                                        inv: sdef.field_invs.get(fname).copied(),
-                                        fixed_ty: sdef.field_fixed.contains(fname),
-                                        region: meta.data_region_id,
-                                    });
+                                    let finv = sdef.field_invs.get(fname).copied();
+                                    if sdef.field_dec64.contains(fname) {
+                                        loads.push(Expr::MemLoad64 {
+                                            index: Box::new(f_addr),
+                                            inv: finv,
+                                            region: meta.data_region_id,
+                                        });
+                                    } else {
+                                        loads.push(Expr::MemLoad {
+                                            index: Box::new(f_addr),
+                                            inv: finv,
+                                            fixed_ty: sdef.field_fixed.contains(fname),
+                                            region: meta.data_region_id,
+                                        });
+                                    }
                                 }
                                 return Ok(Expr::Block {
                                     stmts: vec![Stmt::Let {
@@ -3421,13 +3638,23 @@ impl ModuleResolver {
                                 });
                             } else {
                                 let mut loads = Vec::with_capacity(sdef.field_names.len());
-                                for (k, fname) in sdef.field_names.iter().enumerate() {
-                                    loads.push(Expr::MemLoad {
-                                        index: Box::new(Expr::IntLit(meta.offset + k as i64)),
-                                        inv: sdef.field_invs.get(fname).copied(),
-                                        fixed_ty: sdef.field_fixed.contains(fname),
-                                        region: meta.data_region_id,
-                                    });
+                                for fname in &sdef.field_names {
+                                    let foff = sdef.fields[fname];
+                                    let finv = sdef.field_invs.get(fname).copied();
+                                    if sdef.field_dec64.contains(fname) {
+                                        loads.push(Expr::MemLoad64 {
+                                            index: Box::new(Expr::IntLit(meta.offset + foff)),
+                                            inv: finv,
+                                            region: meta.data_region_id,
+                                        });
+                                    } else {
+                                        loads.push(Expr::MemLoad {
+                                            index: Box::new(Expr::IntLit(meta.offset + foff)),
+                                            inv: finv,
+                                            fixed_ty: sdef.field_fixed.contains(fname),
+                                            region: meta.data_region_id,
+                                        });
+                                    }
                                 }
                                 return Ok(Expr::TupleLit(loads));
                             }
@@ -3459,12 +3686,21 @@ impl ModuleResolver {
                 }
                 let field_inv = self.lookup_layout_inv(&lcanon, field, subfield.as_deref());
                 let field_fixed = self.lookup_layout_fixed(&lcanon, field, subfield.as_deref());
-                Ok(Expr::MemLoad {
-                    index: Box::new(addr_expr),
-                    inv: field_inv,
-                    fixed_ty: field_fixed,
-                    region: field_region,
-                })
+                let field_dec64 = self.lookup_layout_dec64(&lcanon, field, subfield.as_deref());
+                if field_dec64 {
+                    Ok(Expr::MemLoad64 {
+                        index: Box::new(addr_expr),
+                        inv: field_inv,
+                        region: field_region,
+                    })
+                } else {
+                    Ok(Expr::MemLoad {
+                        index: Box::new(addr_expr),
+                        inv: field_inv,
+                        fixed_ty: field_fixed,
+                        region: field_region,
+                    })
+                }
             }
             RawExpr::Unary { op, expr: inner } => Ok(Expr::Unary {
                 op: *op,
@@ -3534,11 +3770,17 @@ impl ModuleResolver {
                             region: 0,
                         });
                     }
-                    if args.len() == 2 && (n == "slice_i64" || n == "slice_fixed" || n == "slice_u8") {
+                    if args.len() == 2
+                        && (n == "slice_i64"
+                            || n == "slice_fixed"
+                            || n == "slice_dec64"
+                            || n == "slice_u8")
+                    {
                         let ptr_e = self.lower_expr(&args[0], locals)?;
                         let len_e = self.lower_expr(&args[1], locals)?;
                         let elem_ty = match n.as_str() {
                             "slice_fixed" => Type::Fixed,
+                            "slice_dec64" => Type::Dec64,
                             "slice_u8" => Type::U8,
                             _ => Type::I64,
                         };
@@ -3556,6 +3798,17 @@ impl ModuleResolver {
                         let b_e = self.lower_expr(&args[0], locals)?;
                         return Ok(Expr::StrFromBytes(Box::new(b_e)));
                     }
+                    if args.len() == 1 && n == "dec64_from_cents" {
+                        let cents_e = self.lower_expr(&args[0], locals)?;
+                        return Ok(Expr::Unary {
+                            op: UnaryOp::RawToDec64,
+                            expr: Box::new(Expr::Binary {
+                                op: BinOp::Mul,
+                                lhs: Box::new(cents_e),
+                                rhs: Box::new(Expr::IntLit(100)),
+                            }),
+                        });
+                    }
                 }
                 if args.len() == 1 {
                     if let TargetRef::Named(n) = target {
@@ -3564,6 +3817,10 @@ impl ModuleResolver {
                             "fixed_to_int" => Some(UnaryOp::FixedToInt),
                             "fixed_raw" => Some(UnaryOp::FixedToRaw),
                             "fixed_from_raw" => Some(UnaryOp::RawToFixed),
+                            "dec64" => Some(UnaryOp::IntToDec64),
+                            "dec64_to_int" => Some(UnaryOp::Dec64ToInt),
+                            "dec64_raw" => Some(UnaryOp::Dec64ToRaw),
+                            "dec64_from_raw" => Some(UnaryOp::RawToDec64),
                             "u8" => Some(UnaryOp::ToU8),
                             _ => None,
                         };
@@ -3852,18 +4109,22 @@ impl ModuleResolver {
                         "Declare the struct before using it",
                     )
                 })?;
-                let fidx = *sdef.fields.get(field).ok_or_else(|| {
-                    InfimumDiagnostic::new(
-                        "E063_UNKNOWN_FIELD",
-                        "parse",
-                        format!("Struct '{sname}' has no field '{field}'"),
-                        *span,
-                        format!(
-                            "Available fields on '{sname}': {}",
-                            sdef.field_names.join(", ")
-                        ),
-                    )
-                })? as usize;
+                let fidx = sdef
+                    .field_names
+                    .iter()
+                    .position(|n| n == field)
+                    .ok_or_else(|| {
+                        InfimumDiagnostic::new(
+                            "E063_UNKNOWN_FIELD",
+                            "parse",
+                            format!("Struct '{sname}' has no field '{field}'"),
+                            *span,
+                            format!(
+                                "Available fields on '{sname}': {}",
+                                sdef.field_names.join(", ")
+                            ),
+                        )
+                    })?;
                 let lowered = self.lower_expr(expr, locals)?;
                 Ok(Expr::TupleField {
                     expr: Box::new(lowered),
@@ -3954,6 +4215,7 @@ impl ModuleResolver {
                     })?;
                     let finv = sdef.field_invs.get(sf).copied();
                     let ffixed = sdef.field_fixed.contains(sf);
+                    let fdec64 = sdef.field_dec64.contains(sf);
                     let faddr = if foff == 0 {
                         elem_addr
                     } else {
@@ -3963,11 +4225,19 @@ impl ModuleResolver {
                             rhs: Box::new(Expr::IntLit(foff)),
                         }
                     };
-                    Expr::MemLoad {
-                        index: Box::new(faddr),
-                        inv: finv,
-                        fixed_ty: ffixed,
-                        region: crate::ast::REGION_SLICE_DATA,
+                    if fdec64 {
+                        Expr::MemLoad64 {
+                            index: Box::new(faddr),
+                            inv: finv,
+                            region: crate::ast::REGION_SLICE_DATA,
+                        }
+                    } else {
+                        Expr::MemLoad {
+                            index: Box::new(faddr),
+                            inv: finv,
+                            fixed_ty: ffixed,
+                            region: crate::ast::REGION_SLICE_DATA,
+                        }
                     }
                 } else if let Some(ref scanon) = smeta.struct_canon {
                     let sdef = self.structs.get(scanon).cloned().ok_or_else(|| {
@@ -3983,6 +4253,12 @@ impl ModuleResolver {
                 } else if smeta.is_byte {
                     Expr::ByteLoad {
                         index: Box::new(elem_addr),
+                        region: crate::ast::REGION_SLICE_DATA,
+                    }
+                } else if smeta.is_dec64 {
+                    Expr::MemLoad64 {
+                        index: Box::new(elem_addr),
+                        inv: None,
                         region: crate::ast::REGION_SLICE_DATA,
                     }
                 } else {
@@ -4171,6 +4447,13 @@ impl ModuleResolver {
                                 value: Box::new(val_e),
                                 region: data_region,
                             }));
+                        } else if meta.is_dec64 {
+                            stmts.push(Stmt::Expr(Expr::MemStore64 {
+                                index: Box::new(elem_addr),
+                                value: Box::new(val_e),
+                                inv: meta.inv,
+                                region: data_region,
+                            }));
                         } else {
                             stmts.push(Stmt::Expr(Expr::MemStore {
                                 index: Box::new(elem_addr),
@@ -4219,6 +4502,13 @@ impl ModuleResolver {
                             then_stmts.push(Stmt::Expr(Expr::ByteStore {
                                 index: Box::new(elem_addr),
                                 value: Box::new(val_e),
+                                region: data_region,
+                            }));
+                        } else if meta.is_dec64 {
+                            then_stmts.push(Stmt::Expr(Expr::MemStore64 {
+                                index: Box::new(elem_addr),
+                                value: Box::new(val_e),
+                                inv: meta.inv,
                                 region: data_region,
                             }));
                         } else {
@@ -4298,6 +4588,15 @@ impl ModuleResolver {
                                 },
                                 Some(Type::U8),
                             )
+                        } else if meta.is_dec64 {
+                            (
+                                Expr::MemLoad64 {
+                                    index: Box::new(elem_addr),
+                                    inv: meta.inv,
+                                    region: data_region,
+                                },
+                                Some(Type::Dec64),
+                            )
                         } else {
                             (
                                 Expr::MemLoad {
@@ -4369,39 +4668,53 @@ impl ModuleResolver {
                             value: mk_elem_addr(Expr::Var(last_var.clone())),
                         });
                         if let Some(ref sdef) = sdef_opt {
-                            for (k, fname) in sdef.field_names.iter().enumerate() {
-                                let src_a = if k == 0 {
+                            for fname in &sdef.field_names {
+                                let foff = sdef.fields[fname];
+                                let src_a = if foff == 0 {
                                     Expr::Var(src_base.clone())
                                 } else {
                                     Expr::Binary {
                                         op: BinOp::Add,
                                         lhs: Box::new(Expr::Var(src_base.clone())),
-                                        rhs: Box::new(Expr::IntLit(k as i64)),
+                                        rhs: Box::new(Expr::IntLit(foff)),
                                     }
                                 };
-                                let dst_a = if k == 0 {
+                                let dst_a = if foff == 0 {
                                     Expr::Var(dst_base.clone())
                                 } else {
                                     Expr::Binary {
                                         op: BinOp::Add,
                                         lhs: Box::new(Expr::Var(dst_base.clone())),
-                                        rhs: Box::new(Expr::IntLit(k as i64)),
+                                        rhs: Box::new(Expr::IntLit(foff)),
                                     }
                                 };
                                 let finv = sdef.field_invs.get(fname).copied();
                                 let ffx = sdef.field_fixed.contains(fname);
-                                copy_stmts.push(Stmt::Expr(Expr::MemStore {
-                                    index: Box::new(dst_a),
-                                    value: Box::new(Expr::MemLoad {
-                                        index: Box::new(src_a),
+                                if sdef.field_dec64.contains(fname) {
+                                    copy_stmts.push(Stmt::Expr(Expr::MemStore64 {
+                                        index: Box::new(dst_a),
+                                        value: Box::new(Expr::MemLoad64 {
+                                            index: Box::new(src_a),
+                                            inv: finv,
+                                            region: data_region,
+                                        }),
+                                        inv: finv,
+                                        region: data_region,
+                                    }));
+                                } else {
+                                    copy_stmts.push(Stmt::Expr(Expr::MemStore {
+                                        index: Box::new(dst_a),
+                                        value: Box::new(Expr::MemLoad {
+                                            index: Box::new(src_a),
+                                            inv: finv,
+                                            fixed_ty: ffx,
+                                            region: data_region,
+                                        }),
                                         inv: finv,
                                         fixed_ty: ffx,
                                         region: data_region,
-                                    }),
-                                    inv: finv,
-                                    fixed_ty: ffx,
-                                    region: data_region,
-                                }));
+                                    }));
+                                }
                             }
                         } else if meta.is_byte {
                             copy_stmts.push(Stmt::Expr(Expr::ByteStore {
@@ -4410,6 +4723,17 @@ impl ModuleResolver {
                                     index: Box::new(Expr::Var(src_base)),
                                     region: data_region,
                                 }),
+                                region: data_region,
+                            }));
+                        } else if meta.is_dec64 {
+                            copy_stmts.push(Stmt::Expr(Expr::MemStore64 {
+                                index: Box::new(Expr::Var(dst_base)),
+                                value: Box::new(Expr::MemLoad64 {
+                                    index: Box::new(Expr::Var(src_base)),
+                                    inv: meta.inv,
+                                    region: data_region,
+                                }),
+                                inv: meta.inv,
                                 region: data_region,
                             }));
                         } else {
@@ -4775,7 +5099,7 @@ impl ModuleResolver {
                             )
                         })?;
                         match cdef.value {
-                            ConstValue::Int(v) | ConstValue::Fixed(v) => ResolvedPat::Int(v),
+                            ConstValue::Int(v) | ConstValue::Fixed(v) | ConstValue::Dec64(v) => ResolvedPat::Int(v),
                             ConstValue::Bool(b) => ResolvedPat::Bool(b),
                         }
                     }
@@ -4827,7 +5151,7 @@ impl ModuleResolver {
                             ResolvedPat::Enum { enum_name, variant, value }
                         } else {
                             match self.resolve_path_const(segs, *pspan)? {
-                                ConstValue::Int(v) | ConstValue::Fixed(v) => ResolvedPat::Int(v),
+                                ConstValue::Int(v) | ConstValue::Fixed(v) | ConstValue::Dec64(v) => ResolvedPat::Int(v),
                                 ConstValue::Bool(b) => ResolvedPat::Bool(b),
                             }
                         }
@@ -5044,6 +5368,7 @@ pub(super) fn infer_and_rewrite_fixed_expr(
     match expr {
         Expr::IntLit(_) => Type::I64,
         Expr::FixedLit(_) => Type::Fixed,
+        Expr::DecLit(_) => Type::Dec64,
         Expr::BoolLit(_) => Type::Bool,
         Expr::StrLit(_) => Type::Str,
         Expr::UnitLit => Type::Unit,
@@ -5057,6 +5382,15 @@ pub(super) fn infer_and_rewrite_fixed_expr(
             }
         }
         Expr::MemStore { index, value, .. } => {
+            infer_and_rewrite_fixed_expr(index, env, fn_rets);
+            infer_and_rewrite_fixed_expr(value, env, fn_rets);
+            Type::Unit
+        }
+        Expr::MemLoad64 { index, .. } => {
+            infer_and_rewrite_fixed_expr(index, env, fn_rets);
+            Type::Dec64
+        }
+        Expr::MemStore64 { index, value, .. } => {
             infer_and_rewrite_fixed_expr(index, env, fn_rets);
             infer_and_rewrite_fixed_expr(value, env, fn_rets);
             Type::Unit
@@ -5077,6 +5411,8 @@ pub(super) fn infer_and_rewrite_fixed_expr(
                 UnaryOp::Not => Type::Bool,
                 UnaryOp::IntToFixed | UnaryOp::RawToFixed => Type::Fixed,
                 UnaryOp::FixedToInt | UnaryOp::FixedToRaw => Type::I64,
+                UnaryOp::IntToDec64 | UnaryOp::RawToDec64 => Type::Dec64,
+                UnaryOp::Dec64ToInt | UnaryOp::Dec64ToRaw => Type::I64,
                 UnaryOp::ToU8 => Type::U8,
             }
         }
@@ -5089,13 +5425,22 @@ pub(super) fn infer_and_rewrite_fixed_expr(
                 } else if *op == BinOp::Div {
                     *op = BinOp::FixedDiv;
                 }
+            } else if lt == Type::Dec64 && rt == Type::Dec64 {
+                if *op == BinOp::Mul {
+                    *op = BinOp::DecMul;
+                } else if *op == BinOp::Div {
+                    *op = BinOp::DecDiv;
+                }
             }
             match op {
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => Type::Bool,
                 BinOp::FixedMul | BinOp::FixedDiv => Type::Fixed,
+                BinOp::DecMul | BinOp::DecDiv => Type::Dec64,
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
                     if lt == Type::Fixed || rt == Type::Fixed {
                         Type::Fixed
+                    } else if lt == Type::Dec64 || rt == Type::Dec64 {
+                        Type::Dec64
                     } else {
                         Type::I64
                     }

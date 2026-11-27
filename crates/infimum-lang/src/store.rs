@@ -976,7 +976,9 @@ fn type_has_secret(ty: &Type) -> bool {
         Type::Secret(_) => true,
         Type::Tuple(ts) => ts.iter().any(type_has_secret),
         Type::Slice(inner) => type_has_secret(inner),
-        Type::I64 | Type::U8 | Type::Fixed | Type::Bool | Type::Str | Type::Unit => false,
+        Type::I64 | Type::U8 | Type::Fixed | Type::Dec64 | Type::Bool | Type::Str | Type::Unit => {
+            false
+        }
     }
 }
 
@@ -1004,8 +1006,11 @@ fn expr_uses_secret(e: &Expr) -> bool {
         Expr::SecretWrap(_) | Expr::Reveal { .. } => true,
         Expr::Unary { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::MemLoad64 { index: inner, .. }
         | Expr::ByteLoad { index: inner, .. } => expr_uses_secret(inner),
-        Expr::MemStore { index, value, .. } | Expr::ByteStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. }
+        | Expr::MemStore64 { index, value, .. }
+        | Expr::ByteStore { index, value, .. } => {
             expr_uses_secret(index) || expr_uses_secret(value)
         }
         Expr::Binary { lhs, rhs, .. } => expr_uses_secret(lhs) || expr_uses_secret(rhs),
@@ -1029,9 +1034,13 @@ fn expr_uses_secret(e: &Expr) -> bool {
         Expr::RangeCheck { lo, hi, len } => {
             expr_uses_secret(lo) || expr_uses_secret(hi) || expr_uses_secret(len)
         }
-        Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::StrLit(_) | Expr::UnitLit | Expr::Var(_) => {
-            false
-        }
+        Expr::IntLit(_)
+        | Expr::FixedLit(_)
+        | Expr::DecLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StrLit(_)
+        | Expr::UnitLit
+        | Expr::Var(_) => false,
     }
 }
 
@@ -1069,6 +1078,7 @@ fn collect_named_calls(expr: &Expr, self_name: &str, out: &mut BTreeSet<String>)
         }
         Expr::Unary { expr: inner, .. }
         | Expr::MemLoad { index: inner, .. }
+        | Expr::MemLoad64 { index: inner, .. }
         | Expr::ByteLoad { index: inner, .. }
         | Expr::SecretWrap(inner)
         | Expr::Reveal { expr: inner, .. }
@@ -1097,7 +1107,7 @@ fn collect_named_calls(expr: &Expr, self_name: &str, out: &mut BTreeSet<String>)
                 collect_named_calls(e, self_name, out);
             }
         }
-        Expr::MemStore { index, value, .. } => {
+        Expr::MemStore { index, value, .. } | Expr::MemStore64 { index, value, .. } => {
             collect_named_calls(index, self_name, out);
             collect_named_calls(value, self_name, out);
         }
@@ -1120,7 +1130,13 @@ fn collect_named_calls(expr: &Expr, self_name: &str, out: &mut BTreeSet<String>)
             }
             collect_named_calls(tail, self_name, out);
         }
-        Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::StrLit(_) | Expr::UnitLit | Expr::Var(_) => {}
+        Expr::IntLit(_)
+        | Expr::FixedLit(_)
+        | Expr::DecLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StrLit(_)
+        | Expr::UnitLit
+        | Expr::Var(_) => {}
     }
 }
 

@@ -115,6 +115,30 @@ impl<'a> Evaluator<'a> {
         Ok(())
     }
 
+    fn load_i64(&self, word_idx: i64) -> Result<i64, String> {
+        if !(0..MAX_EVAL_MEM_WORDS - 1).contains(&word_idx) {
+            return Err(format!("Out-of-bounds mem_load64({word_idx})"));
+        }
+        let off = (word_idx as usize) * 4;
+        if off + 8 <= self.mem.len() {
+            Ok(i64::from_le_bytes(self.mem[off..off + 8].try_into().unwrap()))
+        } else {
+            Ok(0)
+        }
+    }
+
+    fn store_i64(&mut self, word_idx: i64, val: i64) -> Result<(), String> {
+        if !(0..MAX_EVAL_MEM_WORDS - 1).contains(&word_idx) {
+            return Err(format!("Out-of-bounds mem_store64({word_idx})"));
+        }
+        let off = (word_idx as usize) * 4;
+        if off + 8 > self.mem.len() {
+            self.mem.resize(off + 8, 0);
+        }
+        self.mem[off..off + 8].copy_from_slice(&val.to_le_bytes());
+        Ok(())
+    }
+
     fn intern_str(&mut self, s: &str) -> Result<(i64, i64), String> {
         if let Some(&pair) = self.str_pool.get(s) {
             return Ok(pair);
@@ -255,7 +279,7 @@ impl<'a> Evaluator<'a> {
     ) -> Result<Val, String> {
         self.tick()?;
         match expr {
-            Expr::IntLit(v) | Expr::FixedLit(v) => Ok(Val::Int(*v)),
+            Expr::IntLit(v) | Expr::FixedLit(v) | Expr::DecLit(v) => Ok(Val::Int(*v)),
             Expr::BoolLit(b) => Ok(Val::Bool(*b)),
             Expr::StrLit(s) => {
                 let (ptr, len) = self.intern_str(s)?;
@@ -271,6 +295,9 @@ impl<'a> Evaluator<'a> {
                     UnaryOp::IntToFixed => Ok(Val::Int(v.as_int()?.wrapping_mul(65536))),
                     UnaryOp::FixedToInt => Ok(Val::Int(v.as_int()? / 65536)),
                     UnaryOp::FixedToRaw | UnaryOp::RawToFixed => Ok(Val::Int(v.as_int()?)),
+                    UnaryOp::IntToDec64 => Ok(Val::Int(v.as_int()?.wrapping_mul(10_000))),
+                    UnaryOp::Dec64ToInt => Ok(Val::Int(v.as_int()? / 10_000)),
+                    UnaryOp::Dec64ToRaw | UnaryOp::RawToDec64 => Ok(Val::Int(v.as_int()?)),
                     UnaryOp::ToU8 => Ok(Val::Int(v.as_int()? & 0xFF)),
                 }
             }
@@ -317,6 +344,18 @@ impl<'a> Evaluator<'a> {
                             return Err("Fixed-point division by zero during test".to_string());
                         }
                         let q = ((lv.as_int()? as i128) * 65536) / (d as i128);
+                        Ok(Val::Int(q as i64))
+                    }
+                    BinOp::DecMul => {
+                        let prod = (lv.as_int()? as i128 * rv.as_int()? as i128) / 10_000;
+                        Ok(Val::Int(prod as i64))
+                    }
+                    BinOp::DecDiv => {
+                        let d = rv.as_int()?;
+                        if d == 0 {
+                            return Err("dec64 division by zero during test".to_string());
+                        }
+                        let q = ((lv.as_int()? as i128) * 10_000) / (d as i128);
                         Ok(Val::Int(q as i64))
                     }
                     BinOp::Mod => {
@@ -395,6 +434,16 @@ impl<'a> Evaluator<'a> {
                 let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
                 let val = self.eval_expr(value, scopes, cur_fn)?.as_int()?;
                 self.store_byte(idx, val)?;
+                Ok(Val::Unit)
+            }
+            Expr::MemLoad64 { index, .. } => {
+                let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
+                Ok(Val::Int(self.load_i64(idx)?))
+            }
+            Expr::MemStore64 { index, value, .. } => {
+                let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
+                let val = self.eval_expr(value, scopes, cur_fn)?.as_int()?;
+                self.store_i64(idx, val)?;
                 Ok(Val::Unit)
             }
             Expr::SecretWrap(inner) | Expr::Reveal { expr: inner, .. } => {

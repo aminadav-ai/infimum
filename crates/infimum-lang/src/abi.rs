@@ -74,7 +74,7 @@ pub fn generate_rust_abi(module: &Module) -> Result<String, InfimumDiagnostic> {
         out.push_str("\n// --- Constants ---\n");
         for c in &module.consts {
             match c.value {
-                ConstValue::Int(v) | ConstValue::Fixed(v) => {
+                ConstValue::Int(v) | ConstValue::Fixed(v) | ConstValue::Dec64(v) => {
                     let _ = writeln!(out, "pub const {}: i64 = {};", c.name, v);
                 }
                 ConstValue::Bool(b) => {
@@ -220,7 +220,7 @@ pub fn generate_js_abi(module: &Module) -> Result<String, InfimumDiagnostic> {
         out.push_str("\n// --- Constants ---\n");
         for c in &module.consts {
             match c.value {
-                ConstValue::Int(v) | ConstValue::Fixed(v) => {
+                ConstValue::Int(v) | ConstValue::Fixed(v) | ConstValue::Dec64(v) => {
                     let _ = writeln!(out, "export const {} = {};", c.name, v);
                 }
                 ConstValue::Bool(b) => {

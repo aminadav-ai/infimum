@@ -338,6 +338,7 @@ where
     match expr {
         Expr::IntLit(v) => Ok(Expr::IntLit(*v)),
         Expr::FixedLit(v) => Ok(Expr::FixedLit(*v)),
+        Expr::DecLit(v) => Ok(Expr::DecLit(*v)),
         Expr::BoolLit(b) => Ok(Expr::BoolLit(*b)),
         Expr::StrLit(s) => Ok(Expr::StrLit(s.clone())),
         Expr::UnitLit => Ok(Expr::UnitLit),
@@ -537,6 +538,52 @@ where
                     resolve_name,
                     resolve_hash,
                 )?),
+                region: *region,
+            })
+        }
+        Expr::MemLoad64 { index, inv, region } => {
+            perform_effects.insert("Mem".to_string());
+            Ok(Expr::MemLoad64 {
+                index: Box::new(canon_expr(
+                    index,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                inv: *inv,
+                region: *region,
+            })
+        }
+        Expr::MemStore64 {
+            index,
+            value,
+            inv,
+            region,
+        } => {
+            perform_effects.insert("Mem".to_string());
+            Ok(Expr::MemStore64 {
+                index: Box::new(canon_expr(
+                    index,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                value: Box::new(canon_expr(
+                    value,
+                    self_name,
+                    env,
+                    deps,
+                    perform_effects,
+                    resolve_name,
+                    resolve_hash,
+                )?),
+                inv: *inv,
                 region: *region,
             })
         }
@@ -887,6 +934,7 @@ fn format_expr(expr: &Expr, out: &mut String) {
     match expr {
         Expr::IntLit(v) => out.push_str(&v.to_string()),
         Expr::FixedLit(v) => out.push_str(&format!("fixed_raw({v})")),
+        Expr::DecLit(v) => out.push_str(&format!("dec64_raw({v})")),
         Expr::BoolLit(b) => out.push_str(if *b { "true" } else { "false" }),
         Expr::StrLit(s) => {
             out.push('"');
@@ -983,6 +1031,18 @@ fn format_expr(expr: &Expr, out: &mut String) {
         }
         Expr::ByteStore { index, value, .. } => {
             out.push_str("byte_store(");
+            format_expr(index, out);
+            out.push_str(", ");
+            format_expr(value, out);
+            out.push(')');
+        }
+        Expr::MemLoad64 { index, .. } => {
+            out.push_str("mem_load64(");
+            format_expr(index, out);
+            out.push(')');
+        }
+        Expr::MemStore64 { index, value, .. } => {
+            out.push_str("mem_store64(");
             format_expr(index, out);
             out.push_str(", ");
             format_expr(value, out);

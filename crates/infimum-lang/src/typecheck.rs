@@ -168,6 +168,7 @@ where
     match expr {
         Expr::IntLit(_) => Ok(Type::I64),
         Expr::FixedLit(_) => Ok(Type::Fixed),
+        Expr::DecLit(_) => Ok(Type::Dec64),
         Expr::BoolLit(_) => Ok(Type::Bool),
         Expr::StrLit(_) => Ok(Type::Str),
         Expr::UnitLit => Ok(Type::Unit),
@@ -260,11 +261,16 @@ where
             match (op, &t) {
                 (UnaryOp::Neg, Type::I64 | Type::U8) => Ok(Type::I64),
                 (UnaryOp::Neg, Type::Fixed) => Ok(Type::Fixed),
+                (UnaryOp::Neg, Type::Dec64) => Ok(Type::Dec64),
                 (UnaryOp::Not, Type::Bool) => Ok(Type::Bool),
                 (UnaryOp::IntToFixed, Type::I64 | Type::U8) => Ok(Type::Fixed),
                 (UnaryOp::FixedToInt, Type::Fixed) => Ok(Type::I64),
                 (UnaryOp::FixedToRaw, Type::Fixed) => Ok(Type::I64),
                 (UnaryOp::RawToFixed, Type::I64 | Type::U8) => Ok(Type::Fixed),
+                (UnaryOp::IntToDec64, Type::I64 | Type::U8) => Ok(Type::Dec64),
+                (UnaryOp::Dec64ToInt, Type::Dec64) => Ok(Type::I64),
+                (UnaryOp::Dec64ToRaw, Type::Dec64) => Ok(Type::I64),
+                (UnaryOp::RawToDec64, Type::I64 | Type::U8) => Ok(Type::Dec64),
                 (UnaryOp::ToU8, Type::I64 | Type::U8) => Ok(Type::U8),
                 _ => Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
@@ -315,16 +321,18 @@ where
                         Ok(Type::I64)
                     } else if lt == Type::Fixed && rt == Type::Fixed {
                         Ok(Type::Fixed)
+                    } else if lt == Type::Dec64 && rt == Type::Dec64 {
+                        Ok(Type::Dec64)
                     } else {
                         Err(InfimumDiagnostic::new(
                             "E060_TYPE_MISMATCH",
                             "typecheck",
                             format!(
-                                "Arithmetic operator '{}' expects (i64, i64) or (fixed, fixed), found ({lt}, {rt}) in '{fn_name}'",
+                                "Arithmetic operator '{}' expects (i64, i64), (fixed, fixed), or (dec64, dec64), found ({lt}, {rt}) in '{fn_name}'",
                                 op.as_str()
                             ),
                             Span::zero(),
-                            "Convert integers explicitly with fixed(x) before combining with fixed values",
+                            "Convert integers explicitly with fixed(x) or dec64(x) before combining with fixed/dec64 values",
                         ))
                     }
                 }
@@ -380,6 +388,22 @@ where
                         ))
                     }
                 }
+                BinOp::DecMul | BinOp::DecDiv => {
+                    if lt == Type::Dec64 && rt == Type::Dec64 {
+                        Ok(Type::Dec64)
+                    } else {
+                        Err(InfimumDiagnostic::new(
+                            "E060_TYPE_MISMATCH",
+                            "typecheck",
+                            format!(
+                                "Decimal operator '{}' expects (dec64, dec64), found ({lt}, {rt}) in '{fn_name}'",
+                                op.as_str()
+                            ),
+                            Span::zero(),
+                            "Convert integers explicitly with dec64(x) before multiplying/dividing dec64 values",
+                        ))
+                    }
+                }
                 BinOp::Mod
                 | BinOp::BitAnd
                 | BinOp::BitOr
@@ -404,6 +428,7 @@ where
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     if (is_int_like(&lt) && is_int_like(&rt))
                         || (lt == Type::Fixed && rt == Type::Fixed)
+                        || (lt == Type::Dec64 && rt == Type::Dec64)
                     {
                         Ok(Type::Bool)
                     } else {
@@ -411,7 +436,7 @@ where
                             "E060_TYPE_MISMATCH",
                             "typecheck",
                             format!(
-                                "Comparison operator '{}' expects (i64, i64) or (fixed, fixed), found ({lt}, {rt}) in '{fn_name}'",
+                                "Comparison operator '{}' expects (i64, i64), (fixed, fixed), or (dec64, dec64), found ({lt}, {rt}) in '{fn_name}'",
                                 op.as_str()
                             ),
                             Span::zero(),
@@ -658,6 +683,71 @@ where
                     format!("Memory store in '{fn_name}' expects '{expected_ty}', found '{val_ty}'"),
                     Span::zero(),
                     format!("Provide a '{expected_ty}' value (use fixed(x) / fixed_to_int(x) if converting)"),
+                ));
+            }
+            Ok(Type::Unit)
+        }
+        Expr::MemLoad64 { index, .. } => {
+            if in_contract {
+                return Err(InfimumDiagnostic::new(
+                    "E066_EFFECT_IN_CONTRACT",
+                    "typecheck",
+                    format!("'mem_load64' is forbidden inside contracts of '{fn_name}'"),
+                    Span::zero(),
+                    "Contracts ('req'/'ens') must be pure mathematical specifications",
+                ));
+            }
+            let idx_ty = check_expr(index, fn_name, self_node, env, load_callee, sinks, false)?;
+            if !is_int_like(&idx_ty) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'mem_load64' index in '{fn_name}' must be 'i64', found '{idx_ty}'"),
+                    Span::zero(),
+                    "Pass an i64 word address to mem_load64",
+                ));
+            }
+            Ok(Type::Dec64)
+        }
+        Expr::MemStore64 { index, value, .. } => {
+            if in_contract {
+                return Err(InfimumDiagnostic::new(
+                    "E066_EFFECT_IN_CONTRACT",
+                    "typecheck",
+                    format!("'mem_store64' is forbidden inside contracts of '{fn_name}'"),
+                    Span::zero(),
+                    "Contracts ('req'/'ens') must be pure mathematical specifications",
+                ));
+            }
+            let idx_ty = check_expr(index, fn_name, self_node, env, load_callee, sinks, false)?;
+            if !is_int_like(&idx_ty) {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'mem_store64' index in '{fn_name}' must be 'i64', found '{idx_ty}'"),
+                    Span::zero(),
+                    "Pass an i64 word address to mem_store64",
+                ));
+            }
+            let val_ty = check_expr(value, fn_name, self_node, env, load_callee, sinks, false)?;
+            if type_contains_secret(&val_ty) {
+                return Err(InfimumDiagnostic::new(
+                    "E063_RAW_SECRET_SINK_LEAK",
+                    "typecheck",
+                    format!(
+                        "Security violation in '{fn_name}': raw '{val_ty}' cannot be written to shared Strata linear memory"
+                    ),
+                    Span::zero(),
+                    "Secrets cannot be written to shared linear memory",
+                ));
+            }
+            if val_ty != Type::Dec64 {
+                return Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'mem_store64' value in '{fn_name}' must be 'dec64', found '{val_ty}'"),
+                    Span::zero(),
+                    "Provide a 'dec64' value (use dec64(x) / dec64_from_raw(x) if converting)",
                 ));
             }
             Ok(Type::Unit)
@@ -1241,6 +1331,8 @@ pub fn type_contains_secret(ty: &Type) -> bool {
         Type::Secret(_) => true,
         Type::Tuple(ts) => ts.iter().any(type_contains_secret),
         Type::Slice(inner) => type_contains_secret(inner),
-        Type::I64 | Type::U8 | Type::Fixed | Type::Bool | Type::Str | Type::Unit => false,
+        Type::I64 | Type::U8 | Type::Fixed | Type::Dec64 | Type::Bool | Type::Str | Type::Unit => {
+            false
+        }
     }
 }

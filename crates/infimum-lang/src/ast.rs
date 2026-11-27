@@ -17,6 +17,7 @@ pub enum Type {
     I64,
     U8,
     Fixed,
+    Dec64,
     Bool,
     Str,
     Unit,
@@ -31,6 +32,7 @@ impl fmt::Display for Type {
             Type::I64 => write!(f, "i64"),
             Type::U8 => write!(f, "u8"),
             Type::Fixed => write!(f, "fixed"),
+            Type::Dec64 => write!(f, "dec64"),
             Type::Bool => write!(f, "bool"),
             Type::Str => write!(f, "str"),
             Type::Unit => write!(f, "unit"),
@@ -79,6 +81,10 @@ pub enum UnaryOp {
     FixedToInt,
     FixedToRaw,
     RawToFixed,
+    IntToDec64,
+    Dec64ToInt,
+    Dec64ToRaw,
+    RawToDec64,
     ToU8,
 }
 
@@ -91,6 +97,10 @@ impl UnaryOp {
             UnaryOp::FixedToInt => "fixed_to_int",
             UnaryOp::FixedToRaw => "fixed_raw",
             UnaryOp::RawToFixed => "fixed_from_raw",
+            UnaryOp::IntToDec64 => "dec64",
+            UnaryOp::Dec64ToInt => "dec64_to_int",
+            UnaryOp::Dec64ToRaw => "dec64_raw",
+            UnaryOp::RawToDec64 => "dec64_from_raw",
             UnaryOp::ToU8 => "u8",
         }
     }
@@ -104,6 +114,8 @@ pub enum BinOp {
     Div,
     FixedMul,
     FixedDiv,
+    DecMul,
+    DecDiv,
     Mod,
     BitAnd,
     BitOr,
@@ -129,6 +141,8 @@ impl BinOp {
             BinOp::Div => "/",
             BinOp::FixedMul => "*.",
             BinOp::FixedDiv => "/.",
+            BinOp::DecMul => "*d",
+            BinOp::DecDiv => "/d",
             BinOp::Mod => "%",
             BinOp::BitAnd => "&",
             BinOp::BitOr => "|",
@@ -183,6 +197,7 @@ pub enum Stmt {
 pub enum Expr {
     IntLit(i64),
     FixedLit(i64),
+    DecLit(i64),
     BoolLit(bool),
     StrLit(String),
     UnitLit,
@@ -237,6 +252,23 @@ pub enum Expr {
     ByteStore {
         index: Box<Expr>,
         value: Box<Expr>,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        region: u32,
+    },
+    /// 64-bit signed word-aligned load (`i64.load align=2`), used for `dec64` in `layout` and `[dec64]`.
+    MemLoad64 {
+        index: Box<Expr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inv: Option<(i64, i64)>,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        region: u32,
+    },
+    /// 64-bit signed word-aligned store (`i64.store align=2`), used for `dec64` in `layout` and `[dec64]`.
+    MemStore64 {
+        index: Box<Expr>,
+        value: Box<Expr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inv: Option<(i64, i64)>,
         #[serde(default, skip_serializing_if = "is_zero_u32")]
         region: u32,
     },
@@ -300,6 +332,7 @@ pub struct FnDef {
 pub enum ConstValue {
     Int(i64),
     Fixed(i64),
+    Dec64(i64),
     Bool(bool),
 }
 

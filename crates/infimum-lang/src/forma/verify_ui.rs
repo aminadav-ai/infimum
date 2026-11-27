@@ -73,7 +73,7 @@ impl FormaSmtBuilder {
         for p in params {
             let smt_name = format!("fp_{}", p.name);
             let sort = match &p.ty {
-                Type::I64 | Type::U8 | Type::Fixed => "Int",
+                Type::I64 | Type::U8 | Type::Fixed | Type::Dec64 => "Int",
                 Type::Bool => "Bool",
                 Type::Str => "String",
                 Type::Unit => "Bool",
@@ -309,7 +309,7 @@ impl FormaSmtBuilder {
 
     fn encode_expr(&mut self, expr: &Expr) -> String {
         match expr {
-            Expr::IntLit(v) | Expr::FixedLit(v) => {
+            Expr::IntLit(v) | Expr::FixedLit(v) | Expr::DecLit(v) => {
                 if *v < 0 {
                     format!("(- {})", v.unsigned_abs())
                 } else {
@@ -332,6 +332,9 @@ impl FormaSmtBuilder {
                     UnaryOp::IntToFixed => format!("(* {sub} 65536)"),
                     UnaryOp::FixedToInt => format!("(div {sub} 65536)"),
                     UnaryOp::FixedToRaw | UnaryOp::RawToFixed => sub,
+                    UnaryOp::IntToDec64 => format!("(* {sub} 10000)"),
+                    UnaryOp::Dec64ToInt => format!("(div {sub} 10000)"),
+                    UnaryOp::Dec64ToRaw | UnaryOp::RawToDec64 => sub,
                     UnaryOp::ToU8 => format!("(mod {sub} 256)"),
                 }
             }
@@ -345,6 +348,8 @@ impl FormaSmtBuilder {
                     BinOp::Div => format!("(div {l} {r})"),
                     BinOp::FixedMul => format!("(div (* {l} {r}) 65536)"),
                     BinOp::FixedDiv => format!("(div (* {l} 65536) {r})"),
+                    BinOp::DecMul => format!("(div (* {l} {r}) 10000)"),
+                    BinOp::DecDiv => format!("(div (* {l} 10000) {r})"),
                     BinOp::Mod => format!("(mod {l} {r})"),
                     BinOp::Eq => format!("(= {l} {r})"),
                     BinOp::Ne => format!("(distinct {l} {r})"),
@@ -374,8 +379,10 @@ impl FormaSmtBuilder {
             Expr::Call { .. }
             | Expr::Perform { .. }
             | Expr::MemLoad { .. }
+            | Expr::MemLoad64 { .. }
             | Expr::ByteLoad { .. } => self.fresh_int("dyn"),
             Expr::MemStore { .. }
+            | Expr::MemStore64 { .. }
             | Expr::ByteStore { .. }
             | Expr::Block { .. }
             | Expr::TupleLit(_)
