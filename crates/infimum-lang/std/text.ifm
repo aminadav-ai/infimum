@@ -8,6 +8,7 @@
 use "std/math.ifm";
 use "std/sys_mem.ifm";
 use "std/gfx.ifm";
+use "std/utf8.ifm";
 
 pub const STD_FONT_METRICS_FLAG_WORD: i64 = SYS_FONT_METRICS_FLAG_WORD;
 pub const STD_FONT_METRICS_TABLE_WORD: i64 = SYS_FONT_METRICS_TABLE_WORD;
@@ -54,23 +55,27 @@ pub fn ui_glyph(x: i64, y: i64, cp: i64, size: i64, style: i64, rgba: i64, clip:
 }
 
 pub fn ui_text_width(s: str, size: i64, style: i64) -[Mem]-> i64 {
-  do Mem.store_str(STD_STR_SCRATCH_WORD, s);
-  let ptr = mem_load(STD_STR_SCRATCH_WORD);
-  let n = clamp_i64(mem_load(ptr), 0, 256);
+  let bytes = s.as_bytes();
+  let mut pos = 0;
   let mut w = 0;
-  for i in 0..n max 256 {
-    w += glyph_px(mem_load(ptr + 1 + i), size, style);
+  while pos < bytes.len max 512 {
+    let (cp, next_pos) = utf8_decode_next(bytes, pos);
+    if next_pos <= pos { break; }
+    w += glyph_px(cp, size, style);
+    pos = next_pos;
   }
   w
 }
 
 pub fn ui_text(x: i64, y: i64, s: str, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
-  do Mem.store_str(STD_STR_SCRATCH_WORD, s);
-  let ptr = mem_load(STD_STR_SCRATCH_WORD);
-  let n = clamp_i64(mem_load(ptr), 0, 256);
+  let bytes = s.as_bytes();
+  let mut pos = 0;
   let mut cx = x;
-  for i in 0..n max 256 {
-    cx += ui_glyph(cx, y, mem_load(ptr + 1 + i), size, style, rgba, clip);
+  while pos < bytes.len max 512 {
+    let (cp, next_pos) = utf8_decode_next(bytes, pos);
+    if next_pos <= pos { break; }
+    cx += ui_glyph(cx, y, cp, size, style, rgba, clip);
+    pos = next_pos;
   }
   cx - x
 }

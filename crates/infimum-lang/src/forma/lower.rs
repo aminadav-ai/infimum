@@ -27,6 +27,8 @@ const HELPER_CP_ATLAS: &str = "codepoint_to_atlas";
 const HELPER_GLYPH_PX: &str = "glyph_px";
 const HELPER_MEASURE_TEXT: &str = "$forma_measure_text";
 const HELPER_DRAW_TEXT: &str = "$forma_draw_text";
+const HELPER_UTF8_CP: &str = "$forma_utf8_cp";
+const HELPER_UTF8_STEP: &str = "$forma_utf8_step";
 const HELPER_TOGGLE: &str = "__forma_toggle";
 const HELPER_SLIDER: &str = "__forma_slider";
 const HELPER_TEXT_INPUT: &str = "__forma_text_input";
@@ -1568,27 +1570,7 @@ fn emit_render_node(stmts: &mut Vec<Stmt>, n: &LoweredNodeInfo) {
             let muted_col = Expr::IntLit(0xFF94_A3B8_i64);
             let sz = n.text_size.clone().unwrap_or(Expr::IntLit(14));
             let mask_expr = n.mask.clone().unwrap_or(Expr::BoolLit(false));
-            let ph_ptr_var = format!("_fph_{}", n.id);
-            if let Some(ph_expr) = &n.placeholder {
-                body.push(Stmt::Expr(Expr::Perform {
-                    effect: "Mem".to_string(),
-                    op: "store_str".to_string(),
-                    args: vec![Expr::IntLit(FORMA_MEM_STR_SCRATCH), ph_expr.clone()],
-                }));
-                body.push(Stmt::Let {
-                    name: ph_ptr_var.clone(),
-                    mutable: false,
-                    ty: None,
-                    value: mem_load(FORMA_MEM_STR_SCRATCH),
-                });
-            } else {
-                body.push(Stmt::Let {
-                    name: ph_ptr_var.clone(),
-                    mutable: false,
-                    ty: None,
-                    value: Expr::IntLit(0),
-                });
-            }
+            let ph_expr = n.placeholder.clone().unwrap_or_else(|| Expr::StrLit(String::new()));
             let ev_var = format!("_ftin_{}", n.id);
             body.push(Stmt::Let {
                 name: ev_var.clone(),
@@ -1613,7 +1595,7 @@ fn emit_render_node(stmts: &mut Vec<Stmt>, n: &LoweredNodeInfo) {
                         muted_col,
                         sz,
                         mask_expr,
-                        var(&ph_ptr_var),
+                        ph_expr,
                         var(&n.clip_var),
                     ],
                 ),
@@ -1964,6 +1946,169 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
     // (single source of truth for the font atlas mapper).
 
     // fn $forma_measure_text(s: str, size: i64, style: i64) -[Mem]-> i64
+    let byte_load_expr = |addr: Expr| Expr::ByteLoad {
+        index: Box::new(addr),
+        region: 0,
+    };
+
+    let utf8_cp_fn = FnDef {
+        name: HELPER_UTF8_CP.to_string(),
+        exported: false,
+        source_file: None,
+        span: None,
+        params: vec![
+            Param { name: "ptr".to_string(), ty: Type::I64 },
+            Param { name: "n".to_string(), ty: Type::I64 },
+            Param { name: "pos".to_string(), ty: Type::I64 },
+        ],
+        effects: mem_eff.clone(),
+        ret_type: Type::I64,
+        requires: Vec::new(),
+        ensures: Vec::new(),
+        body: Expr::Block {
+            stmts: vec![Stmt::Let {
+                name: "b0".to_string(),
+                mutable: false,
+                ty: None,
+                value: byte_load_expr(bin(BinOp::Add, var("ptr"), var("pos"))),
+            }],
+            tail: Box::new(Expr::If {
+                cond: Box::new(bin(BinOp::Lt, var("b0"), Expr::IntLit(128))),
+                then_branch: Box::new(var("b0")),
+                else_branch: Box::new(Expr::If {
+                    cond: Box::new(bin(
+                        BinOp::And,
+                        bin(BinOp::Lt, var("b0"), Expr::IntLit(224)),
+                        bin(BinOp::Lt, bin(BinOp::Add, var("pos"), Expr::IntLit(1)), var("n")),
+                    )),
+                    then_branch: Box::new(bin(
+                        BinOp::BitOr,
+                        bin(BinOp::Shl, bin(BinOp::BitAnd, var("b0"), Expr::IntLit(31)), Expr::IntLit(6)),
+                        bin(
+                            BinOp::BitAnd,
+                            byte_load_expr(bin(BinOp::Add, var("ptr"), bin(BinOp::Add, var("pos"), Expr::IntLit(1)))),
+                            Expr::IntLit(63),
+                        ),
+                    )),
+                    else_branch: Box::new(Expr::If {
+                        cond: Box::new(bin(
+                            BinOp::And,
+                            bin(BinOp::Lt, var("b0"), Expr::IntLit(240)),
+                            bin(BinOp::Lt, bin(BinOp::Add, var("pos"), Expr::IntLit(2)), var("n")),
+                        )),
+                        then_branch: Box::new(bin(
+                            BinOp::BitOr,
+                            bin(
+                                BinOp::BitOr,
+                                bin(BinOp::Shl, bin(BinOp::BitAnd, var("b0"), Expr::IntLit(15)), Expr::IntLit(12)),
+                                bin(
+                                    BinOp::Shl,
+                                    bin(
+                                        BinOp::BitAnd,
+                                        byte_load_expr(bin(BinOp::Add, var("ptr"), bin(BinOp::Add, var("pos"), Expr::IntLit(1)))),
+                                        Expr::IntLit(63),
+                                    ),
+                                    Expr::IntLit(6),
+                                ),
+                            ),
+                            bin(
+                                BinOp::BitAnd,
+                                byte_load_expr(bin(BinOp::Add, var("ptr"), bin(BinOp::Add, var("pos"), Expr::IntLit(2)))),
+                                Expr::IntLit(63),
+                            ),
+                        )),
+                        else_branch: Box::new(Expr::If {
+                            cond: Box::new(bin(BinOp::Lt, bin(BinOp::Add, var("pos"), Expr::IntLit(3)), var("n"))),
+                            then_branch: Box::new(bin(
+                                BinOp::BitOr,
+                                bin(
+                                    BinOp::BitOr,
+                                    bin(
+                                        BinOp::BitOr,
+                                        bin(BinOp::Shl, bin(BinOp::BitAnd, var("b0"), Expr::IntLit(7)), Expr::IntLit(18)),
+                                        bin(
+                                            BinOp::Shl,
+                                            bin(
+                                                BinOp::BitAnd,
+                                                byte_load_expr(bin(BinOp::Add, var("ptr"), bin(BinOp::Add, var("pos"), Expr::IntLit(1)))),
+                                                Expr::IntLit(63),
+                                            ),
+                                            Expr::IntLit(12),
+                                        ),
+                                    ),
+                                    bin(
+                                        BinOp::Shl,
+                                        bin(
+                                            BinOp::BitAnd,
+                                            byte_load_expr(bin(BinOp::Add, var("ptr"), bin(BinOp::Add, var("pos"), Expr::IntLit(2)))),
+                                            Expr::IntLit(63),
+                                        ),
+                                        Expr::IntLit(6),
+                                    ),
+                                ),
+                                bin(
+                                    BinOp::BitAnd,
+                                    byte_load_expr(bin(BinOp::Add, var("ptr"), bin(BinOp::Add, var("pos"), Expr::IntLit(3)))),
+                                    Expr::IntLit(63),
+                                ),
+                            )),
+                            else_branch: Box::new(Expr::IntLit(65533)),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    };
+
+    let utf8_step_fn = FnDef {
+        name: HELPER_UTF8_STEP.to_string(),
+        exported: false,
+        source_file: None,
+        span: None,
+        params: vec![
+            Param { name: "ptr".to_string(), ty: Type::I64 },
+            Param { name: "n".to_string(), ty: Type::I64 },
+            Param { name: "pos".to_string(), ty: Type::I64 },
+        ],
+        effects: mem_eff.clone(),
+        ret_type: Type::I64,
+        requires: Vec::new(),
+        ensures: Vec::new(),
+        body: Expr::Block {
+            stmts: vec![Stmt::Let {
+                name: "b0".to_string(),
+                mutable: false,
+                ty: None,
+                value: byte_load_expr(bin(BinOp::Add, var("ptr"), var("pos"))),
+            }],
+            tail: Box::new(Expr::If {
+                cond: Box::new(bin(BinOp::Lt, var("b0"), Expr::IntLit(128))),
+                then_branch: Box::new(Expr::IntLit(1)),
+                else_branch: Box::new(Expr::If {
+                    cond: Box::new(bin(
+                        BinOp::And,
+                        bin(BinOp::Lt, var("b0"), Expr::IntLit(224)),
+                        bin(BinOp::Lt, bin(BinOp::Add, var("pos"), Expr::IntLit(1)), var("n")),
+                    )),
+                    then_branch: Box::new(Expr::IntLit(2)),
+                    else_branch: Box::new(Expr::If {
+                        cond: Box::new(bin(
+                            BinOp::And,
+                            bin(BinOp::Lt, var("b0"), Expr::IntLit(240)),
+                            bin(BinOp::Lt, bin(BinOp::Add, var("pos"), Expr::IntLit(2)), var("n")),
+                        )),
+                        then_branch: Box::new(Expr::IntLit(3)),
+                        else_branch: Box::new(Expr::If {
+                            cond: Box::new(bin(BinOp::Lt, bin(BinOp::Add, var("pos"), Expr::IntLit(3)), var("n"))),
+                            then_branch: Box::new(Expr::IntLit(4)),
+                            else_branch: Box::new(Expr::IntLit(1)),
+                        }),
+                    }),
+                }),
+            }),
+        },
+    };
+
     let measure_text_fn = FnDef {
         name: HELPER_MEASURE_TEXT.to_string(),
         exported: false,
@@ -1980,16 +2125,11 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
         ensures: Vec::new(),
         body: Expr::Block {
             stmts: vec![
-                Stmt::Expr(Expr::Perform {
-                    effect: "Mem".to_string(),
-                    op: "store_str".to_string(),
-                    args: vec![Expr::IntLit(FORMA_MEM_STR_SCRATCH), var("s")],
-                }),
                 Stmt::Let {
                     name: "ptr".to_string(),
                     mutable: false,
                     ty: None,
-                    value: mem_load(FORMA_MEM_STR_SCRATCH),
+                    value: Expr::SlicePtr(Box::new(var("s"))),
                 },
                 Stmt::Let {
                     name: "n".to_string(),
@@ -1998,14 +2138,9 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                     value: call_named(
                         HELPER_CLAMP,
                         vec![
-                            Expr::MemLoad {
-                                index: Box::new(var("ptr")),
-        inv: None,
-        fixed_ty: false,
-        region: 0,
-                            },
+                            Expr::SliceLen(Box::new(var("s"))),
                             Expr::IntLit(0),
-                            Expr::IntLit(256),
+                            Expr::IntLit(512),
                         ],
                     ),
                 },
@@ -2041,22 +2176,13 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                 },
                 Stmt::While {
                     cond: bin(BinOp::Lt, var("i"), var("n")),
-                    max_iters: 256,
+                    max_iters: 512,
                     body: vec![
                         Stmt::Let {
                             name: "cp".to_string(),
                             mutable: false,
                             ty: None,
-                            value: Expr::MemLoad {
-                                index: Box::new(bin(
-                                    BinOp::Add,
-                                    bin(BinOp::Add, var("ptr"), Expr::IntLit(1)),
-                                    var("i"),
-                                )),
-        inv: None,
-        fixed_ty: false,
-        region: 0,
-                            },
+                            value: call_named(HELPER_UTF8_CP, vec![var("ptr"), var("n"), var("i")]),
                         },
                         Stmt::Assign {
                             name: "tw".to_string(),
@@ -2068,7 +2194,11 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                         },
                         Stmt::Assign {
                             name: "i".to_string(),
-                            value: bin(BinOp::Add, var("i"), Expr::IntLit(1)),
+                            value: bin(
+                                BinOp::Add,
+                                var("i"),
+                                call_named(HELPER_UTF8_STEP, vec![var("ptr"), var("n"), var("i")]),
+                            ),
                         },
                     ],
                 },
@@ -2169,16 +2299,11 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
         ensures: Vec::new(),
         body: Expr::Block {
             stmts: vec![
-                Stmt::Expr(Expr::Perform {
-                    effect: "Mem".to_string(),
-                    op: "store_str".to_string(),
-                    args: vec![Expr::IntLit(FORMA_MEM_STR_SCRATCH), var("s")],
-                }),
                 Stmt::Let {
                     name: "ptr".to_string(),
                     mutable: false,
                     ty: None,
-                    value: mem_load(FORMA_MEM_STR_SCRATCH),
+                    value: Expr::SlicePtr(Box::new(var("s"))),
                 },
                 Stmt::Let {
                     name: "n".to_string(),
@@ -2187,14 +2312,9 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                     value: call_named(
                         HELPER_CLAMP,
                         vec![
-                            Expr::MemLoad {
-                                index: Box::new(var("ptr")),
-        inv: None,
-        fixed_ty: false,
-        region: 0,
-                            },
+                            Expr::SliceLen(Box::new(var("s"))),
                             Expr::IntLit(0),
-                            Expr::IntLit(256),
+                            Expr::IntLit(512),
                         ],
                     ),
                 },
@@ -2237,22 +2357,13 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                         },
                         Stmt::While {
                             cond: bin(BinOp::Lt, var("mi"), var("n")),
-                            max_iters: 256,
+                            max_iters: 512,
                             body: vec![
                                 Stmt::Let {
                                     name: "mcp".to_string(),
                                     mutable: false,
                                     ty: None,
-                                    value: Expr::MemLoad {
-                                        index: Box::new(bin(
-                                            BinOp::Add,
-                                            bin(BinOp::Add, var("ptr"), Expr::IntLit(1)),
-                                            var("mi"),
-                                        )),
-        inv: None,
-        fixed_ty: false,
-        region: 0,
-                                    },
+                                    value: call_named(HELPER_UTF8_CP, vec![var("ptr"), var("n"), var("mi")]),
                                 },
                                 Stmt::Assign {
                                     name: "tw".to_string(),
@@ -2267,7 +2378,11 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                                 },
                                 Stmt::Assign {
                                     name: "mi".to_string(),
-                                    value: bin(BinOp::Add, var("mi"), Expr::IntLit(1)),
+                                    value: bin(
+                                        BinOp::Add,
+                                        var("mi"),
+                                        call_named(HELPER_UTF8_STEP, vec![var("ptr"), var("n"), var("mi")]),
+                                    ),
                                 },
                             ],
                         },
@@ -2372,22 +2487,13 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                 },
                 Stmt::While {
                     cond: bin(BinOp::Lt, var("i"), var("n")),
-                    max_iters: 256,
+                    max_iters: 512,
                     body: vec![
                         Stmt::Let {
                             name: "cp".to_string(),
                             mutable: false,
                             ty: None,
-                            value: Expr::MemLoad {
-                                index: Box::new(bin(
-                                    BinOp::Add,
-                                    bin(BinOp::Add, var("ptr"), Expr::IntLit(1)),
-                                    var("i"),
-                                )),
-        inv: None,
-        fixed_ty: false,
-        region: 0,
-                            },
+                            value: call_named(HELPER_UTF8_CP, vec![var("ptr"), var("n"), var("i")]),
                         },
                         Stmt::Let {
                             name: "adv".to_string(),
@@ -2485,7 +2591,11 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
                                     )));
                                     st_emit.push(Stmt::Assign {
                                         name: "i".to_string(),
-                                        value: bin(BinOp::Add, var("i"), Expr::IntLit(1)),
+                                        value: bin(
+                                            BinOp::Add,
+                                            var("i"),
+                                            call_named(HELPER_UTF8_STEP, vec![var("ptr"), var("n"), var("i")]),
+                                        ),
                                     });
                                     st_emit
                                 },
@@ -2552,6 +2662,8 @@ pub fn forma_runtime_helpers_with_text(cp_atlas_fn: &str, glyph_px_fn: &str) -> 
         clamp_fn,
         set_clip_fn,
         push_rect_fn,
+        utf8_cp_fn,
+        utf8_step_fn,
         measure_text_fn,
         draw_text_fn,
     ];

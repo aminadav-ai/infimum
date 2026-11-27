@@ -153,7 +153,9 @@ where
             },
             Expr::TupleLit(_) | Expr::TupleField { .. } => Type::I64,
             Expr::SliceLit { elem_ty, .. } => Type::Slice(Box::new(elem_ty.clone())),
-            Expr::SlicePtr(_) | Expr::StrPtr(_)
+            Expr::StrToBytes(_) => Type::Slice(Box::new(Type::U8)),
+            Expr::StrFromBytes(_) => Type::Str,
+            Expr::SlicePtr(_)
             | Expr::SliceLen(_)
             | Expr::BoundsCheck { .. }
             | Expr::RangeCheck { .. } => Type::I64,
@@ -287,6 +289,15 @@ where
         emit_checks: bool,
     ) -> Result<Option<(String, String)>, InfimumDiagnostic> {
         match expr {
+            Expr::StrLit(s) => {
+                let p = self.fresh_sym("str_ptr", &Type::I64);
+                self.assumptions.push(format!("(assert (>= {p} 0))"));
+                let l = s.len().to_string();
+                Ok(Some((p, l)))
+            }
+            Expr::StrToBytes(inner) | Expr::StrFromBytes(inner) => {
+                self.encode_slice_fields(inner, env, types, guard, emit_checks)
+            }
             Expr::SliceLit { ptr, len, .. } => {
                 let p = self.encode_expr(ptr, env, types, guard, emit_checks)?;
                 let l = self.encode_expr(len, env, types, guard, emit_checks)?;
@@ -459,7 +470,7 @@ where
                     callee_env.insert(format!("p{i}#{fi}"), esmt);
                     callee_types.insert(format!("p{i}#{fi}"), fty);
                 }
-            } else if matches!(callee_ast.params[i].ty, Type::Slice(_)) {
+            } else if matches!(callee_ast.params[i].ty, Type::Slice(_) | Type::Str) {
                 let mut tmp_env = env.clone();
                 let mut tmp_types = types.clone();
                 if let Some((psmt, lsmt)) =
@@ -503,7 +514,7 @@ where
         // 2. Introduce fresh result symbol (and slice #0/#1 slots if returning `[T]`)
         //    & assume callee's postconditions (or pure body summary if no `ens`).
         let call_sym = self.fresh_sym("call_ret", &callee_ast.ret_type);
-        let ret_slice = if matches!(callee_ast.ret_type, Type::Slice(_)) {
+        let ret_slice = if matches!(callee_ast.ret_type, Type::Slice(_) | Type::Str) {
             let rp = self.fresh_sym("call_ret_ptr", &Type::I64);
             let rl = self.fresh_sym("call_ret_len", &Type::I64);
             self.assumptions.push(format!("(assert (>= {rp} 0))"));
@@ -602,7 +613,7 @@ where
                 }
             }
             Expr::BoolLit(b) => Ok(if *b { "true" } else { "false" }.to_string()),
-            Expr::StrLit(s) => Ok(format!("\"{}\"", smt_escape_str(s))),
+            Expr::StrLit(_) => Ok(self.fresh_sym("str", &Type::I64)),
             Expr::UnitLit => Ok("true".to_string()),
             Expr::Var(name) => env.get(name).cloned().ok_or_else(|| {
                 InfimumDiagnostic::new(
@@ -981,12 +992,8 @@ where
                 self.assumptions.push(format!("(assert (>= {sym} 0))"));
                 Ok(sym)
             }
-            Expr::StrPtr(inner) => {
-                let _ = self.encode_expr(inner, env, types, guard, emit_checks)?;
-                let sym = self.fresh_sym("str_ptr", &Type::I64);
-                self.assumptions
-                    .push(format!("(assert (and (>= {sym} 0) (<= {sym} 16777215)))"));
-                Ok(sym)
+            Expr::StrToBytes(inner) | Expr::StrFromBytes(inner) => {
+                self.encode_expr(inner, env, types, guard, emit_checks)
             }
             Expr::SliceLen(inner) => {
                 if let Some((_, l)) =
@@ -1077,7 +1084,7 @@ where
                         }
                         let v_smt = self.fresh_sym("tup", &Type::I64);
                         local_env.insert(name.clone(), v_smt);
-                    } else if matches!(inferred_ty, Type::Slice(_)) {
+                    } else if matches!(inferred_ty, Type::Slice(_) | Type::Str) {
                         if let Some((psmt, lsmt)) =
                             self.encode_slice_fields(value, local_env, local_types, guard, emit_checks)?
                         {
@@ -1154,7 +1161,7 @@ where
                 }
                 Stmt::Assign { name, value } => {
                     self.var_min_addr.remove(name);
-                    let is_slice_var = matches!(local_types.get(name), Some(Type::Slice(_)));
+                    let is_slice_var = matches!(local_types.get(name), Some(Type::Slice(_) | Type::Str));
                     if Self::is_tuple_expr(value) {
                         if let Some(fields) =
                             self.encode_tuple_fields(value, local_env, local_types, guard, emit_checks)?
@@ -1242,7 +1249,7 @@ where
                             .collect();
                         for fk in fkeys {
                             let ffresh = self.fresh_sym("loop_havoc_f", &Type::I64);
-                            if matches!(mty, Type::Slice(_)) {
+                            if matches!(mty, Type::Slice(_) | Type::Str) {
                                 self.assumptions.push(format!("(assert (>= {ffresh} 0))"));
                             }
                             local_env.insert(fk, ffresh);
@@ -1286,7 +1293,8 @@ fn collect_mutated_vars_expr(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::ByteLoad { index: inner, .. }
         | Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
-        | Expr::StrPtr(inner)
+        | Expr::StrToBytes(inner)
+        | Expr::StrFromBytes(inner)
         | Expr::SliceLen(inner) => collect_mutated_vars_expr(inner, out),
         Expr::SliceLit { ptr, len, .. } | Expr::BoundsCheck { index: ptr, len, .. } => {
             collect_mutated_vars_expr(ptr, out);
@@ -1394,7 +1402,7 @@ where
                 base_env.insert(format!("{cname}#{fi}"), fsym);
                 base_types.insert(format!("{cname}#{fi}"), fty.clone());
             }
-        } else if matches!(p.ty, Type::Slice(_)) {
+        } else if matches!(p.ty, Type::Slice(_) | Type::Str) {
             let psym = format!("p{i}_f0");
             let lsym = format!("p{i}_f1");
             param_decls.push(format!("(declare-const {psym} Int)"));
@@ -1446,7 +1454,7 @@ where
     let mut ens_env = base_env.clone();
     let mut ens_types = base_types.clone();
     let result_sym = "$result";
-    let body_smt = if matches!(canon_fn.ret_type, Type::Slice(_)) {
+    let body_smt = if matches!(canon_fn.ret_type, Type::Slice(_) | Type::Str) {
         let rp = builder.fresh_sym("ret_slice_ptr", &Type::I64);
         let rl = builder.fresh_sym("ret_slice_len", &Type::I64);
         builder.assumptions.push(format!("(assert (>= {rp} 0))"));
@@ -1670,22 +1678,9 @@ fn smt_sort(ty: &Type) -> &'static str {
     match ty {
         Type::I64 | Type::U8 | Type::Fixed => "Int",
         Type::Bool | Type::Unit => "Bool",
-        Type::Str => "String",
         Type::Secret(inner) => smt_sort(inner),
-        Type::Tuple(_) | Type::Slice(_) => "Int",
+        Type::Tuple(_) | Type::Slice(_) | Type::Str => "Int",
     }
-}
-
-fn smt_escape_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        if ch == '"' {
-            out.push_str("\"\"");
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
 fn conjoin_guard(old_guard: &str, cond: &str) -> String {

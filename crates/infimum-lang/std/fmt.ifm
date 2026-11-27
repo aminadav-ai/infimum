@@ -7,6 +7,7 @@
 
 use "std/math.ifm";
 use "std/text.ifm";
+use "std/utf8.ifm";
 
 // Render fixed-point tenths (e.g. 1192 -> "119.2") and return pixel width.
 pub fn fmt_fixed_1(x: i64, y: i64, tenths: i64, size: i64, style: i64, rgba: i64, clip: i64) -[Mem]-> i64 {
@@ -113,17 +114,18 @@ pub fn fmt_text_ellipsis(x: i64, y: i64, max_w: i64, s: str, size: i64, style: i
     if full_w <= max_w {
       ui_text(x, y, s, size, style, rgba, clip)
     } else {
-      do Mem.store_str(STD_STR_SCRATCH_WORD, s);
-      let ptr = mem_load(STD_STR_SCRATCH_WORD);
-      let n = clamp_i64(mem_load(ptr), 0, 256);
+      let bytes = s.as_bytes();
       let dot_adv = glyph_px('.', size, style);
       let limit_x = x + max_w - dot_adv * 3;
       let mut cx = x;
-      for i in 0..n max 256 {
-        let cp = mem_load(ptr + 1 + i);
+      let mut pos = 0;
+      while pos < bytes.len max 512 {
+        let (cp, next_pos) = utf8_decode_next(bytes, pos);
+        if next_pos <= pos { break; }
         let adv = glyph_px(cp, size, style);
         if cx + adv <= limit_x {
           cx += ui_glyph(cx, y, cp, size, style, rgba, clip);
+          pos = next_pos;
         } else {
           break;
         }

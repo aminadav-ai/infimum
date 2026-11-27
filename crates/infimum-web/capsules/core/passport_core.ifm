@@ -26,6 +26,38 @@ layout PassMem {
 export fn core_abi_version() -> i64 { 1 }
 export fn get_eff_buf_word() -> i64 { PassMem::eff_buf }
 
+fn words_eq_ascii_ci(w: [i64], b: [u8]) -[Mem]-> bool {
+  if w.len != b.len {
+    false
+  } else {
+    let mut ok = true;
+    for i in 0..b.len max 256 {
+      let mut x = w[i];
+      let mut y = b[i];
+      if x >= 'A' && x <= 'Z' { x += 32; }
+      if y >= 'A' && y <= 'Z' { y += 32; }
+      if x != y { ok = false; break; }
+    }
+    ok
+  }
+}
+
+fn words_starts_with_ascii_ci(w: [i64], b: [u8]) -[Mem]-> bool {
+  if b.len > w.len {
+    false
+  } else {
+    let mut ok = true;
+    for i in 0..b.len max 256 {
+      let mut x = w[i];
+      let mut y = b[i];
+      if x >= 'A' && x <= 'Z' { x += 32; }
+      if y >= 'A' && y <= 'Z' { y += 32; }
+      if x != y { ok = false; break; }
+    }
+    ok
+  }
+}
+
 // Classify a single capability token written into `eff_buf[0..raw_len)`.
 export fn classify_effect_ifm(raw_len: i64) -[Mem]-> i64 {
   let n = clamp_i64(raw_len, 0, MAX_EFF_CHARS);
@@ -33,29 +65,29 @@ export fn classify_effect_ifm(raw_len: i64) -[Mem]-> i64 {
     CAP_NONE
   } else {
     let tok = PassMem.eff_buf[0..n];
-    if slice_eq_ascii_ci(tok, str_as_slice("mem"))
-      || slice_eq_ascii_ci(tok, str_as_slice("pure"))
-      || slice_eq_ascii_ci(tok, str_as_slice("time"))
-      || slice_eq_ascii_ci(tok, str_as_slice("state"))
+    if words_eq_ascii_ci(tok, "mem".as_bytes())
+      || words_eq_ascii_ci(tok, "pure".as_bytes())
+      || words_eq_ascii_ci(tok, "time".as_bytes())
+      || words_eq_ascii_ci(tok, "state".as_bytes())
     {
       CAP_NONE
-    } else if slice_starts_with_ascii_ci(tok, str_as_slice("gpu")) {
+    } else if words_starts_with_ascii_ci(tok, "gpu".as_bytes()) {
       CAP_GPU
-    } else if slice_starts_with_ascii_ci(tok, str_as_slice("input")) {
+    } else if words_starts_with_ascii_ci(tok, "input".as_bytes()) {
       CAP_INPUT
-    } else if slice_starts_with_ascii_ci(tok, str_as_slice("clipboard")) {
+    } else if words_starts_with_ascii_ci(tok, "clipboard".as_bytes()) {
       CAP_CLIPBOARD
-    } else if slice_starts_with_ascii_ci(tok, str_as_slice("proc"))
-      || slice_starts_with_ascii_ci(tok, str_as_slice("exec"))
-      || slice_starts_with_ascii_ci(tok, str_as_slice("shell"))
+    } else if words_starts_with_ascii_ci(tok, "proc".as_bytes())
+      || words_starts_with_ascii_ci(tok, "exec".as_bytes())
+      || words_starts_with_ascii_ci(tok, "shell".as_bytes())
     {
       CAP_PROC
-    } else if slice_starts_with_ascii_ci(tok, str_as_slice("fs"))
-      || slice_starts_with_ascii_ci(tok, str_as_slice("file"))
+    } else if words_starts_with_ascii_ci(tok, "fs".as_bytes())
+      || words_starts_with_ascii_ci(tok, "file".as_bytes())
     {
       CAP_FS
-    } else if slice_starts_with_ascii_ci(tok, str_as_slice("net"))
-      || slice_starts_with_ascii_ci(tok, str_as_slice("http"))
+    } else if words_starts_with_ascii_ci(tok, "net".as_bytes())
+      || words_starts_with_ascii_ci(tok, "http".as_bytes())
     {
       CAP_NET
     } else {

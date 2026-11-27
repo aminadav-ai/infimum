@@ -144,3 +144,144 @@ pub fn slice_starts_with_ascii_ci(haystack: [i64], prefix: [i64]) -[Mem]-> bool 
     ok
   }
 }
+
+// ============================================================================
+// Byte Slice `[u8]` Primitives (zero-copy UTF-8 & binary buffers)
+// ============================================================================
+
+/// Compare two `[u8]` byte slices for exact element-wise equality.
+pub fn bytes_eq(a: [u8], b: [u8]) -[Mem]-> bool {
+  if a.len != b.len {
+    false
+  } else {
+    let mut eq = true;
+    for i in 0..a.len max 16384 {
+      if a[i] != b[i] {
+        eq = false;
+        break;
+      }
+    }
+    eq
+  }
+}
+
+/// Return `true` if byte slice `haystack` starts with `prefix`.
+pub fn bytes_starts_with(haystack: [u8], prefix: [u8]) -[Mem]-> bool {
+  if prefix.len > haystack.len {
+    false
+  } else {
+    let mut ok = true;
+    for i in 0..prefix.len max 16384 {
+      if haystack[i] != prefix[i] {
+        ok = false;
+        break;
+      }
+    }
+    ok
+  }
+}
+
+/// Return `true` if byte slice `haystack` ends with `suffix`.
+pub fn bytes_ends_with(haystack: [u8], suffix: [u8]) -[Mem]-> bool {
+  if suffix.len > haystack.len {
+    false
+  } else {
+    let off = haystack.len - suffix.len;
+    let mut ok = true;
+    for i in 0..suffix.len max 16384 {
+      if haystack[off + i] != suffix[i] {
+        ok = false;
+        break;
+      }
+    }
+    ok
+  }
+}
+
+/// Find the first index of byte `needle` in `s`, or `-1` if not found.
+pub fn bytes_find(s: [u8], needle: i64) -[Mem]-> i64 {
+  let mut found = -1;
+  for i in 0..s.len max 16384 {
+    if s[i] == needle {
+      found = i;
+      break;
+    }
+  }
+  found
+}
+
+/// Find the first starting index where `haystack` contains `needle`, or `-1` if not found.
+pub fn bytes_find_bytes(haystack: [u8], needle: [u8]) -[Mem]-> i64 {
+  if needle.len == 0 {
+    0
+  } else if needle.len > haystack.len {
+    -1
+  } else {
+    let limit = haystack.len - needle.len + 1;
+    let mut found = -1;
+    for pos in 0..limit max 16384 {
+      let mut eq = true;
+      for j in 0..needle.len max 512 {
+        if haystack[pos + j] != needle[j] {
+          eq = false;
+          break;
+        }
+      }
+      if eq {
+        found = pos;
+        break;
+      }
+    }
+    found
+  }
+}
+
+/// Compare two `[u8]` slices for ASCII case-insensitive equality.
+pub fn bytes_eq_ascii_ci(a: [u8], b: [u8]) -[Mem]-> bool {
+  if a.len != b.len {
+    false
+  } else {
+    let mut eq = true;
+    for i in 0..a.len max 16384 {
+      if ascii_lower(a[i]) != ascii_lower(b[i]) {
+        eq = false;
+        break;
+      }
+    }
+    eq
+  }
+}
+
+/// Return `true` if `haystack` starts with `prefix` using ASCII case-insensitive comparison.
+pub fn bytes_starts_with_ascii_ci(haystack: [u8], prefix: [u8]) -[Mem]-> bool {
+  if prefix.len > haystack.len {
+    false
+  } else {
+    let mut ok = true;
+    for i in 0..prefix.len max 16384 {
+      if ascii_lower(haystack[i]) != ascii_lower(prefix[i]) {
+        ok = false;
+        break;
+      }
+    }
+    ok
+  }
+}
+
+/// Fill every byte of `s` with `val` (`0..=255`).
+pub fn bytes_fill(s: [u8], val: u8) -[Mem]-> unit {
+  for i in 0..s.len max 16384 {
+    s[i] = val;
+  }
+}
+
+/// Copy `min(dst.len, src.len)` bytes from `src` into `dst` and return the count copied.
+pub fn bytes_copy(dst: [u8], src: [u8]) -[Mem]-> i64
+  ens result >= 0
+{
+  let n = if dst.len < src.len { dst.len } else { src.len };
+  for i in 0..n max 16384 {
+    dst[i] = src[i];
+  }
+  n
+}

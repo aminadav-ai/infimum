@@ -8,6 +8,7 @@ use "std/sys_mem.ifm";
 use "std/math.ifm";
 use "std/gfx.ifm";
 use "std/text.ifm";
+use "std/utf8.ifm";
 
 // Toggle switch widget: returns 1 if clicked/toggled this frame, 0 otherwise.
 pub fn __forma_toggle(
@@ -160,7 +161,7 @@ pub fn __forma_text_input(
   hovered_in: i64, clicked_in: i64,
   bg: i64, border_col: i64, accent: i64,
   text_col: i64, muted_col: i64,
-  sz_in: i64, mask_in: bool, ph_ptr: i64, clip_id: i64
+  sz_in: i64, mask_in: bool, ph: str, clip_id: i64
 ) -[Mem]-> i64 {
   let max_len = clamp_i64(max_len_in, 1, 1024);
   let sz = clamp_i64(sz_in, 10, 32);
@@ -354,15 +355,18 @@ pub fn __forma_text_input(
     if is_focused {
       mem_store(SYS_FORMA_TEXT_SCROLL_WORD, 0);
     }
-    if ph_ptr > 0 {
-      let ph_n = clamp_i64(mem_load(ph_ptr), 0, 256);
+    let ph_bytes = ph.as_bytes();
+    if ph_bytes.len > 0 {
       let mut px = rx + pad_x;
-      for i in 0..ph_n max 256 {
-        let ch = mem_load(ph_ptr + 1 + i);
+      let mut ppos = 0;
+      while ppos < ph_bytes.len max 256 {
+        let (ch, next_ppos) = utf8_decode_next(ph_bytes, ppos);
+        if next_ppos <= ppos { break; }
         let adv = glyph_px(ch, sz, 0);
         if px + adv > max_x { break; }
         ui_glyph(px, text_y, ch, sz, 0, muted_col, clip_id);
         px += adv;
+        ppos = next_ppos;
       }
     }
   } else {

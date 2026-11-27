@@ -191,8 +191,12 @@ export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu, Net]-> i64 {
   extract_active_project_to(StudioMem::active_proj_buf);
   daemon::new_conv();
 
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, "Добро пожаловать в **Infimum Code v3.1** (`.ifw`)! Нажмите **+** рядом с «ПРОЕКТЫ» слева, чтобы добавить рабочую папку. Агент и терминал изолированы строго внутри выбранной папки.");
-  append_message(1, mem_load(SYS_STR_SCRATCH_WORD), 0, 0, 0);
+  scratch_reset();
+  let welcome_ptr = scratch_alloc(512);
+  if welcome_ptr >= 0 {
+    buf_set_str(welcome_ptr, 500, "Добро пожаловать в **Infimum Code v3.1** (`.ifw`)! Нажмите **+** рядом с «ПРОЕКТЫ» слева, чтобы добавить рабочую папку. Агент и терминал изолированы строго внутри выбранной папки.");
+    append_message(1, welcome_ptr, 0, 0, 0);
+  }
   StudioMem.auto_scroll_bottom = 0;
   1
 }

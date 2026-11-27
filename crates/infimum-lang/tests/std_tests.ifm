@@ -344,16 +344,16 @@ test "std/buf str_len, str_char, buf_set_str, buf_eq_str, buf_has_str, starts/en
   assert(slice_eq_str(b + 1 + 11, 8, "deepseek"));
 }
 
-test "std/slice slice_ends_with, slice_find_slice, slice_eq_ascii_ci, slice_starts_with_ascii_ci" {
+test "std/slice bytes_ends_with, bytes_find_bytes, bytes_eq_ascii_ci, bytes_starts_with_ascii_ci" {
   gfx_begin_frame(800, 600);
-  let s = str_as_slice("Infimum-Web/v0.4");
-  assert(slice_ends_with(s, str_as_slice("v0.4")));
-  assert(!slice_ends_with(s, str_as_slice("v0.3")));
-  assert(slice_find_slice(s, str_as_slice("Web")) == 8);
-  assert(slice_find_slice(s, str_as_slice("Rust")) == -1);
-  assert(slice_find_slice(s, str_as_slice("")) == 0);
-  assert(slice_eq_ascii_ci(str_as_slice("ScRiPt"), str_as_slice("script")));
-  assert(!slice_eq_ascii_ci(str_as_slice("script"), str_as_slice("style")));
-  assert(slice_starts_with_ascii_ci(str_as_slice("ClipBoard.Write"), str_as_slice("clipboard")));
-  assert(!slice_starts_with_ascii_ci(str_as_slice("gpu"), str_as_slice("clipboard")));
+  let s = "Infimum-Web/v0.4".as_bytes();
+  assert(bytes_ends_with(s, "v0.4".as_bytes()));
+  assert(!bytes_ends_with(s, "v0.3".as_bytes()));
+  assert(bytes_find_bytes(s, "Web".as_bytes()) == 8);
+  assert(bytes_find_bytes(s, "Rust".as_bytes()) == -1);
+  assert(bytes_find_bytes(s, "".as_bytes()) == 0);
+  assert(bytes_eq_ascii_ci("ScRiPt".as_bytes(), "script".as_bytes()));
+  assert(!bytes_eq_ascii_ci("script".as_bytes(), "style".as_bytes()));
+  assert(bytes_starts_with_ascii_ci("ClipBoard.Write".as_bytes(), "clipboard".as_bytes()));
+  assert(!bytes_starts_with_ascii_ci("gpu".as_bytes(), "clipboard".as_bytes()));
 }

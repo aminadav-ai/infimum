@@ -261,7 +261,10 @@ pub enum Expr {
     },
     SlicePtr(Box<Expr>),
     SliceLen(Box<Expr>),
-    StrPtr(Box<Expr>),
+    /// Zero-cost view of a UTF-8 `str` as a read-only byte slice `[u8]` (`(byte_ptr, byte_len)`).
+    StrToBytes(Box<Expr>),
+    /// Zero-cost wrap of a byte slice `[u8]` as a UTF-8 `str` (`(byte_ptr, byte_len)`).
+    StrFromBytes(Box<Expr>),
     BoundsCheck {
         index: Box<Expr>,
         len: Box<Expr>,

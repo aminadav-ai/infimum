@@ -36,7 +36,7 @@ export fn store_init() -[Mem]-> unit {
 }
 
 /// Allocate a stable slot from `Pool`, pack the task title into `Arena`, and record the ID in `vec<word>[16]`.
-export fn task_add(title: str, priority: i64) -[Mem]-> i64 {
+fn task_add(title: str, priority: i64) -[Mem]-> i64 {
   let slot = pool_alloc(TaskStore::pool_flags, MAX_TASKS);
   if slot < 0 || slot >= MAX_TASKS {
     -1
@@ -100,17 +100,26 @@ export fn filter_high_priority_count(min_prio: i64) -[Mem]-> i64 {
   }
 }
 
-/// Check if a task's title stored in `Arena` matches `query` (ASCII case-insensitive) via `[i64]` slice.
-export fn task_title_matches_ci(slot: i64, query: str) -[Mem]-> bool {
+/// Check if a task's title stored in `Arena` matches `query` (ASCII case-insensitive).
+fn task_title_matches_ci(slot: i64, query: str) -[Mem]-> bool {
   if slot < 0 || slot >= MAX_TASKS {
     false
   } else {
     let ptr = TaskStore.tasks[slot].title_ptr;
     let tlen = TaskStore.tasks[slot].title_len;
-    if ptr < 0 || ptr + 1 < 0 {
+    let qb = query.as_bytes();
+    if ptr < 0 || ptr + 1 < 0 || tlen != qb.len {
       false
     } else {
-      slice_eq_ascii_ci(slice_i64(ptr + 1, tlen), str_as_slice(query))
+      let mut ok = true;
+      for i in 0..qb.len max 64 {
+        let mut a = mem_load(ptr + 1 + i);
+        let mut b = qb[i];
+        if a >= 'A' && a <= 'Z' { a += 32; }
+        if b >= 'A' && b <= 'Z' { b += 32; }
+        if a != b { ok = false; break; }
+      }
+      ok
     }
   }
 }

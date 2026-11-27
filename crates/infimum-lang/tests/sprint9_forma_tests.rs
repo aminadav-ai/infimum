@@ -509,7 +509,7 @@ export fn init_app() -[Mem]-> unit {
   p = tbuf_insert_char(DemoMem::edit_buf, 500, p, 'i');
   p = tbuf_insert_char(DemoMem::edit_buf, 500, p, '!');
   let _ = tbuf_backspace(DemoMem::edit_buf, 500, p, p);
-  do Mem.store_str(2000, "# Title\n- **Bold** `code`\n---\nHello");
+  buf_set_str(DemoMem::md_buf, 500, "# Title\n- **Bold** `code`\n---\nHello");
   ()
 }
 

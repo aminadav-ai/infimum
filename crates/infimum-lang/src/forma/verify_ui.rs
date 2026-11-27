@@ -382,7 +382,8 @@ impl FormaSmtBuilder {
             | Expr::TupleField { .. }
             | Expr::SliceLit { .. }
             | Expr::SlicePtr(_)
-            | Expr::StrPtr(_)
+            | Expr::StrToBytes(_)
+            | Expr::StrFromBytes(_)
             | Expr::SliceLen(_) => self.fresh_int("blk"),
             Expr::BoundsCheck { index, .. } => self.encode_expr(index),
             Expr::RangeCheck { lo, .. } => self.encode_expr(lo),

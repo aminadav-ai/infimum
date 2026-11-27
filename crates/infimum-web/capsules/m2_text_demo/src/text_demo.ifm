@@ -182,13 +182,8 @@ export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu]-> i64 {
   DemoState.ctx_open = 0;
   DemoState.host_action = 0;
 
-  do Mem.store_str(STD_STR_SCRATCH_WORD, "Привет, Infimum Web M2! Попробуйте выделить текст или вставить скриншот (Ctrl+V).");
-  let sptr = mem_load(STD_STR_SCRATCH_WORD);
-  let sn = clamp_i64(mem_load(sptr), 0, 500);
-  mem_store(DemoState::input_buf, sn);
-  for i in 0..sn max 500 {
-    mem_store(DemoState::input_buf + 1 + i, mem_load(sptr + 1 + i));
-  }
+  buf_set_str(DemoState::input_buf, 500, "Привет, Infimum Web M2! Попробуйте выделить текст или вставить скриншот (Ctrl+V).");
+  let sn = clamp_i64(buf_len(DemoState::input_buf, 500), 0, 500);
   DemoState.cursor_pos = sn;
   DemoState.sel_anchor = sn;
   1
@@ -272,9 +267,14 @@ export fn step_ui(
   // Intro section
   ui_text(col_x, cy, "1. Перенос строк (Word-Wrap) и кириллица в 1 Draw Call", 19, 1, theme_accent(), 1);
   cy += 28;
-  do Mem.store_str(STD_STR_SCRATCH_WORD, "Этот текст, таблица ниже, блок кода и поле ввода внизу рендерятся напрямую из WebAssembly-капсулы на языке Infimum через Vulkan/wgpu в один вызов GPU.");
-  let intro_ptr = mem_load(STD_STR_SCRATCH_WORD);
-  let h1 = tbuf_draw_wrapped(intro_ptr, 500, col_x, cy, col_w, 16, 24, 0, theme_text(th), 0, 0, 0, -1, 0, 1, feed_y - 32, feed_y + feed_h + 32);
+  scratch_reset();
+  let intro_ptr = scratch_alloc(512);
+  let h1 = if intro_ptr >= 0 {
+    buf_set_str(intro_ptr, 500, "Этот текст, таблица ниже, блок кода и поле ввода внизу рендерятся напрямую из WebAssembly-капсулы на языке Infimum через Vulkan/wgpu в один вызов GPU.");
+    tbuf_draw_wrapped(intro_ptr, 500, col_x, cy, col_w, 16, 24, 0, theme_text(th), 0, 0, 0, -1, 0, 1, feed_y - 32, feed_y + feed_h + 32)
+  } else {
+    0
+  };
   cy += h1 + 16;
 
   // Comparison Table

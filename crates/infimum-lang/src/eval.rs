@@ -14,7 +14,6 @@ pub struct TestCaseResult {
 enum Val {
     Int(i64),
     Bool(bool),
-    Str(String),
     Unit,
     Tuple(Vec<Val>),
 }
@@ -40,8 +39,8 @@ impl Val {
 struct Evaluator<'a> {
     fns: BTreeMap<&'a str, &'a FnDef>,
     mem: Vec<u8>,
-    str_pool: BTreeMap<String, i64>,
-    str_pool_cursor: i64,
+    str_pool: BTreeMap<String, (i64, i64)>,
+    str_pool_byte_cursor: i64,
     steps: usize,
 }
 
@@ -56,13 +55,13 @@ impl<'a> Evaluator<'a> {
         for f in &module.functions {
             fns.insert(f.name.as_str(), f);
         }
-        let str_pool_cursor = (crate::strata_wasm::compute_module_layout_end_word(module) as i64)
+        let str_pool_word_base = (crate::strata_wasm::compute_module_layout_end_word(module) as i64)
             .max(EVAL_STR_POOL_MIN_BASE);
         Self {
             fns,
             mem: vec![0u8; 65536 * 4],
             str_pool: BTreeMap::new(),
-            str_pool_cursor,
+            str_pool_byte_cursor: str_pool_word_base * 4,
             steps: 0,
         }
     }
@@ -116,31 +115,23 @@ impl<'a> Evaluator<'a> {
         Ok(())
     }
 
-    fn intern_str(&mut self, s: &str) -> Result<i64, String> {
-        if let Some(&ptr) = self.str_pool.get(s) {
-            return Ok(ptr);
+    fn intern_str(&mut self, s: &str) -> Result<(i64, i64), String> {
+        if let Some(&pair) = self.str_pool.get(s) {
+            return Ok(pair);
         }
-        let chars: Vec<i64> = s.chars().map(|c| c as i64).collect();
-        let ptr = self.str_pool_cursor;
-        let end = ptr + 1 + chars.len() as i64;
-        if end > MAX_EVAL_MEM_WORDS {
+        let bytes = s.as_bytes();
+        let ptr = self.str_pool_byte_cursor;
+        let len = bytes.len() as i64;
+        let end = ptr + len;
+        if end > MAX_EVAL_MEM_BYTES {
             return Err("Test evaluator string pool exhausted".to_string());
         }
-        self.store_word(ptr, chars.len() as i64)?;
-        for (i, ch) in chars.iter().enumerate() {
-            self.store_word(ptr + 1 + i as i64, *ch)?;
+        for (i, &b) in bytes.iter().enumerate() {
+            self.store_byte(ptr + i as i64, i64::from(b))?;
         }
-        self.str_pool_cursor = end + 1;
-        self.str_pool.insert(s.to_string(), ptr);
-        Ok(ptr)
-    }
-
-    fn val_as_int_or_str_ptr(&mut self, v: Val) -> Result<i64, String> {
-        match v {
-            Val::Int(i) => Ok(i),
-            Val::Str(s) => self.intern_str(&s),
-            other => Err(format!("Expected i64, got {other:?}")),
-        }
+        self.str_pool_byte_cursor = end;
+        self.str_pool.insert(s.to_string(), (ptr, len));
+        Ok((ptr, len))
     }
 
     fn tick(&mut self) -> Result<(), String> {
@@ -266,7 +257,10 @@ impl<'a> Evaluator<'a> {
         match expr {
             Expr::IntLit(v) | Expr::FixedLit(v) => Ok(Val::Int(*v)),
             Expr::BoolLit(b) => Ok(Val::Bool(*b)),
-            Expr::StrLit(s) => Ok(Val::Str(s.clone())),
+            Expr::StrLit(s) => {
+                let (ptr, len) = self.intern_str(s)?;
+                Ok(Val::Tuple(vec![Val::Int(ptr), Val::Int(len)]))
+            }
             Expr::UnitLit => Ok(Val::Unit),
             Expr::Var(name) => Self::lookup(scopes, name),
             Expr::Unary { op, expr: inner } => {
@@ -303,10 +297,7 @@ impl<'a> Evaluator<'a> {
                 let lv = self.eval_expr(lhs, scopes, cur_fn)?;
                 let rv = self.eval_expr(rhs, scopes, cur_fn)?;
                 match op {
-                    BinOp::Add => Ok(Val::Int(
-                        self.val_as_int_or_str_ptr(lv)?
-                            .wrapping_add(self.val_as_int_or_str_ptr(rv)?),
-                    )),
+                    BinOp::Add => Ok(Val::Int(lv.as_int()?.wrapping_add(rv.as_int()?))),
                     BinOp::Sub => Ok(Val::Int(lv.as_int()?.wrapping_sub(rv.as_int()?))),
                     BinOp::Mul => Ok(Val::Int(lv.as_int()?.wrapping_mul(rv.as_int()?))),
                     BinOp::Div => {
@@ -342,12 +333,10 @@ impl<'a> Evaluator<'a> {
                     BinOp::Shr => Ok(Val::Int(lv.as_int()?.wrapping_shr((rv.as_int()? & 63) as u32))),
                     BinOp::Eq => match (&lv, &rv) {
                         (Val::Bool(a), Val::Bool(b)) => Ok(Val::Bool(a == b)),
-                        (Val::Str(a), Val::Str(b)) => Ok(Val::Bool(a == b)),
                         _ => Ok(Val::Bool(lv.as_int()? == rv.as_int()?)),
                     },
                     BinOp::Ne => match (&lv, &rv) {
                         (Val::Bool(a), Val::Bool(b)) => Ok(Val::Bool(a != b)),
-                        (Val::Str(a), Val::Str(b)) => Ok(Val::Bool(a != b)),
                         _ => Ok(Val::Bool(lv.as_int()? != rv.as_int()?)),
                     },
                     BinOp::Lt => Ok(Val::Bool(lv.as_int()? < rv.as_int()?)),
@@ -382,30 +371,14 @@ impl<'a> Evaluator<'a> {
                 };
                 self.call_fn(callee, vals)
             }
-            Expr::Perform { effect, op, args } => {
-                if effect == "Mem" && op == "store_str" && args.len() == 2 {
-                    let slot = self.eval_expr(&args[0], scopes, cur_fn)?.as_int()?;
-                    let val = self.eval_expr(&args[1], scopes, cur_fn)?;
-                    if !(0..MAX_EVAL_MEM_WORDS).contains(&slot) {
-                        return Err(format!("Out-of-bounds Mem.store_str({slot})"));
-                    }
-                    let ptr = match val {
-                        Val::Str(s) => self.intern_str(&s)?,
-                        Val::Int(p) => p,
-                        other => return Err(format!("Mem.store_str expected str, got {other:?}")),
-                    };
-                    self.store_word(slot, ptr)?;
-                    Ok(Val::Unit)
-                } else {
-                    for a in args {
-                        let _ = self.eval_expr(a, scopes, cur_fn)?;
-                    }
-                    Ok(Val::Unit)
+            Expr::Perform { args, .. } => {
+                for a in args {
+                    let _ = self.eval_expr(a, scopes, cur_fn)?;
                 }
+                Ok(Val::Unit)
             }
             Expr::MemLoad { index, .. } => {
-                let idx_val = self.eval_expr(index, scopes, cur_fn)?;
-                let idx = self.val_as_int_or_str_ptr(idx_val)?;
+                let idx = self.eval_expr(index, scopes, cur_fn)?.as_int()?;
                 Ok(Val::Int(self.load_word(idx)?))
             }
             Expr::MemStore { index, value, .. } => {
@@ -471,11 +444,9 @@ impl<'a> Evaluator<'a> {
                 Val::Tuple(elems) if elems.len() == 2 => Ok(elems[1].clone()),
                 other => Err(format!("Expected slice for .len, got {other:?}")),
             },
-            Expr::StrPtr(inner) => match self.eval_expr(inner, scopes, cur_fn)? {
-                Val::Str(s) => Ok(Val::Int(self.intern_str(&s)?)),
-                Val::Int(p) => Ok(Val::Int(p)),
-                other => Err(format!("Expected str for str_as_slice, got {other:?}")),
-            },
+            Expr::StrToBytes(inner) | Expr::StrFromBytes(inner) => {
+                self.eval_expr(inner, scopes, cur_fn)
+            }
             Expr::BoundsCheck {
                 index,
                 len,

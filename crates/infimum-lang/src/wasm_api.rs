@@ -37,6 +37,7 @@ pub fn embedded_std_file(name: &str) -> Option<&'static str> {
         "text_edit.ifm" => Some(include_str!("../std/text_edit.ifm")),
         "theme.ifm" => Some(include_str!("../std/theme.ifm")),
         "ui.ifm" => Some(include_str!("../std/ui.ifm")),
+        "utf8.ifm" => Some(include_str!("../std/utf8.ifm")),
         _ => None,
     }
 }
@@ -63,6 +64,7 @@ pub fn list_embedded_std_files() -> &'static [&'static str] {
         "text_edit.ifm",
         "theme.ifm",
         "ui.ifm",
+        "utf8.ifm",
     ]
 }
 

@@ -642,8 +642,12 @@ pub fn start_new_dialog_for_project(p_idx: i64) -[Mem, Net]-> unit {
   StudioMem.active_conv_idx = -1;
   StudioMem.view_mode = ViewMode::Chat;
   StudioMem.scroll_y = 0;
-  do Mem.store_str(SYS_STR_SCRATCH_WORD, "Начат новый чистый диалог в выбранном проекте. Напишите задачу по-русски — агент видит все файлы и сохранит беседу в общую историю!");
-  append_message(1, mem_load(SYS_STR_SCRATCH_WORD), 0, 0, 0);
+  scratch_reset();
+  let sp = scratch_alloc(512);
+  if sp >= 0 {
+    buf_set_str(sp, 500, "Начат новый чистый диалог в выбранном проекте. Напишите задачу по-русски — агент видит все файлы и сохранит беседу в общую историю!");
+    append_message(1, sp, 0, 0, 0);
+  }
   StudioMem.auto_scroll_bottom = 0;
 }
 
@@ -651,9 +655,13 @@ pub fn start_gemini_async() -[Mem, Net]-> unit {
   let len = input_len();
   let has_img = StudioMem.pasted_img_w > 0 && StudioMem.pasted_img_h > 0;
   if (len > 0 || has_img) && StudioMem.ai_running == 0 {
+    scratch_reset();
+    let sp = scratch_alloc(512);
     if len == 0 && has_img {
-      do Mem.store_str(SYS_STR_SCRATCH_WORD, "[Изображение] Проанализируй прикреплённое изображение.");
-      append_message(0, mem_load(SYS_STR_SCRATCH_WORD), 0, 0, 0);
+      if sp >= 0 {
+        buf_set_str(sp, 500, "[Изображение] Проанализируй прикреплённое изображение.");
+        append_message(0, sp, 0, 0, 0);
+      }
     } else {
       append_message(0, StudioMem::input_buf, 0, 0, 0);
     }
@@ -662,13 +670,17 @@ pub fn start_gemini_async() -[Mem, Net]-> unit {
     StudioMem.live_timeline_words = 0;
     StudioMem.live_cmd_killing = 0;
     daemon_upload_pending_images(StudioMem.img_count);
-    do Mem.store_str(SYS_STR_SCRATCH_WORD, model_api_slug(StudioMem.model_idx));
-    let ok = daemon::agent_start(StudioMem::input_buf, mem_load(SYS_STR_SCRATCH_WORD), StudioMem::active_proj_buf);
+    let ok = if sp >= 0 {
+      buf_set_str(sp, 500, model_api_slug(StudioMem.model_idx));
+      daemon::agent_start(StudioMem::input_buf, sp, StudioMem::active_proj_buf)
+    } else {
+      0
+    };
     if ok > 0 {
       StudioMem.ai_running = 1;
-    } else {
-      do Mem.store_str(SYS_STR_SCRATCH_WORD, "Не удалось связаться с локальным демоном `infimum-agentd`. Запустите Infimum Code через лаунчер `infimum-code`.");
-      append_message(1, mem_load(SYS_STR_SCRATCH_WORD), 0, 0, 0);
+    } else if sp >= 0 {
+      buf_set_str(sp, 500, "Не удалось связаться с локальным демоном `infimum-agentd`. Запустите Infimum Code через лаунчер `infimum-code`.");
+      append_message(1, sp, 0, 0, 0);
     }
     let send_img_base = clamp_i64(StudioMem.img_pending_base, 0, 16);
     let send_img_cnt = clamp_i64(StudioMem.img_count, 0, 6);

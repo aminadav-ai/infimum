@@ -7,6 +7,7 @@
 
 use "std/math.ifm";
 use "std/slice.ifm";
+use "std/utf8.ifm";
 
 pub fn buf_len(buf_ptr: i64, max_len: i64) -[Mem]-> i64 {
   clamp_i64(mem_load(buf_ptr), 0, max_i64(max_len, 0))
@@ -99,37 +100,69 @@ pub fn buf_find_cp(buf_ptr: i64, start: i64, end: i64, cp: i64) -[Mem]-> i64 {
 }
 
 // ============================================================================
-// Zero-GC Read-Only `str` & UTF-32 Buffer Ergonomics (O(1) static string binding)
+// Zero-GC Read-Only UTF-8 `str` & UTF-32 Buffer Ergonomics
 // ============================================================================
 
-/// Length of a string literal or `str` value in Unicode codepoints (`0..=4096`).
+/// Length of a UTF-8 `str` in bytes (`0..=4096`). For O(1) exact byte length, use `s.len`.
 pub fn str_len(s: str) -[Mem]-> i64
   ens result >= 0 && result <= 4096
 {
-  let ss = str_as_slice(s);
-  clamp_i64(ss.len, 0, 4096)
+  clamp_i64(s.len, 0, 4096)
 }
 
-/// Read the `idx`-th Unicode codepoint of `s` (returns `0` if out of bounds).
+/// Count Unicode codepoints in a UTF-8 `str` (`0..=4096`).
+pub fn str_char_count(s: str) -[Mem]-> i64
+  ens result >= 0 && result <= 4096
+{
+  let bytes = s.as_bytes();
+  let mut pos = 0;
+  let mut n = 0;
+  while pos < bytes.len && n < 4096 max 4096 {
+    let (_cp, next_pos) = utf8_decode_next(bytes, pos);
+    if next_pos <= pos { break; }
+    pos = next_pos;
+    n += 1;
+  }
+  clamp_i64(n, 0, 4096)
+}
+
+/// Read the `idx`-th Unicode codepoint of a UTF-8 `str` (returns `0` if out of bounds).
 pub fn str_char(s: str, idx: i64) -[Mem]-> i64 {
-  let ss = str_as_slice(s);
-  if idx >= 0 && idx < ss.len {
-    ss[idx]
-  } else {
+  if idx < 0 {
     0
+  } else {
+    let bytes = s.as_bytes();
+    let mut pos = 0;
+    let mut ci = 0;
+    let mut out = 0;
+    while pos < bytes.len max 4096 {
+      let (cp, next_pos) = utf8_decode_next(bytes, pos);
+      if next_pos <= pos { break; }
+      if ci == idx {
+        out = cp;
+        break;
+      }
+      pos = next_pos;
+      ci += 1;
+    }
+    out
   }
 }
 
-/// Append a `str` into a length-prefixed UTF-32 buffer (clamped to `max_len`).
+/// Append a UTF-8 `str` (decoded to Unicode codepoints) into a length-prefixed UTF-32 buffer.
 pub fn buf_push_str(buf_ptr: i64, max_len: i64, s: str) -[Mem]-> unit {
   let cap = max_i64(max_len, 0);
-  let cur = clamp_i64(mem_load(buf_ptr), 0, cap);
-  let rem = cap - cur;
-  let dst_p = buf_ptr + 1 + cur;
-  if rem > 0 && dst_p >= 0 {
-    let copied = slice_copy(slice_i64(dst_p, rem), str_as_slice(s));
-    mem_store(buf_ptr, cur + copied);
+  let mut cur = clamp_i64(mem_load(buf_ptr), 0, cap);
+  let bytes = s.as_bytes();
+  let mut pos = 0;
+  while pos < bytes.len && cur < cap max 4096 {
+    let (cp, next_pos) = utf8_decode_next(bytes, pos);
+    if next_pos <= pos { break; }
+    mem_store(buf_ptr + 1 + cur, cp);
+    cur += 1;
+    pos = next_pos;
   }
+  mem_store(buf_ptr, cur);
 }
 
 /// Clear a UTF-32 buffer and copy `s` into it.
@@ -138,24 +171,34 @@ pub fn buf_set_str(buf_ptr: i64, max_len: i64, s: str) -[Mem]-> unit {
   buf_push_str(buf_ptr, max_len, s);
 }
 
-/// Exact equality check between a length-prefixed UTF-32 buffer and a `str`.
-pub fn buf_eq_str(buf_ptr: i64, s: str) -[Mem]-> bool {
-  let bn = mem_load(buf_ptr);
-  let p = buf_ptr + 1;
-  if bn < 0 || p < 0 {
-    false
-  } else {
-    slice_eq(slice_i64(p, bn), str_as_slice(s))
-  }
-}
-
-/// Exact equality check between a raw UTF-32 slice (`mem[raw_ptr .. raw_ptr + len)`) and a `str`.
+/// Exact equality check between a raw UTF-32 slice (`mem[raw_ptr .. raw_ptr + len)`) and a UTF-8 `str`.
 pub fn slice_eq_str(raw_ptr: i64, len: i64, s: str) -[Mem]-> bool {
   if len < 0 || raw_ptr < 0 {
     false
   } else {
-    slice_eq(slice_i64(raw_ptr, len), str_as_slice(s))
+    let bytes = s.as_bytes();
+    let mut pos = 0;
+    let mut ci = 0;
+    let mut ok = true;
+    while pos < bytes.len max 4096 {
+      let (cp, next_pos) = utf8_decode_next(bytes, pos);
+      if next_pos <= pos { break; }
+      if ci >= len || mem_load(raw_ptr + ci) != cp {
+        ok = false;
+        break;
+      }
+      pos = next_pos;
+      ci += 1;
+    }
+    ok && ci == len
   }
+}
+
+/// Exact equality check between a length-prefixed UTF-32 buffer and a UTF-8 `str`.
+pub fn buf_eq_str(buf_ptr: i64, s: str) -[Mem]-> bool {
+  let bn = mem_load(buf_ptr);
+  let p = buf_ptr + 1;
+  slice_eq_str(p, bn, s)
 }
 
 /// Check whether a length-prefixed UTF-32 buffer starts with `s`.
@@ -165,7 +208,21 @@ pub fn buf_starts_with(buf_ptr: i64, s: str) -[Mem]-> bool {
     false
   } else {
     let bn = clamp_i64(mem_load(buf_ptr), 0, 16384);
-    slice_starts_with(slice_i64(p, bn), str_as_slice(s))
+    let bytes = s.as_bytes();
+    let mut pos = 0;
+    let mut ci = 0;
+    let mut ok = true;
+    while pos < bytes.len max 4096 {
+      let (cp, next_pos) = utf8_decode_next(bytes, pos);
+      if next_pos <= pos { break; }
+      if ci >= bn || mem_load(p + ci) != cp {
+        ok = false;
+        break;
+      }
+      pos = next_pos;
+      ci += 1;
+    }
+    ok
   }
 }
 
@@ -176,7 +233,12 @@ pub fn buf_ends_with(buf_ptr: i64, s: str) -[Mem]-> bool {
     false
   } else {
     let bn = clamp_i64(mem_load(buf_ptr), 0, 16384);
-    slice_ends_with(slice_i64(p, bn), str_as_slice(s))
+    let sn = str_char_count(s);
+    if sn > bn {
+      false
+    } else {
+      slice_eq_str(p + (bn - sn), sn, s)
+    }
   }
 }
 
@@ -187,6 +249,21 @@ pub fn buf_has_str(buf_ptr: i64, s: str) -[Mem]-> bool {
     false
   } else {
     let bn = clamp_i64(mem_load(buf_ptr), 0, 4096);
-    slice_find_slice(slice_i64(p, bn), str_as_slice(s)) >= 0
+    let sn = str_char_count(s);
+    if sn == 0 {
+      true
+    } else if sn > bn {
+      false
+    } else {
+      let mut found = false;
+      let limit = bn - sn + 1;
+      for start in 0..limit max 4096 {
+        if slice_eq_str(p + start, sn, s) {
+          found = true;
+          break;
+        }
+      }
+      found
+    }
   }
 }

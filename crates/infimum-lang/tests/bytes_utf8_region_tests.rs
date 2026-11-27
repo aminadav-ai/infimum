@@ -157,3 +157,155 @@ fn region_isolation_preserves_vec_len_across_dynamic_data_writes() {
 
     let _ = fs::remove_dir_all(&ws);
 }
+
+#[test]
+fn std_utf8_and_bytes_slice_primitives_verify_and_run() {
+    let ws = temp_ws("utf8_std");
+    let mut store = GraphStore::open(&ws).unwrap();
+
+    let src = r#"
+        use "std/utf8.ifm";
+        use "std/slice.ifm";
+
+        layout UtfBuf {
+          b: bytes[32],
+          c: bytes[32],
+        }
+
+        export fn roundtrip_cyrillic() -[Mem]-> i64 {
+          // Encode "Привет" (6 Cyrillic codepoints -> 12 UTF-8 bytes)
+          let mut pos = 0;
+          let s = UtfBuf.b[0..32];
+          pos += utf8_encode(1055, s, pos); // П
+          pos += utf8_encode(1088, s, pos); // р
+          pos += utf8_encode(1080, s, pos); // и
+          pos += utf8_encode(1074, s, pos); // в
+          pos += utf8_encode(1077, s, pos); // е
+          pos += utf8_encode(1090, s, pos); // т
+          pos
+        }
+
+        test "utf8 encode, decode, prev/next char pos, and bytes_* work" {
+          let byte_len = roundtrip_cyrillic();
+          assert(byte_len == 12);
+          let view = UtfBuf.b[0..12];
+          let (cp0, p1) = utf8_decode_next(view, 0);
+          assert(cp0 == 1055 && p1 == 2);
+          let (cp1, p2) = utf8_decode_next(view, p1);
+          assert(cp1 == 1088 && p2 == 4);
+          assert(utf8_next_char_pos(view, 0) == 2);
+          assert(utf8_prev_char_pos(view, 12) == 10);
+          assert(utf8_prev_char_pos(view, 2) == 0);
+
+          let copied = bytes_copy(UtfBuf.c[0..12], view);
+          assert(copied == 12);
+          assert(bytes_eq(UtfBuf.c[0..12], view));
+          assert(bytes_starts_with(view, UtfBuf.c[0..4]));
+          assert(bytes_ends_with(view, UtfBuf.c[8..12]));
+          assert(bytes_find_bytes(view, UtfBuf.c[4..8]) == 4);
+        }
+    "#;
+
+    let module = parse_module(src).expect("parse ok");
+    let ifw_path = ws.join("utf8_std.ifw");
+    build_strata_wasm_from_module(&mut store, &module, &ifw_path).expect("verify+wasm ok");
+    let results = run_module_tests(&module);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].passed, "Test failed: {:?}", results[0]);
+
+    let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn utf8_str_len_subslice_as_str_and_readonly_guard() {
+    let ws = temp_ws("utf8_str_ops");
+    let mut store = GraphStore::open(&ws).expect("open store");
+    let src = r#"
+        use "std/slice.ifm";
+        use "std/utf8.ifm";
+
+        layout StrLab {
+          buf: vec<u8>[64],
+        }
+
+        fn greet_len(s: str) -> i64 { s.len }
+
+        export fn run_utf8_str_ops() -[Mem]-> i64 {
+          let ru: str = "Привет";
+          let (cp0, p1) = utf8_decode_next(ru.as_bytes(), 0);
+          let (cp1, p2) = utf8_decode_next(ru.as_bytes(), p1);
+
+          let hello: str = "hello, world!";
+          let sub: [u8] = hello[7..12];
+          StrLab.buf.clear();
+          for i in 0..sub.len max 16 {
+            let _ = StrLab.buf.try_push(sub[i]);
+          }
+          let as_s: str = StrLab.buf.as_str();
+          let eq_ok = if bytes_eq(StrLab.buf.as_bytes(), "world".as_bytes())
+            && bytes_eq(as_s.as_bytes(), sub)
+            && greet_len(ru) == 12
+            && ru.len == 12
+            && cp0 == 1055
+            && p1 == 2
+            && cp1 == 1088
+            && p2 == 4
+            && ru[0] == 208
+            && ru[1] == 159
+          { 1 } else { 0 };
+          eq_ok * 1000 + as_s.len
+        }
+
+        test "utf8 str len, decode, zero-copy subslice, vec<u8>.as_str" {
+          assert(run_utf8_str_ops() == 1005);
+        }
+    "#;
+
+    let module = parse_module(src).expect("parse ok");
+    let ifw_path = ws.join("utf8_str_ops.ifw");
+    build_strata_wasm_from_module(&mut store, &module, &ifw_path).expect("verify+wasm ok");
+    let results = run_module_tests(&module);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].passed, "Test failed: {:?}", results[0]);
+
+    // Verify eval.rs and compiled Strata Wasm (Node.js WebAssembly) return the exact same result!
+    if let Ok(out) = std::process::Command::new("node")
+        .arg("-e")
+        .arg(format!(
+            r#"
+            const fs = require("fs");
+            const bytes = fs.readFileSync({});
+            WebAssembly.instantiate(bytes, {{}}).then(({{ instance }}) => {{
+              const res = instance.exports.run_utf8_str_ops();
+              if (res !== 1005) {{
+                console.error("Expected 1005, got", res);
+                process.exit(1);
+              }}
+              console.log("WASM_OK=" + res);
+            }});
+            "#,
+            serde_json::to_string(ifw_path.to_str().unwrap()).unwrap()
+        ))
+        .output()
+    {
+        assert!(
+            out.status.success(),
+            "Node Wasm execution failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Mutating read-only `str` via index assignment must be rejected.
+    let bad_mut = r#"
+        export fn bad() -[Mem]-> i64 {
+          let s: str = "abc";
+          s[0] = 65;
+          0
+        }
+    "#;
+    let err = parse_module(bad_mut).expect_err("must reject str mutation");
+    assert_eq!(err.code, "E060_TYPE_MISMATCH");
+
+    let _ = fs::remove_dir_all(&ws);
+}

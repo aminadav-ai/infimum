@@ -59,29 +59,29 @@ where
     let f = &canon_node.ast;
     if f.exported {
         for p in &f.params {
-            if matches!(p.ty, Type::Slice(_)) {
+            if matches!(p.ty, Type::Slice(_) | Type::Str) {
                 return Err(InfimumDiagnostic::new(
                     "E082_NON_SCALAR_EXPORT",
                     "typecheck",
                     format!(
-                        "Exported function '{}' cannot take slice parameter '{}: {}'",
+                        "Exported function '{}' cannot take slice/str parameter '{}: {}'",
                         raw_name, p.name, p.ty
                     ),
                     Span::zero(),
-                    "Pass scalar '(ptr: i64, len: i64)' across the Wasm export boundary and wrap with 'slice_i64(ptr, len)' inside",
+                    "Pass scalar '(ptr: i64, len: i64)' or write bytes into a layout 'bytes[N]' / 'vec<u8>[N]' buffer across the Wasm export boundary",
                 ));
             }
         }
-        if matches!(f.ret_type, Type::Slice(_)) {
+        if matches!(f.ret_type, Type::Slice(_) | Type::Str) {
             return Err(InfimumDiagnostic::new(
                 "E082_NON_SCALAR_EXPORT",
                 "typecheck",
                 format!(
-                    "Exported function '{}' cannot return slice type '{}'",
+                    "Exported function '{}' cannot return slice/str type '{}'",
                     raw_name, f.ret_type
                 ),
                 Span::zero(),
-                "Return a scalar i64/bool/unit from 'export fn' and use slices internally",
+                "Return a scalar i64/u8/bool/unit from 'export fn' and use slices/str internally",
             ));
         }
     }
@@ -920,43 +920,57 @@ where
         }
         Expr::SlicePtr(inner) => {
             let ty = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
-            if matches!(ty, Type::Slice(_)) {
+            if matches!(ty, Type::Slice(_) | Type::Str) {
                 Ok(Type::I64)
             } else {
                 Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
-                    format!("'.ptr' requires a slice type '[T]', found '{ty}' in '{fn_name}'"),
+                    format!("'.ptr' requires a slice or str type, found '{ty}' in '{fn_name}'"),
                     Span::zero(),
-                    "Access '.ptr' only on slice values",
+                    "Access '.ptr' only on slice or str values",
                 ))
             }
         }
-        Expr::StrPtr(inner) => {
+        Expr::StrToBytes(inner) => {
             let ty = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
-            if matches!(ty, Type::Str | Type::I64) {
-                Ok(Type::I64)
+            if matches!(ty, Type::Str) {
+                Ok(Type::Slice(Box::new(Type::U8)))
             } else {
                 Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
-                    format!("'str_as_slice' requires 'str', found '{ty}' in '{fn_name}'"),
+                    format!("'.as_bytes()' requires 'str', found '{ty}' in '{fn_name}'"),
                     Span::zero(),
-                    "Pass a 'str' literal or parameter to str_as_slice(s)",
+                    "Pass a 'str' literal or value to '.as_bytes()'",
+                ))
+            }
+        }
+        Expr::StrFromBytes(inner) => {
+            let ty = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
+            if matches!(ty, Type::Slice(ref elem) if matches!(elem.as_ref(), Type::U8)) {
+                Ok(Type::Str)
+            } else {
+                Err(InfimumDiagnostic::new(
+                    "E060_TYPE_MISMATCH",
+                    "typecheck",
+                    format!("'str_from_bytes' / '.as_str()' requires '[u8]', found '{ty}' in '{fn_name}'"),
+                    Span::zero(),
+                    "Pass a byte slice '[u8]' to str_from_bytes(...) or '.as_str()'",
                 ))
             }
         }
         Expr::SliceLen(inner) => {
             let ty = check_expr(inner, fn_name, self_node, env, load_callee, sinks, in_contract)?;
-            if matches!(ty, Type::Slice(_)) {
+            if matches!(ty, Type::Slice(_) | Type::Str) {
                 Ok(Type::I64)
             } else {
                 Err(InfimumDiagnostic::new(
                     "E060_TYPE_MISMATCH",
                     "typecheck",
-                    format!("'.len' requires a slice type '[T]', found '{ty}' in '{fn_name}'"),
+                    format!("'.len' requires a slice or str type, found '{ty}' in '{fn_name}'"),
                     Span::zero(),
-                    "Access '.len' only on slice values",
+                    "Access '.len' only on slice or str values",
                 ))
             }
         }

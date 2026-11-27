@@ -1692,7 +1692,7 @@ impl Parser {
             }
             TokenKind::Str(s) => {
                 self.advance();
-                Ok(RawExpr::StrLit(s))
+                self.parse_postfix_chain(RawExpr::StrLit(s), tok.span)
             }
             TokenKind::LBrace => self.parse_block_expr(),
             TokenKind::LParen => {
@@ -1940,6 +1940,25 @@ impl Parser {
                     }
                     self.advance();
                     let (field, _) = self.expect_ident("Expected layout field name after '.'")?;
+                    if (field == "as_bytes" || field == "as_str")
+                        && matches!(self.peek().kind, TokenKind::LParen)
+                    {
+                        let args = self.parse_arg_list()?;
+                        let helper = if field == "as_bytes" {
+                            "str_as_bytes"
+                        } else {
+                            "str_from_bytes"
+                        };
+                        let mut call_args = Vec::with_capacity(1 + args.len());
+                        call_args.push(RawExpr::Var(name));
+                        call_args.extend(args);
+                        let base = RawExpr::Call {
+                            target: TargetRef::Named(helper.to_string()),
+                            args: call_args,
+                            span: tok.span,
+                        };
+                        return self.parse_postfix_chain(base, tok.span);
+                    }
                     let base = RawExpr::LayoutLoad(Box::new(RawLayoutLoad {
                         module: None,
                         layout: name,
@@ -2109,6 +2128,25 @@ impl Parser {
                                 }));
                                 continue;
                             }
+                        }
+                        if (field == "as_bytes" || field == "as_str")
+                            && matches!(self.peek().kind, TokenKind::LParen)
+                        {
+                            let args = self.parse_arg_list()?;
+                            let helper = if field == "as_bytes" {
+                                "str_as_bytes"
+                            } else {
+                                "str_from_bytes"
+                            };
+                            let mut call_args = Vec::with_capacity(1 + args.len());
+                            call_args.push(expr);
+                            call_args.extend(args);
+                            expr = RawExpr::Call {
+                                target: TargetRef::Named(helper.to_string()),
+                                args: call_args,
+                                span: if dot_span.line > 0 { dot_span } else { origin_span },
+                            };
+                            continue;
                         }
                         if let RawExpr::LayoutLoad(ref mut ll) = expr {
                             if ll.subfield.is_none() {

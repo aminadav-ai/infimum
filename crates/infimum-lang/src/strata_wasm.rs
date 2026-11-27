@@ -323,7 +323,11 @@ fn collect_str_lits_expr<'a>(expr: &'a Expr, out: &mut BTreeSet<&'a str>) {
             collect_str_lits_expr(ptr, out);
             collect_str_lits_expr(len, out);
         }
-        Expr::SlicePtr(e) | Expr::SliceLen(e) | Expr::StrPtr(e) | Expr::TupleField { expr: e, .. } => {
+        Expr::SlicePtr(e)
+        | Expr::SliceLen(e)
+        | Expr::StrToBytes(e)
+        | Expr::StrFromBytes(e)
+        | Expr::TupleField { expr: e, .. } => {
             collect_str_lits_expr(e, out);
         }
         Expr::RangeCheck { lo, hi, len } => {
@@ -340,11 +344,11 @@ fn estimate_str_pool_words(nodes: &[CanonicalNode]) -> u32 {
     for n in nodes {
         collect_str_lits_expr(&n.ast.body, &mut uniq);
     }
-    let mut total: usize = 0;
+    let mut total_bytes: usize = 0;
     for s in uniq {
-        total += 1 + s.chars().count();
+        total_bytes += s.len();
     }
-    total as u32
+    total_bytes.div_ceil(4) as u32
 }
 
 /// Select the smallest power-of-two Wasm memory page count in `{8, 16, 32, 64, 128, 256, 512, 1024}`
@@ -370,40 +374,31 @@ fn select_wasm_mem_pages(required_words: u32) -> (u32, i32) {
 }
 
 struct StrataStrPool {
-    base_word: u32,
-    map: BTreeMap<String, i64>,
-    words: Vec<i32>,
+    base_byte: u32,
+    map: BTreeMap<String, (i64, i64)>,
+    bytes: Vec<u8>,
 }
 
 impl StrataStrPool {
     fn new(base_word: u32) -> Self {
         Self {
-            base_word,
+            base_byte: base_word.saturating_mul(4),
             map: BTreeMap::new(),
-            words: Vec::new(),
+            bytes: Vec::new(),
         }
     }
 
-    fn intern(&mut self, s: &str) -> i64 {
-        if let Some(&addr) = self.map.get(s) {
-            return addr;
+    /// Intern a UTF-8 string literal into the read-only byte pool, returning `(byte_ptr, byte_len)`.
+    fn intern(&mut self, s: &str) -> (i64, i64) {
+        if let Some(&pair) = self.map.get(s) {
+            return pair;
         }
-        let word_addr = (self.base_word as usize + self.words.len()) as i64;
-        let chars: Vec<char> = s.chars().collect();
-        self.words.push(chars.len() as i32);
-        for ch in chars {
-            self.words.push(ch as u32 as i32);
-        }
-        self.map.insert(s.to_string(), word_addr);
-        word_addr
-    }
-
-    fn to_le_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.words.len() * 4);
-        for &w in &self.words {
-            out.extend_from_slice(&w.to_le_bytes());
-        }
-        out
+        let byte_ptr = (self.base_byte as usize + self.bytes.len()) as i64;
+        let raw = s.as_bytes();
+        let byte_len = raw.len() as i64;
+        self.bytes.extend_from_slice(raw);
+        self.map.insert(s.to_string(), (byte_ptr, byte_len));
+        (byte_ptr, byte_len)
     }
 }
 
@@ -529,7 +524,7 @@ pub fn emit_strata_wasm_bytes_v2(
         for p in &node.ast.params {
             let pa = match &p.ty {
                 Type::Tuple(ts) => ts.len().max(1),
-                Type::Slice(_) => 2,
+                Type::Slice(_) | Type::Str => 2,
                 _ => 1,
             };
             if pa > 1 {
@@ -539,7 +534,7 @@ pub fn emit_strata_wasm_bytes_v2(
         }
         let ret_arity = match &node.ast.ret_type {
             Type::Tuple(ts) => ts.len(),
-            Type::Slice(_) => 2,
+            Type::Slice(_) | Type::Str => 2,
             _ => 1,
         };
         if ret_arity > 1 {
@@ -589,8 +584,9 @@ pub fn emit_strata_wasm_bytes_v2(
             .ast
             .params
             .iter()
-            .any(|p| matches!(&p.ty, Type::Tuple(_) | Type::Slice(_)));
-        let has_non_scalar_ret = matches!(&target_node.ast.ret_type, Type::Tuple(_) | Type::Slice(_));
+            .any(|p| matches!(&p.ty, Type::Tuple(_) | Type::Slice(_) | Type::Str));
+        let has_non_scalar_ret =
+            matches!(&target_node.ast.ret_type, Type::Tuple(_) | Type::Slice(_) | Type::Str);
         if has_non_scalar_param || has_non_scalar_ret {
             return Err(InfimumDiagnostic::new(
                 "E082_NON_SCALAR_EXPORT",
@@ -724,17 +720,17 @@ pub fn emit_strata_wasm_bytes_v2(
     }
     push_section(&mut wasm, 10, &sec_code);
 
-    // Section 11: Data section (static read-only string pool placed safely after all layouts)
-    if !str_pool.words.is_empty() {
-        let raw_str_bytes = str_pool.to_le_bytes();
+    // Section 11: Data section (static read-only UTF-8 string pool placed safely after all layouts)
+    if !str_pool.bytes.is_empty() {
+        let raw_str_bytes = &str_pool.bytes;
         let mut sec_data = Vec::with_capacity(16 + raw_str_bytes.len());
         push_u32_leb(&mut sec_data, 1); // 1 active data segment
         sec_data.push(0x00); // active memory 0
         sec_data.push(0x41); // i32.const
-        push_i32_leb(&mut sec_data, (str_pool.base_word * 4) as i32);
+        push_i32_leb(&mut sec_data, str_pool.base_byte as i32);
         sec_data.push(0x0B); // end const expr
         push_u32_leb(&mut sec_data, raw_str_bytes.len() as u32);
-        sec_data.extend_from_slice(&raw_str_bytes);
+        sec_data.extend_from_slice(raw_str_bytes);
         push_section(&mut wasm, 11, &sec_data);
     }
 
@@ -818,7 +814,7 @@ fn collect_stmt_tuple_arities(stmts: &[Stmt], out: &mut BTreeSet<usize>) {
                     if ts.len() > 1 {
                         out.insert(ts.len());
                     }
-                } else if matches!(ty, Some(Type::Slice(_))) {
+                } else if matches!(ty, Some(Type::Slice(_) | Type::Str)) {
                     out.insert(2);
                 }
                 collect_expr_tuple_arities(value, out);
@@ -864,7 +860,8 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
         | Expr::Reveal { expr: inner, .. }
         | Expr::TupleField { expr: inner, .. }
         | Expr::SlicePtr(inner)
-        | Expr::StrPtr(inner)
+        | Expr::StrToBytes(inner)
+        | Expr::StrFromBytes(inner)
         | Expr::SliceLen(inner) => collect_expr_tuple_arities(inner, out),
         Expr::SliceLit { ptr, len, .. } => {
             out.insert(2);
@@ -889,14 +886,20 @@ fn collect_expr_tuple_arities(expr: &Expr, out: &mut BTreeSet<usize>) {
                 collect_expr_tuple_arities(a, out);
             }
         }
-        Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::StrLit(_) | Expr::UnitLit | Expr::Var(_) => {}
+        Expr::StrLit(_) => {
+            out.insert(2);
+        }
+        Expr::IntLit(_) | Expr::FixedLit(_) | Expr::BoolLit(_) | Expr::UnitLit | Expr::Var(_) => {}
     }
 }
 
 fn expr_result_arity(expr: &Expr, ctx: &FnCodegenCtx<'_>) -> usize {
     match expr {
         Expr::TupleLit(elems) => elems.len().max(1),
-        Expr::SliceLit { .. } => 2,
+        Expr::SliceLit { .. }
+        | Expr::StrLit(_)
+        | Expr::StrToBytes(_)
+        | Expr::StrFromBytes(_) => 2,
         Expr::Var(name) => ctx.tuple_locals.get(name).map(|v| v.len()).unwrap_or(1),
         Expr::Block { tail, .. } => expr_result_arity(tail, ctx),
         Expr::If { then_branch, .. } => expr_result_arity(then_branch, ctx),
@@ -918,7 +921,7 @@ fn compile_node_body(
     let f: &FnDef = &node.ast;
     let self_ret_arity = match &f.ret_type {
         Type::Tuple(ts) => ts.len(),
-        Type::Slice(_) => 2,
+        Type::Slice(_) | Type::Str => 2,
         _ => 1,
     };
     let mut local_map = BTreeMap::new();
@@ -934,7 +937,7 @@ fn compile_node_body(
                 }
                 tuple_locals.insert(p.name.clone(), slots);
             }
-            Type::Slice(_) => {
+            Type::Slice(_) | Type::Str => {
                 let slots = vec![param_idx, param_idx + 1];
                 param_idx += 2;
                 tuple_locals.insert(p.name.clone(), slots);
@@ -986,7 +989,7 @@ fn prealloc_stmt_locals(stmts: &[Stmt], ctx: &mut FnCodegenCtx<'_>) {
                 prealloc_expr_locals(value, ctx);
                 let arity = match ty {
                     Some(Type::Tuple(ts)) => ts.len(),
-                    Some(Type::Slice(_)) => 2,
+                    Some(Type::Slice(_) | Type::Str) => 2,
                     _ => expr_result_arity(value, ctx),
                 };
                 if arity > 1 {
@@ -1052,7 +1055,11 @@ fn prealloc_expr_locals(expr: &Expr, ctx: &mut FnCodegenCtx<'_>) {
                 prealloc_expr_locals(a, ctx);
             }
         }
-        Expr::TupleField { expr, .. } | Expr::SlicePtr(expr) | Expr::SliceLen(expr) | Expr::StrPtr(expr) => {
+        Expr::TupleField { expr, .. }
+        | Expr::SlicePtr(expr)
+        | Expr::SliceLen(expr)
+        | Expr::StrToBytes(expr)
+        | Expr::StrFromBytes(expr) => {
             prealloc_expr_locals(expr, ctx);
             if !ctx.local_map.contains_key("__ifm_tup_tmp") {
                 ctx.alloc_local(Some("__ifm_tup_tmp"));
@@ -1225,9 +1232,11 @@ fn emit_expr(
             push_i64_leb(out, 0);
         }
         Expr::StrLit(s) => {
-            let word_addr = ctx.str_pool.intern(s);
-            out.push(0x42); // i64.const <word_addr>
-            push_i64_leb(out, word_addr);
+            let (byte_ptr, byte_len) = ctx.str_pool.intern(s);
+            out.push(0x42); // i64.const <byte_ptr>
+            push_i64_leb(out, byte_ptr);
+            out.push(0x42); // i64.const <byte_len>
+            push_i64_leb(out, byte_len);
         }
         Expr::SecretWrap(_) | Expr::Reveal { .. } => {
             return Err(InfimumDiagnostic::new(
@@ -1429,17 +1438,8 @@ fn emit_expr(
             out.push(0x42);
             push_i64_leb(out, 0);
         }
-        Expr::Perform { effect, op, args } => {
-            if effect == "Mem" && op == "store_str" && args.len() == 2 {
-                // Zero-copy O(1) static string binding: stores word address of `str` into `mem[slot]`!
-                emit_safe_mem_addr_i32(&args[0], ctx, out)?;
-                emit_expr(&args[1], ctx, out)?;
-                out.push(0x3E); // i64.store32
-                out.push(0x02);
-                out.push(0x00);
-                out.push(0x42);
-                push_i64_leb(out, 0);
-            } else if op == "call" {
+        Expr::Perform { op, args, .. } => {
+            if op == "call" {
                 // Capability Host ABI: `do <Effect>.call(op_id, a0, a1, a2)` -> `env.host_call`
                 // Stores the i64 host return code in `mem[62]` (byte offset 248).
                 out.push(0x41); // i32.const 248
@@ -1461,8 +1461,11 @@ fn emit_expr(
                 push_i64_leb(out, 0);
             } else {
                 for a in args {
+                    let ar = expr_result_arity(a, ctx);
                     emit_expr(a, ctx, out)?;
-                    out.push(0x1A); // drop
+                    for _ in 0..ar {
+                        out.push(0x1A); // drop
+                    }
                 }
                 out.push(0x42);
                 push_i64_leb(out, 0);
@@ -1529,7 +1532,7 @@ fn emit_expr(
                 out,
             )?;
         }
-        Expr::StrPtr(inner) => {
+        Expr::StrToBytes(inner) | Expr::StrFromBytes(inner) => {
             emit_expr(inner, ctx, out)?;
         }
         Expr::BoundsCheck { index, .. } => {

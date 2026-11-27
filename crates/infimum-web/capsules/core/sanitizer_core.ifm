@@ -108,13 +108,29 @@ fn out_push_word_sep() -[Mem]-> unit {
   }
 }
 
+fn words_eq_ascii_ci(w: [i64], b: [u8]) -[Mem]-> bool {
+  if w.len != b.len {
+    false
+  } else {
+    let mut ok = true;
+    for i in 0..b.len max 64 {
+      let mut x = w[i];
+      let mut y = b[i];
+      if x >= 'A' && x <= 'Z' { x += 32; }
+      if y >= 'A' && y <= 'Z' { y += 32; }
+      if x != y { ok = false; break; }
+    }
+    ok
+  }
+}
+
 fn in_matches_ci(pos: i64, n: i64, pat: str) -[Mem]-> bool {
-  let ps = str_as_slice(pat);
+  let ps = pat.as_bytes();
   let lim = clamp_i64(n, 0, MAX_IN_CHARS);
   if pos < 0 || ps.len < 0 || pos + ps.len > lim {
     false
   } else {
-    slice_eq_ascii_ci(SanMem.in_buf[pos..pos + ps.len], ps)
+    words_eq_ascii_ci(SanMem.in_buf[pos..pos + ps.len], ps)
   }
 }
 
@@ -126,54 +142,54 @@ fn classify_tag(start: i64, tlen: i64, n: i64) -[Mem]-> i64 {
   } else {
     let tag = SanMem.in_buf[start..start + tlen];
     match tlen {
-      1 => if slice_eq_ascii_ci(tag, str_as_slice("p")) { TagKind::Block } else { TagKind::Other },
+      1 => if words_eq_ascii_ci(tag, "p".as_bytes()) { TagKind::Block } else { TagKind::Other },
       2 => {
-        if slice_eq_ascii_ci(tag, str_as_slice("h1"))
-          || slice_eq_ascii_ci(tag, str_as_slice("h2"))
-          || slice_eq_ascii_ci(tag, str_as_slice("h3"))
+        if words_eq_ascii_ci(tag, "h1".as_bytes())
+          || words_eq_ascii_ci(tag, "h2".as_bytes())
+          || words_eq_ascii_ci(tag, "h3".as_bytes())
         {
           TagKind::Heading
-        } else if slice_eq_ascii_ci(tag, str_as_slice("li")) {
+        } else if words_eq_ascii_ci(tag, "li".as_bytes()) {
           TagKind::Li
-        } else if slice_eq_ascii_ci(tag, str_as_slice("br")) {
+        } else if words_eq_ascii_ci(tag, "br".as_bytes()) {
           TagKind::Br
-        } else if slice_eq_ascii_ci(tag, str_as_slice("tr")) {
+        } else if words_eq_ascii_ci(tag, "tr".as_bytes()) {
           TagKind::Block
-        } else if slice_eq_ascii_ci(tag, str_as_slice("td")) || slice_eq_ascii_ci(tag, str_as_slice("th")) {
+        } else if words_eq_ascii_ci(tag, "td".as_bytes()) || words_eq_ascii_ci(tag, "th".as_bytes()) {
           TagKind::Cell
         } else {
           TagKind::Other
         }
       },
       3 => {
-        if slice_eq_ascii_ci(tag, str_as_slice("div")) {
+        if words_eq_ascii_ci(tag, "div".as_bytes()) {
           TagKind::Block
-        } else if slice_eq_ascii_ci(tag, str_as_slice("svg")) {
+        } else if words_eq_ascii_ci(tag, "svg".as_bytes()) {
           TagKind::Svg
         } else {
           TagKind::Other
         }
       },
-      5 => if slice_eq_ascii_ci(tag, str_as_slice("style")) { TagKind::Style } else { TagKind::Other },
+      5 => if words_eq_ascii_ci(tag, "style".as_bytes()) { TagKind::Style } else { TagKind::Other },
       6 => {
-        if slice_eq_ascii_ci(tag, str_as_slice("script")) {
+        if words_eq_ascii_ci(tag, "script".as_bytes()) {
           TagKind::Script
-        } else if slice_eq_ascii_ci(tag, str_as_slice("iframe")) {
+        } else if words_eq_ascii_ci(tag, "iframe".as_bytes()) {
           TagKind::Iframe
         } else {
           TagKind::Other
         }
       },
       7 => {
-        if slice_eq_ascii_ci(tag, str_as_slice("section"))
-          || slice_eq_ascii_ci(tag, str_as_slice("article"))
+        if words_eq_ascii_ci(tag, "section".as_bytes())
+          || words_eq_ascii_ci(tag, "article".as_bytes())
         {
           TagKind::Block
         } else {
           TagKind::Other
         }
       },
-      8 => if slice_eq_ascii_ci(tag, str_as_slice("noscript")) { TagKind::Noscript } else { TagKind::Other },
+      8 => if words_eq_ascii_ci(tag, "noscript".as_bytes()) { TagKind::Noscript } else { TagKind::Other },
       _ => TagKind::Other,
     }
   }

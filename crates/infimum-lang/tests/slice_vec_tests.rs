@@ -77,7 +77,7 @@ fn sum_fixed(s: [fixed]) -[Mem]-> fixed {
 }
 
 fn count_str_chars(txt: str) -[Mem]-> i64 {
-  let chars: [i64] = str_as_slice(txt);
+  let chars: [u8] = txt.as_bytes();
   let mut sum = 0;
   for i in 0..chars.len max 16 {
     sum += chars[i];

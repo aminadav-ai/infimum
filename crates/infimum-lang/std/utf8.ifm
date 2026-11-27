@@ -1,0 +1,131 @@
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
+//
+// Infimum Standard Library: std/utf8.ifm
+// Zero-allocation, Z3-verified UTF-8 decoder, encoder, and grapheme/codepoint boundary stepper
+// operating directly on `[u8]` byte slices.
+
+/// Decode one UTF-8 codepoint starting at `b[pos]`.
+/// Returns `(codepoint, next_pos)`. When `0 <= pos < b.len`, guarantees `next_pos > pos`
+/// (invalid sequences decode to U+FFFD `65533` and advance by 1 byte).
+pub fn utf8_decode_next(b: [u8], pos: i64) -[Mem]-> (i64, i64) {
+  if pos < 0 {
+    (0, 0)
+  } else if pos >= b.len {
+    (0, pos)
+  } else {
+    let b0 = b[pos];
+    if b0 < 128 {
+      (b0, pos + 1)
+    } else if b0 >= 194 && b0 <= 223 && pos + 1 < b.len {
+      let b1 = b[pos + 1];
+      if (b1 & 192) == 128 {
+        (((b0 & 31) << 6) | (b1 & 63), pos + 2)
+      } else {
+        (65533, pos + 1)
+      }
+    } else if b0 >= 224 && b0 <= 239 && pos + 2 < b.len {
+      let b1 = b[pos + 1];
+      let b2 = b[pos + 2];
+      if (b1 & 192) == 128 && (b2 & 192) == 128 {
+        (((b0 & 15) << 12) | ((b1 & 63) << 6) | (b2 & 63), pos + 3)
+      } else {
+        (65533, pos + 1)
+      }
+    } else if b0 >= 240 && b0 <= 244 && pos + 3 < b.len {
+      let b1 = b[pos + 1];
+      let b2 = b[pos + 2];
+      let b3 = b[pos + 3];
+      if (b1 & 192) == 128 && (b2 & 192) == 128 && (b3 & 192) == 128 {
+        (((b0 & 7) << 18) | ((b1 & 63) << 12) | ((b2 & 63) << 6) | (b3 & 63), pos + 4)
+      } else {
+        (65533, pos + 1)
+      }
+    } else {
+      (65533, pos + 1)
+    }
+  }
+}
+
+/// Encode Unicode scalar value `cp` into `dst[pos..]` as 1..4 UTF-8 bytes.
+/// Returns the number of bytes written (`0..=4`), or `0` if `dst` has insufficient remaining space.
+pub fn utf8_encode(cp: i64, dst: [u8], pos: i64) -[Mem]-> i64
+  ens result >= 0 && result <= 4
+{
+  if pos < 0 {
+    0
+  } else if cp >= 0 && cp <= 127 {
+    if pos < dst.len {
+      dst[pos] = u8(cp);
+      1
+    } else {
+      0
+    }
+  } else if cp >= 128 && cp <= 2047 {
+    if pos + 1 < dst.len {
+      dst[pos] = u8(192 | ((cp >> 6) & 31));
+      dst[pos + 1] = u8(128 | (cp & 63));
+      2
+    } else {
+      0
+    }
+  } else if cp >= 2048 && cp <= 65535 {
+    if pos + 2 < dst.len {
+      dst[pos] = u8(224 | ((cp >> 12) & 15));
+      dst[pos + 1] = u8(128 | ((cp >> 6) & 63));
+      dst[pos + 2] = u8(128 | (cp & 63));
+      3
+    } else {
+      0
+    }
+  } else if cp >= 65536 && cp <= 1114111 {
+    if pos + 3 < dst.len {
+      dst[pos] = u8(240 | ((cp >> 18) & 7));
+      dst[pos + 1] = u8(128 | ((cp >> 12) & 63));
+      dst[pos + 2] = u8(128 | ((cp >> 6) & 63));
+      dst[pos + 3] = u8(128 | (cp & 63));
+      4
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+/// Step backward from byte offset `pos` to the start of the previous UTF-8 codepoint.
+/// Useful for Backspace / ArrowLeft in UTF-8 text editors.
+pub fn utf8_prev_char_pos(b: [u8], pos: i64) -[Mem]-> i64
+  ens result >= 0
+{
+  if pos <= 0 || b.len == 0 {
+    0
+  } else {
+    let mut i = if pos > b.len { b.len - 1 } else { pos - 1 };
+    let mut steps = 0;
+    while i > 0 && steps < 3 max 4 {
+      if i >= 0 && i < b.len && (b[i] & 192) == 128 {
+        i -= 1;
+        steps += 1;
+      } else {
+        break;
+      }
+    }
+    if i < 0 { 0 } else { i }
+  }
+}
+
+/// Step forward from byte offset `pos` to the start of the next UTF-8 codepoint.
+/// Useful for Delete / ArrowRight in UTF-8 text editors.
+pub fn utf8_next_char_pos(b: [u8], pos: i64) -[Mem]-> i64
+  ens result >= 0
+{
+  if pos < 0 {
+    0
+  } else if pos >= b.len {
+    b.len
+  } else {
+    let (_, next_p) = utf8_decode_next(b, pos);
+    if next_p < 0 { 0 } else { next_p }
+  }
+}

@@ -677,7 +677,16 @@ where
                 resolve_name,
                 resolve_hash,
             )?))),
-            Expr::StrPtr(inner) => Ok(Expr::StrPtr(Box::new(canon_expr(
+            Expr::StrToBytes(inner) => Ok(Expr::StrToBytes(Box::new(canon_expr(
+                inner,
+                self_name,
+                env,
+                deps,
+                perform_effects,
+                resolve_name,
+                resolve_hash,
+            )?))),
+            Expr::StrFromBytes(inner) => Ok(Expr::StrFromBytes(Box::new(canon_expr(
                 inner,
                 self_name,
                 env,
@@ -1028,8 +1037,13 @@ fn format_expr(expr: &Expr, out: &mut String) {
             format_expr(inner, out);
             out.push_str(".len");
         }
-        Expr::StrPtr(inner) => {
-            out.push_str("str_ptr(");
+        Expr::StrToBytes(inner) => {
+            out.push_str("str_to_bytes(");
+            format_expr(inner, out);
+            out.push(')');
+        }
+        Expr::StrFromBytes(inner) => {
+            out.push_str("str_from_bytes(");
             format_expr(inner, out);
             out.push(')');
         }

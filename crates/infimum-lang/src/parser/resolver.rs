@@ -25,6 +25,39 @@ pub(super) struct SliceElemMeta {
     pub(super) stride: i64,
     pub(super) is_fixed: bool,
     pub(super) is_byte: bool,
+    pub(super) is_str: bool,
+}
+
+impl SliceElemMeta {
+    pub(super) fn utf8_str() -> Self {
+        Self {
+            elem_ty: Type::U8,
+            struct_canon: None,
+            stride: 1,
+            is_fixed: false,
+            is_byte: true,
+            is_str: true,
+        }
+    }
+
+    pub(super) fn u8_bytes() -> Self {
+        Self {
+            elem_ty: Type::U8,
+            struct_canon: None,
+            stride: 1,
+            is_fixed: false,
+            is_byte: true,
+            is_str: false,
+        }
+    }
+
+    pub(super) fn binding_ty(&self) -> Type {
+        if self.is_str {
+            Type::Str
+        } else {
+            Type::Slice(Box::new(self.elem_ty.clone()))
+        }
+    }
 }
 
 pub(super) struct ModuleResolver {
@@ -351,20 +384,16 @@ impl ModuleResolver {
                 stride: 1,
                 is_fixed: false,
                 is_byte: false,
+                is_str: false,
             }),
-            RawType::Builtin(Type::U8) => Ok(SliceElemMeta {
-                elem_ty: Type::U8,
-                struct_canon: None,
-                stride: 1,
-                is_fixed: false,
-                is_byte: true,
-            }),
+            RawType::Builtin(Type::U8) => Ok(SliceElemMeta::u8_bytes()),
             RawType::Builtin(Type::Fixed) => Ok(SliceElemMeta {
                 elem_ty: Type::Fixed,
                 struct_canon: None,
                 stride: 1,
                 is_fixed: true,
                 is_byte: false,
+                is_str: false,
             }),
             RawType::Named { module, name, span } => {
                 let scanon = self.resolve_struct_canon(module.as_deref(), name, *span)?;
@@ -383,6 +412,7 @@ impl ModuleResolver {
                     stride: sdef.size,
                     is_fixed: false,
                     is_byte: false,
+                    is_str: false,
                 })
             }
             RawType::Secret(_) => Err(InfimumDiagnostic::new(
@@ -465,15 +495,10 @@ impl ModuleResolver {
                 stride: sdef.size,
                 is_fixed: false,
                 is_byte: false,
+                is_str: false,
             })
         } else if meta.is_byte {
-            Some(SliceElemMeta {
-                elem_ty: Type::U8,
-                struct_canon: None,
-                stride: 1,
-                is_fixed: false,
-                is_byte: true,
-            })
+            Some(SliceElemMeta::u8_bytes())
         } else if meta.is_fixed {
             Some(SliceElemMeta {
                 elem_ty: Type::Fixed,
@@ -481,6 +506,7 @@ impl ModuleResolver {
                 stride: 1,
                 is_fixed: true,
                 is_byte: false,
+                is_str: false,
             })
         } else {
             Some(SliceElemMeta {
@@ -489,14 +515,18 @@ impl ModuleResolver {
                 stride: 1,
                 is_fixed: false,
                 is_byte: false,
+                is_str: false,
             })
         }
     }
 
     fn infer_raw_expr_slice(&self, expr: &RawExpr) -> Option<SliceElemMeta> {
         match expr {
+            RawExpr::StrLit(_) => Some(SliceElemMeta::utf8_str()),
             RawExpr::Var(v) => self.lookup_slice_var(v),
-            RawExpr::VecOp(vo) if vo.method == "as_slice" || vo.method == "as_bytes" => {
+            RawExpr::VecOp(vo)
+                if vo.method == "as_slice" || vo.method == "as_bytes" || vo.method == "as_str" =>
+            {
                 let sym = self
                     .lookup_layout_sym(vo.module.as_deref(), &vo.layout, vo.span)
                     .ok()
@@ -505,7 +535,11 @@ impl ModuleResolver {
                     .layout_field_meta
                     .get(&(sym.canonical_name.clone(), vo.field.clone()))?;
                 if meta.is_vec {
-                    self.slice_meta_from_layout_field(meta)
+                    if vo.method == "as_str" && meta.is_byte {
+                        Some(SliceElemMeta::utf8_str())
+                    } else {
+                        self.slice_meta_from_layout_field(meta)
+                    }
                 } else {
                     None
                 }
@@ -529,32 +563,32 @@ impl ModuleResolver {
                         }
                     }
                 }
-                self.infer_raw_expr_slice(&sr.base)
+                self.infer_raw_expr_slice(&sr.base).map(|mut m| {
+                    m.is_str = false;
+                    m
+                })
             }
             RawExpr::Call {
                 target: TargetRef::Named(fname),
                 ..
             } => match fname.as_str() {
-                "slice_i64" | "str_as_slice" => Some(SliceElemMeta {
+                "slice_i64" => Some(SliceElemMeta {
                     elem_ty: Type::I64,
                     struct_canon: None,
                     stride: 1,
                     is_fixed: false,
                     is_byte: false,
+                    is_str: false,
                 }),
-                "slice_u8" => Some(SliceElemMeta {
-                    elem_ty: Type::U8,
-                    struct_canon: None,
-                    stride: 1,
-                    is_fixed: false,
-                    is_byte: true,
-                }),
+                "slice_u8" | "str_as_bytes" => Some(SliceElemMeta::u8_bytes()),
+                "str_from_bytes" => Some(SliceElemMeta::utf8_str()),
                 "slice_fixed" => Some(SliceElemMeta {
                     elem_ty: Type::Fixed,
                     struct_canon: None,
                     stride: 1,
                     is_fixed: true,
                     is_byte: false,
+                    is_str: false,
                 }),
                 _ => {
                     let canon = self
@@ -1773,6 +1807,8 @@ impl ModuleResolver {
             } else if let RawType::Slice(elem) = raw_ty {
                 let smeta = self.resolve_slice_elem(elem)?;
                 init_slice_vars.insert(pname.clone(), smeta);
+            } else if matches!(raw_ty, RawType::Builtin(Type::Str)) {
+                init_slice_vars.insert(pname.clone(), SliceElemMeta::utf8_str());
             }
             params.push(Param {
                 name: pname.clone(),
@@ -1786,6 +1822,8 @@ impl ModuleResolver {
         } else if let RawType::Slice(elem) = &raw.ret_type {
             let smeta = self.resolve_slice_elem(elem)?;
             init_slice_vars.insert("result".to_string(), smeta);
+        } else if matches!(&raw.ret_type, RawType::Builtin(Type::Str)) {
+            init_slice_vars.insert("result".to_string(), SliceElemMeta::utf8_str());
         }
         self.struct_vars.push(init_struct_vars);
         self.slice_vars.push(init_slice_vars);
@@ -2319,6 +2357,7 @@ impl ModuleResolver {
                     };
                     let inferred_slice = match ty {
                         Some(RawType::Slice(elem)) => Some(self.resolve_slice_elem(elem)?),
+                        Some(RawType::Builtin(Type::Str)) => Some(SliceElemMeta::utf8_str()),
                         _ => self.infer_raw_expr_slice(value),
                     };
                     let v = self.lower_expr(value, locals)?;
@@ -2655,6 +2694,15 @@ impl ModuleResolver {
                             "Index assignment 's[i] = val' requires a slice value of type '[T]'",
                         )
                     })?;
+                    if smeta.is_str {
+                        return Err(InfimumDiagnostic::new(
+                            "E060_TYPE_MISMATCH",
+                            "parse",
+                            "Cannot mutate read-only 'str' through index assignment",
+                            *span,
+                            "Copy the bytes into a mutable 'vec<u8>[N]' or '[u8]' buffer to modify them",
+                        ));
+                    }
                     let base_e = self.lower_expr(base, locals)?;
                     let idx_e = self.lower_expr(index, locals)?;
                     let sb_var = format!("__ifm_sb_{}", self.addr_counter);
@@ -2664,7 +2712,7 @@ impl ModuleResolver {
                     out.push(Stmt::Let {
                         name: sb_var.clone(),
                         mutable: false,
-                        ty: Some(Type::Slice(Box::new(smeta.elem_ty.clone()))),
+                        ty: Some(smeta.binding_ty()),
                         value: base_e,
                     });
                     out.push(Stmt::Let {
@@ -3470,32 +3518,13 @@ impl ModuleResolver {
                             elem_ty,
                         });
                     }
-                    if args.len() == 1 && n == "str_as_slice" {
+                    if args.len() == 1 && n == "str_as_bytes" {
                         let s_e = self.lower_expr(&args[0], locals)?;
-                        let sp_var = format!("__ifm_strp_{}", self.addr_counter);
-                        self.addr_counter += 1;
-                        return Ok(Expr::Block {
-                            stmts: vec![Stmt::Let {
-                                name: sp_var.clone(),
-                                mutable: false,
-                                ty: Some(Type::I64),
-                                value: Expr::StrPtr(Box::new(s_e)),
-                            }],
-                            tail: Box::new(Expr::SliceLit {
-                                ptr: Box::new(Expr::Binary {
-                                    op: BinOp::Add,
-                                    lhs: Box::new(Expr::Var(sp_var.clone())),
-                                    rhs: Box::new(Expr::IntLit(1)),
-                                }),
-                                len: Box::new(Expr::MemLoad {
-                                    index: Box::new(Expr::Var(sp_var)),
-                                    inv: Some((0, 16_777_216)),
-                                    fixed_ty: false,
-                                    region: 0,
-                                }),
-                                elem_ty: Type::I64,
-                            }),
-                        });
+                        return Ok(Expr::StrToBytes(Box::new(s_e)));
+                    }
+                    if args.len() == 1 && n == "str_from_bytes" {
+                        let b_e = self.lower_expr(&args[0], locals)?;
+                        return Ok(Expr::StrFromBytes(Box::new(b_e)));
                     }
                 }
                 if args.len() == 1 {
@@ -3831,7 +3860,7 @@ impl ModuleResolver {
                     Stmt::Let {
                         name: sb_var.clone(),
                         mutable: false,
-                        ty: Some(Type::Slice(Box::new(smeta.elem_ty.clone()))),
+                        ty: Some(smeta.binding_ty()),
                         value: base_e,
                     },
                     Stmt::Let {
@@ -4028,6 +4057,31 @@ impl ModuleResolver {
                             len: Box::new(mk_len_load()),
                             elem_ty: smeta.elem_ty,
                         })
+                    }
+                    "as_str" => {
+                        if !args.is_empty() {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                format!("'{layout}.{field}.as_str()' takes 0 arguments, got {}", args.len()),
+                                *span,
+                                "Call '.as_str()' with no arguments",
+                            ));
+                        }
+                        if !meta.is_byte {
+                            return Err(InfimumDiagnostic::new(
+                                "E060_TYPE_MISMATCH",
+                                "resolve",
+                                format!("'{layout}.{field}.as_str()' requires 'vec<u8>[N]'"),
+                                *span,
+                                "Declare the field as 'vec<u8>[N]' to view it as 'str'",
+                            ));
+                        }
+                        Ok(Expr::StrFromBytes(Box::new(Expr::SliceLit {
+                            ptr: Box::new(Expr::IntLit(data_base)),
+                            len: Box::new(mk_len_load()),
+                            elem_ty: Type::U8,
+                        })))
                     }
                     "clear" => {
                         if !args.is_empty() {
@@ -4497,7 +4551,7 @@ impl ModuleResolver {
                             pre_stmts.push(Stmt::Let {
                                 name: sb_var.clone(),
                                 mutable: false,
-                                ty: Some(Type::Slice(Box::new(smeta.elem_ty.clone()))),
+                                ty: Some(smeta.binding_ty()),
                                 value: base_e,
                             });
                             (
@@ -4531,7 +4585,7 @@ impl ModuleResolver {
                     pre_stmts.push(Stmt::Let {
                         name: sb_var.clone(),
                         mutable: false,
-                        ty: Some(Type::Slice(Box::new(smeta.elem_ty.clone()))),
+                        ty: Some(smeta.binding_ty()),
                         value: base_e,
                     });
                     (
@@ -5072,9 +5126,17 @@ pub(super) fn infer_and_rewrite_fixed_expr(
             infer_and_rewrite_fixed_expr(len, env, fn_rets);
             Type::Slice(Box::new(elem_ty.clone()))
         }
-        Expr::SlicePtr(inner) | Expr::SliceLen(inner) | Expr::StrPtr(inner) => {
+        Expr::SlicePtr(inner) | Expr::SliceLen(inner) => {
             infer_and_rewrite_fixed_expr(inner, env, fn_rets);
             Type::I64
+        }
+        Expr::StrToBytes(inner) => {
+            infer_and_rewrite_fixed_expr(inner, env, fn_rets);
+            Type::Slice(Box::new(Type::U8))
+        }
+        Expr::StrFromBytes(inner) => {
+            infer_and_rewrite_fixed_expr(inner, env, fn_rets);
+            Type::Str
         }
         Expr::BoundsCheck { index, len, .. } => {
             infer_and_rewrite_fixed_expr(index, env, fn_rets);

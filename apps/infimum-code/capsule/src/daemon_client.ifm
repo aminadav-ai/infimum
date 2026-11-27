@@ -24,8 +24,7 @@ pub mod daemon {
   }
 
   pub fn buf_append_lit(dst: i64, max_cap: i64, s: str) -[Mem]-> unit {
-    do Mem.store_str(SYS_STR_SCRATCH_WORD, s);
-    buf_append_buf(dst, max_cap, mem_load(SYS_STR_SCRATCH_WORD));
+    buf_push_str(dst, max_cap, s);
   }
 
   pub fn buf_copy_slice(dst: i64, max_cap: i64, src: i64, start: i64, count: i64) -[Mem]-> unit {
@@ -124,25 +123,33 @@ pub mod daemon {
     buf_clear(StudioMem::agent_tok_buf);
 
     // Load AGENT_URL from explicit --cap-arg=AGENT_URL=...
-    do Mem.store_str(SYS_STR_SCRATCH_WORD, "AGENT_URL");
-    do Net.call(HostOp::CapArgGet, mem_load(SYS_STR_SCRATCH_WORD), StudioMem::agent_url_buf, 250);
+    scratch_reset();
+    let kptr = scratch_alloc(64);
+    if kptr >= 0 {
+      buf_set_str(kptr, 60, "AGENT_URL");
+      do Net.call(HostOp::CapArgGet, kptr, StudioMem::agent_url_buf, 250);
+    }
     if host_ret() <= 0 {
       buf_clear(StudioMem::agent_url_buf);
       buf_append_lit(StudioMem::agent_url_buf, 250, "http://127.0.0.1:43210");
     }
 
     // Load AGENT_TOKEN from explicit --cap-arg=AGENT_TOKEN=... -> "Bearer <tok>"
-    do Mem.store_str(SYS_STR_SCRATCH_WORD, "AGENT_TOKEN");
-    do Net.call(HostOp::CapArgGet, mem_load(SYS_STR_SCRATCH_WORD), StudioMem::http_body_tmp, 200);
-    if host_ret() > 0 {
-      buf_append_lit(StudioMem::agent_tok_buf, 250, "Bearer ");
-      buf_append_buf(StudioMem::agent_tok_buf, 250, StudioMem::http_body_tmp);
+    if kptr >= 0 {
+      buf_set_str(kptr, 60, "AGENT_TOKEN");
+      do Net.call(HostOp::CapArgGet, kptr, StudioMem::http_body_tmp, 200);
+      if host_ret() > 0 {
+        buf_append_lit(StudioMem::agent_tok_buf, 250, "Bearer ");
+        buf_append_buf(StudioMem::agent_tok_buf, 250, StudioMem::http_body_tmp);
+      }
     }
 
     // Detect Online Infimum Code mode (--cap-arg=ONLINE_MODE=1 -> show only Gemini + OpenRouter)
-    do Mem.store_str(SYS_STR_SCRATCH_WORD, "ONLINE_MODE");
-    do Net.call(HostOp::CapArgGet, mem_load(SYS_STR_SCRATCH_WORD), StudioMem::http_body_tmp, 16);
-    StudioMem.online_mode = if host_ret() > 0 && mem_load(StudioMem::http_body_tmp + 1) == '1' { 1 } else { 0 };
+    if kptr >= 0 {
+      buf_set_str(kptr, 60, "ONLINE_MODE");
+      do Net.call(HostOp::CapArgGet, kptr, StudioMem::http_body_tmp, 16);
+      StudioMem.online_mode = if host_ret() > 0 && mem_load(StudioMem::http_body_tmp + 1) == '1' { 1 } else { 0 };
+    }
   }
 
   pub fn http(method: str, path_q: str, body_ptr: i64) -[Mem, Net]-> i64 {
