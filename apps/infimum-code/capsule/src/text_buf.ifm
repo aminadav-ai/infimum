@@ -347,11 +347,11 @@ pub fn append_message(role: i64, src_ptr: i64, el_tenths: i64, cost_m: i64, toke
     cnt
   } else {
     let mut s = 0;
-    while s < 127 max 127 {
+    while s < MAX_MESSAGES - 1 max 511 {
       copy_msg_meta(s, s + 1);
       s += 1;
     }
-    127
+    MAX_MESSAGES - 1
   };
 
   buf_set_len(cursor, n);
