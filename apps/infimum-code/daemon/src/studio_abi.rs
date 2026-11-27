@@ -104,6 +104,7 @@ pub enum HostAction {
     ExportBackup = 13,
     ImportBackup = 14,
     ExportConvMd = 15,
+    CompactConv = 16,
 }
 
 impl core::convert::TryFrom<i32> for HostAction {
@@ -127,6 +128,7 @@ impl core::convert::TryFrom<i32> for HostAction {
             13 => Ok(Self::ExportBackup),
             14 => Ok(Self::ImportBackup),
             15 => Ok(Self::ExportConvMd),
+            16 => Ok(Self::CompactConv),
             other => Err(other),
         }
     }

@@ -187,6 +187,17 @@ pub fn tl_has_content(base: i64) -[Mem]-> bool {
   }
 }
 
+pub fn tl_is_stub(base: i64) -[Mem]-> bool {
+  if base <= 0 {
+    false
+  } else {
+    let hdr = slice_i64(base, 7);
+    let total_w = clamp_i64(hdr[0], 0, LIVE_TIMELINE_MAX_WORDS);
+    let steps = clamp_i64(hdr[5] & 65535, 0, TL_MAX_STEPS);
+    total_w == TL_HEADER_WORDS && steps > 0
+  }
+}
+
 pub fn tl_body_layout(
   draw: bool, x: i64, y: i64, w: i64, base: i64,
   th: i64, tick: i64, clip: i64, vis_y0: i64, vis_y1: i64
@@ -651,10 +662,11 @@ pub fn draw_msg_timeline(
     let total_h = box_h + 8;
 
     if bar_y + box_h >= vis_y0 && bar_y <= vis_y1 {
+      let is_stub = tl_is_stub(tl_ptr);
       let cp_s = clamp_i64(bar_h - 6, 22, 34);
       let cp_x = bar_x + bar_w - cp_s - 4;
       let cp_y = bar_y + (bar_h - cp_s) / 2;
-      let cp_hov = can_interact && point_in_rect(mx, my, cp_x, cp_y, cp_s, cp_s);
+      let cp_hov = !is_stub && can_interact && point_in_rect(mx, my, cp_x, cp_y, cp_s, cp_s);
       let top_hov = can_interact && !cp_hov && point_in_rect(mx, my, bar_x, bar_y, bar_w, bar_h);
       let bot_hov = is_exp && can_interact && point_in_rect(mx, my, bar_x, ftr_y, bar_w, bar_h);
       let bar_hov = top_hov || bot_hov;
@@ -677,10 +689,10 @@ pub fn draw_msg_timeline(
         ui_rect(bar_x + 1, bar_y + 1, bar_w - 2, bar_h - 1, 7, 0, 0, col_surf2(th), 0, ClipId::Feed);
       }
 
-      // Top summary bar + copy button for the entire timeline (thoughts + steps)
-      let sum_w = clamp_i64(bar_w - cp_s - 6, 180, 1200);
+      // Top summary bar + copy button (shown when full timeline is loaded)
+      let sum_w = if is_stub { bar_w } else { clamp_i64(bar_w - cp_s - 6, 180, 1200) };
       tl_draw_msg_summary_bar(bar_x, bar_y, sum_w, bar_h, sm_sz, tl_ptr, is_exp, top_hov, th, vis_y0, vis_y1);
-      if cp_y + cp_s >= vis_y0 && cp_y <= vis_y1 {
+      if !is_stub && cp_y + cp_s >= vis_y0 && cp_y <= vis_y1 {
         let is_cp = StudioMem.copy_toast_ticks > 0 && StudioMem.copy_toast_ptr == tl_ptr;
         let ic_sz = clamp_i64(sm_sz + 2, 13, 20);
         let ic_off = (cp_s - ic_sz) / 2;

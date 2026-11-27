@@ -69,6 +69,7 @@ pub enum HostAction {
   ExportBackup = 13,
   ImportBackup = 14,
   ExportConvMd = 15,
+  CompactConv = 16,
 }
 
 pub enum ViewMode {

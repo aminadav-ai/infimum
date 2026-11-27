@@ -340,6 +340,9 @@ pub fn render_feed(
         );
         if StudioMem.msg_tl_expanded[mi] != was_exp {
           feed_text_clicked = true;
+          if StudioMem.msg_tl_expanded[mi] == 1 && tl::tl_is_stub(tl_ptr) {
+            let _ = daemon_fetch_and_attach_msg_timeline(mi);
+          }
         }
         let mtx = col_x + 14;
         let mty = cy + tl_h + 10;

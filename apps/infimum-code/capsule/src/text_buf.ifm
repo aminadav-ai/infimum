@@ -375,10 +375,10 @@ pub fn append_message(role: i64, src_ptr: i64, el_tenths: i64, cost_m: i64, toke
   StudioMem.auto_scroll_bottom = 1;
 }
 
-pub fn attach_live_timeline_to_last_msg() -[Mem]-> unit {
+pub fn attach_live_timeline_to_msg(slot_idx: i64, reset_exp: bool) -[Mem]-> unit {
   let tl_n = clamp_i64(StudioMem.live_timeline_words, 0, LIVE_TIMELINE_MAX_WORDS);
   let cnt = clamp_i64(StudioMem.msg_count, 0, MAX_MESSAGES);
-  if tl_n >= 7 && cnt > 0 {
+  if tl_n >= 7 && slot_idx >= 0 && slot_idx < cnt {
     let cur_raw = StudioMem.msg_pool_cursor;
     let mut cursor = if cur_raw < StudioMem::msg_pool || cur_raw > StudioMem::msg_pool + MSG_POOL_WRAP_OFFSET {
       StudioMem::msg_pool
@@ -388,7 +388,7 @@ pub fn attach_live_timeline_to_last_msg() -[Mem]-> unit {
     if cursor + tl_n + 2 > StudioMem::msg_pool + MSG_POOL_GUARD_OFFSET {
       cursor = StudioMem::msg_pool;
     }
-    let slot = evict_msg_pool_range(cursor, cursor + tl_n + 2, cnt - 1);
+    let slot = evict_msg_pool_range(cursor, cursor + tl_n + 2, slot_idx);
     if slot >= 0 && slot < MAX_MESSAGES && cursor >= 0 {
       let dst_tl = slice_i64(cursor, tl_n);
       for i in 0..dst_tl.len max 9000 {
@@ -398,11 +398,23 @@ pub fn attach_live_timeline_to_last_msg() -[Mem]-> unit {
       }
       StudioMem.msg_pool_cursor = cursor + tl_n + 2;
       StudioMem.msg_meta[slot].tl_ptr = cursor;
-      StudioMem.msg_tl_expanded[slot] = 0;
+      if reset_exp {
+        StudioMem.msg_tl_expanded[slot] = 0;
+      }
     }
   }
   StudioMem.live_timeline_words = 0;
   StudioMem.live_cmd_killing = 0;
+}
+
+pub fn attach_live_timeline_to_last_msg() -[Mem]-> unit {
+  let cnt = clamp_i64(StudioMem.msg_count, 0, MAX_MESSAGES);
+  if cnt > 0 {
+    attach_live_timeline_to_msg(cnt - 1, true);
+  } else {
+    StudioMem.live_timeline_words = 0;
+    StudioMem.live_cmd_killing = 0;
+  }
 }
 
 pub fn spans_equal(buf_a: i64, start_a: i64, len_a: i64, buf_b: i64, start_b: i64, len_b: i64) -[Mem]-> bool {
@@ -530,6 +542,33 @@ pub fn daemon_fetch_conv_msg(msg_idx: i64) -[Mem, Net]-> i64 {
   buf_clear(StudioMem::http_resp_buf);
   do Net.call(HostOp::NetHttpRequest, StudioMem::http_req_buf, StudioMem::http_resp_buf, 65500);
   host_ret()
+}
+
+pub fn daemon_fetch_and_attach_msg_timeline(msg_idx: i64) -[Mem, Net]-> i64 {
+  buf_clear(StudioMem::http_req_buf);
+  daemon::buf_append_lit(StudioMem::http_req_buf, 35900, "GET\n");
+  daemon::buf_append_buf(StudioMem::http_req_buf, 35900, StudioMem::agent_url_buf);
+  daemon::buf_append_lit(StudioMem::http_req_buf, 35900, "/conversations/msg/");
+  buf_push_int(StudioMem::http_req_buf, 35900, msg_idx);
+  daemon::buf_append_lit(StudioMem::http_req_buf, 35900, "/timeline?format=ifm\n");
+  daemon::buf_append_buf(StudioMem::http_req_buf, 35900, StudioMem::agent_tok_buf);
+  daemon::buf_append_lit(StudioMem::http_req_buf, 35900, "\ntext/plain\n");
+  buf_clear(StudioMem::http_resp_buf);
+  do Net.call(HostOp::NetHttpRequest, StudioMem::http_req_buf, StudioMem::http_resp_buf, 65500);
+  if host_ret() == 200 {
+    StudioMem.http_key_tmp[0] = 0;
+    let tl_n = daemon::parse_i64(StudioMem::http_resp_buf);
+    daemon::parse_skip_to_next_line(StudioMem::http_resp_buf);
+    if tl_n >= 7 {
+      daemon::parse_timeline_words(StudioMem::http_resp_buf, tl_n);
+      attach_live_timeline_to_msg(msg_idx, false);
+      1
+    } else {
+      0
+    }
+  } else {
+    0
+  }
 }
 
 pub fn daemon_load_gpu_img(msg_idx: i64, img_idx: i64) -[Mem, Net]-> i64 {
