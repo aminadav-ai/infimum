@@ -45,9 +45,9 @@ fn handle_pricing(input: [u8], out: [u8]) -[Mem]-> Result<i64, i64> {
   } else if tax_rate < 0.0d || tax_rate > 0.3d {
     Err(PricingErr::InvalidTaxRate)
   } else {
-    let discount = dec64_round_half_even_cents(amount * discount_pct);
-    let net = amount - discount;
-    let tax = dec64_round_half_even_cents(net * tax_rate);
+    let discount = dec64_clamp(dec64_round_half_even_cents(amount * discount_pct), 0.0d, amount);
+    let net = dec64_clamp(amount - discount, 0.0d, 10000000.0d);
+    let tax = dec64_clamp(dec64_round_half_even_cents(net * tax_rate), 0.0d, 10000000.0d);
     // Accounting invariant: rounded line items sum cleanly (`net + tax == total`)
     let total = net + tax;
 

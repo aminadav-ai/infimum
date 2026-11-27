@@ -312,18 +312,22 @@ export fn safe_div() -[Mem]-> i64 {
         .verify_module(&m_ok)
         .expect("known_mem forwarding should prove State.denom > 0 across loads");
 
-    // 2. Dynamic raw MemStore (inside std/) invalidates known_mem (soundness!)
+    // 2. Effectful -[Mem]-> call invalidates known_mem (soundness!)
     let mut f_bad = BTreeMap::new();
     f_bad.insert(
-        "__std__/raw_mem_soundness.ifm".to_string(),
+        "main.ifm".to_string(),
         r#"
 layout State {
   denom: word,
   arr: words[4],
 }
-export fn clobbered_div(idx: i64) -[Mem]-> i64 {
+fn clobber() -[Mem]-> unit {
+  State.denom = 0;
+  ()
+}
+export fn clobbered_div() -[Mem]-> i64 {
   if State.denom > 0 {
-    mem_store(idx, 0);
+    clobber();
     100 / State.denom
   } else {
     0
@@ -332,11 +336,27 @@ export fn clobbered_div(idx: i64) -[Mem]-> i64 {
 "#
         .to_string(),
     );
-    let m_bad = parse_module_from_virtual_fs("__std__/raw_mem_soundness.ifm", &f_bad).expect("parse ok");
+    let m_bad = parse_module_from_virtual_fs("main.ifm", &f_bad).expect("parse ok");
     let err = store
         .verify_module(&m_bad)
-        .expect_err("dynamic mem_store must invalidate known_mem");
+        .expect_err("effectful -[Mem]-> call must invalidate known_mem");
     assert_eq!(err.code, "E053_POSSIBLE_DIV_BY_ZERO");
+
+    // 3. Spoofing "__std__/..." in VirtualFs MUST NOT bypass E076_RAW_MEM_FORBIDDEN
+    let mut f_spoof = BTreeMap::new();
+    f_spoof.insert(
+        "__std__/raw_mem_spoof.ifm".to_string(),
+        r#"
+export fn spoof(idx: i64) -[Mem]-> i64 {
+  mem_store(idx, 0);
+  0
+}
+"#
+        .to_string(),
+    );
+    let spoof_err = parse_module_from_virtual_fs("__std__/raw_mem_spoof.ifm", &f_spoof)
+        .expect_err("spoofed __std__/ virtual path must be rejected");
+    assert_eq!(spoof_err.code, "E076_RAW_MEM_FORBIDDEN");
 
     let _ = fs::remove_dir_all(&ws);
 }
