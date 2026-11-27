@@ -20,6 +20,8 @@ pub struct CompiledCapsule {
     pub wasm_engine: Engine,
     pub wasm_module: Module,
     pub passport_net_domains: BTreeSet<String>,
+    /// Domains explicitly authorized to receive `Secret<T>` via `passport.secret_pipes` (`reveal("domain", ...)`).
+    pub secret_pipe_domains: BTreeSet<String>,
 }
 
 /// Deterministic execution result returned by `CapsuleEngine::execute_json`.
@@ -68,12 +70,26 @@ impl ResourceLimiter for RtLimiter {
 struct HostState<'a> {
     limiter: RtLimiter,
     effective_domains: BTreeSet<String>,
+    /// Intersection of `passport.secret_pipes` domains and `effective_domains`.
+    /// `Authorization: Bearer <secret>` is attached ONLY for hosts in this set.
+    secret_pipe_domains: BTreeSet<String>,
+    /// Valid `[start, end)` byte range of `CapsuleIo.output_buf` for `Net.call` response writes.
+    output_buf_range: (usize, usize),
     max_http_requests: u32,
     http_requests_made: u32,
     http_timeout_ms: u64,
     max_http_response_bytes: usize,
     secret_value: Option<String>,
     custom_http: Option<&'a HttpTransportFn>,
+}
+
+impl Drop for HostState<'_> {
+    fn drop(&mut self) {
+        if let Some(ref mut s) = self.secret_value {
+            // SAFETY: writing 0x00 bytes leaves valid UTF-8 before String deallocation.
+            unsafe { zeroize_bytes(s.as_bytes_mut()) };
+        }
+    }
 }
 
 /// Extract `Net("domain")` allowlist entries from a `SecurityPassport`.
@@ -86,6 +102,18 @@ fn extract_passport_net_domains(passport: &SecurityPassport) -> BTreeSet<String>
             .and_then(|s| s.strip_suffix("\")"))
         {
             domains.insert(inner.to_ascii_lowercase());
+        }
+    }
+    domains
+}
+
+/// Extract domain-pinned `Secret<T>` destinations from `SecurityPassport.secret_pipes`.
+fn extract_secret_pipe_domains(passport: &SecurityPassport) -> BTreeSet<String> {
+    let mut domains = BTreeSet::new();
+    for pipe in &passport.secret_pipes {
+        let d = pipe.destination_domain.trim().to_ascii_lowercase();
+        if !d.is_empty() {
+            domains.insert(d);
         }
     }
     domains
@@ -125,6 +153,7 @@ impl CapsuleEngine {
         }
 
         let passport_net_domains = extract_passport_net_domains(&verified.passport);
+        let secret_pipe_domains = extract_secret_pipe_domains(&verified.passport);
 
         let mut cfg = Config::default();
         cfg.consume_fuel(true);
@@ -139,6 +168,7 @@ impl CapsuleEngine {
             wasm_engine,
             wasm_module,
             passport_net_domains,
+            secret_pipe_domains,
         })
     }
 
@@ -170,12 +200,19 @@ impl CapsuleEngine {
             .intersection(&policy.allowed_net_domains)
             .cloned()
             .collect();
+        let secret_pipe_domains: BTreeSet<String> = capsule
+            .secret_pipe_domains
+            .intersection(&effective_domains)
+            .cloned()
+            .collect();
 
         let state = HostState {
             limiter: RtLimiter {
                 max_memory_bytes: policy.max_memory_bytes,
             },
             effective_domains,
+            secret_pipe_domains,
+            output_buf_range: (0, 0),
             max_http_requests: policy.max_http_requests,
             http_requests_made: 0,
             http_timeout_ms: policy.http_timeout_ms,
@@ -243,6 +280,7 @@ impl CapsuleEngine {
                 "Capsule I/O buffer offsets exceed linear memory bounds".to_string(),
             ));
         }
+        store.data_mut().output_buf_range = (out_off, out_off + out_cap);
 
         let in_bytes = input_json.as_bytes();
         if in_bytes.len() > in_cap {
@@ -381,10 +419,15 @@ fn handle_host_call(
     let url_off = usize::try_from(a0).unwrap_or(usize::MAX);
     let url_len = usize::try_from(a1).unwrap_or(usize::MAX);
     let dst_off = usize::try_from(a2).unwrap_or(usize::MAX);
+    // If dst_off > 0, enforce that response writes stay strictly inside CapsuleIo.output_buf.
+    // dst_off == 0 explicitly discards the HTTP response body (never overwrites System ABI bytes 0..N).
+    let (out_start, out_end) = host.output_buf_range;
+    if dst_off > 0 && (dst_off < out_start || dst_off >= out_end) {
+        return -1;
+    }
     if url_len == 0
         || url_len > 2048
         || url_off.saturating_add(url_len) > mem_bytes.len()
-        || dst_off >= mem_bytes.len()
     {
         return -1;
     }
@@ -394,15 +437,22 @@ fn handle_host_call(
 
     // Always enforce SSRF + allowlist validation
     let resolve_dns = host.custom_http.is_none();
-    if validate_outbound_url(url, &host.effective_domains, resolve_dns).is_err() {
+    let Ok((host_lc, _port, _pinned_ip)) =
+        validate_outbound_url(url, &host.effective_domains, resolve_dns)
+    else {
         return -1;
-    }
+    };
 
-    let auth_header = host
-        .secret_value
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(|s| format!("Bearer {s}"));
+    // Zero-Trust domain pinning: attach Authorization: Bearer ONLY if `host_lc` is explicitly
+    // authorized in `passport.secret_pipes` (`reveal("<domain>", secret)`), never to sibling domains!
+    let mut auth_header = if host.secret_pipe_domains.contains(&host_lc) {
+        host.secret_value
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("Bearer {s}"))
+    } else {
+        None
+    };
 
     let resp_res = if let Some(custom) = host.custom_http {
         custom("GET", url, auth_header.as_deref(), None)
@@ -417,15 +467,24 @@ fn handle_host_call(
             host.max_http_response_bytes,
         )
     };
+    if let Some(ref mut h) = auth_header {
+        // SAFETY: writing 0x00 bytes leaves valid UTF-8 before drop.
+        unsafe { zeroize_bytes(h.as_bytes_mut()) };
+    }
 
     host.http_requests_made += 1;
 
     match resp_res {
         Ok(resp_bytes) => {
-            let avail = mem_bytes.len().saturating_sub(dst_off);
-            let n = resp_bytes.len().min(avail).min(host.max_http_response_bytes);
-            mem_bytes[dst_off..dst_off + n].copy_from_slice(&resp_bytes[..n]);
-            n as i64
+            if dst_off == 0 {
+                // Discard mode: do not write into linear memory byte 0 (System ABI)
+                0
+            } else {
+                let avail = out_end.saturating_sub(dst_off);
+                let n = resp_bytes.len().min(avail).min(host.max_http_response_bytes);
+                mem_bytes[dst_off..dst_off + n].copy_from_slice(&resp_bytes[..n]);
+                n as i64
+            }
         }
         Err(_) => -1,
     }

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Yehuda Aminadav
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-Infimum-Commercial
 
+use crate::vault::zeroize_bytes;
 use crate::RtError;
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -84,11 +85,14 @@ fn is_forbidden_v6(v6: Ipv6Addr) -> bool {
 /// Validate that `url` is HTTPS-only, free of SSRF tricks, in `allowed_domains`,
 /// does not target a literal private/IMDS IP, and (when `resolve_dns` is true) resolves only
 /// to public routable IPs (preventing DNS rebinding attacks against cloud metadata services).
+///
+/// Returns `(host_lc, port, pinned_public_ip)` so callers can pin `curl --resolve` to the exact
+/// validated IP and eliminate DNS rebinding TOCTOU windows.
 pub fn validate_outbound_url(
     url: &str,
     allowed_domains: &BTreeSet<String>,
     resolve_dns: bool,
-) -> Result<(String, u16), RtError> {
+) -> Result<(String, u16, Option<IpAddr>), RtError> {
     if !url.starts_with("https://") {
         return Err(RtError::NetworkBlocked(format!(
             "Only HTTPS URLs are permitted in B2B headless runtime: '{url}'"
@@ -129,28 +133,38 @@ pub fn validate_outbound_url(
         None => 443,
     };
 
+    let mut pinned_ip: Option<IpAddr> = None;
     if resolve_dns {
         let addrs = (host_lc.as_str(), port).to_socket_addrs().map_err(|e| {
             RtError::NetworkBlocked(format!("DNS resolution failed for '{host_lc}': {e}"))
         })?;
-        let mut saw_any = false;
         for sa in addrs {
-            saw_any = true;
-            if is_forbidden_ip(sa.ip()) {
+            let ip = sa.ip();
+            if is_forbidden_ip(ip) {
                 return Err(RtError::NetworkBlocked(format!(
-                    "DNS for '{host_lc}' resolved to forbidden private/metadata IP {}",
-                    sa.ip()
+                    "DNS for '{host_lc}' resolved to forbidden private/metadata IP {ip}"
                 )));
             }
+            if pinned_ip.is_none() {
+                pinned_ip = Some(ip);
+            }
         }
-        if !saw_any {
+        if pinned_ip.is_none() {
             return Err(RtError::NetworkBlocked(format!(
                 "DNS for '{host_lc}' returned no addresses"
             )));
         }
     }
 
-    Ok((host_lc, port))
+    Ok((host_lc, port, pinned_ip))
+}
+
+/// Format a curl `--resolve` entry (`host:port:ip` or `host:port:[ipv6]`) for DNS-rebinding pinning.
+pub fn format_curl_resolve_entry(host_lc: &str, port: u16, ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => format!("{host_lc}:{port}:{v4}"),
+        IpAddr::V6(v6) => format!("{host_lc}:{port}:[{v6}]"),
+    }
 }
 
 fn has_crlf_or_nul(s: &str) -> bool {
@@ -195,7 +209,7 @@ pub fn safe_https_request(
             ));
         }
     }
-    let _ = validate_outbound_url(url, allowed_domains, true)?;
+    let (host_lc, port, pinned_ip) = validate_outbound_url(url, allowed_domains, true)?;
 
     let timeout_secs = (timeout_ms.max(1000)).div_ceil(1000);
     let mut cfg = String::new();
@@ -203,6 +217,14 @@ pub fn safe_https_request(
     cfg.push_str(&format!("request = \"{method}\"\n"));
     cfg.push_str("proto = \"=https\"\n");
     cfg.push_str("proto-redir = \"=https\"\n");
+    cfg.push_str("max-redirs = 0\n");
+    if let Some(ip) = pinned_ip {
+        let resolve_val = format_curl_resolve_entry(&host_lc, port, ip);
+        cfg.push_str(&format!(
+            "resolve = \"{}\"\n",
+            escape_curl_config_str(&resolve_val)
+        ));
+    }
     cfg.push_str(&format!("max-time = {timeout_secs}\n"));
     cfg.push_str(&format!("max-filesize = {max_response_bytes}\n"));
     if let Some(h) = auth_header {
@@ -220,17 +242,30 @@ pub fn safe_https_request(
         }
     }
 
-    let mut child = Command::new("curl")
+    let spawn_res = Command::new("curl")
         .args(["-sS", "--fail-with-body", "--config", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| RtError::NetworkBlocked(format!("Failed to spawn curl: {e}")))?;
+        .spawn();
+
+    let mut child = match spawn_res {
+        Ok(c) => c,
+        Err(e) => {
+            // SAFETY: zeroizing all bytes to 0x00 leaves valid UTF-8 before drop.
+            unsafe { zeroize_bytes(cfg.as_bytes_mut()) };
+            return Err(RtError::NetworkBlocked(format!(
+                "Failed to spawn curl: {e}"
+            )));
+        }
+    };
 
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(cfg.as_bytes());
     }
+    // Zeroize stdin config buffer immediately (contains Authorization Bearer secret)
+    // SAFETY: writing 0x00 bytes produces valid UTF-8 before drop.
+    unsafe { zeroize_bytes(cfg.as_bytes_mut()) };
 
     let output = child
         .wait_with_output()

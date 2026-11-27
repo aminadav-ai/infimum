@@ -7,10 +7,11 @@ use infimum_lang::parser::parse_module_from_path;
 use infimum_lang::passport_crypto::generate_keypair;
 use infimum_lang::store::GraphStore;
 use infimum_lang::strata_wasm::build_strata_wasm_from_module_signed;
-use infimum_rt::net::validate_outbound_url;
+use infimum_rt::net::{format_curl_resolve_entry, validate_outbound_url};
 use infimum_rt::{CapsuleEngine, ExecutionPolicy, MapSecretProvider, RtError, SecretProvider};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -396,6 +397,98 @@ export fn cap_execute(in_len: i64) -[Mem]-> i64 {
     assert!(
         err.to_string().contains("E076_RAW_MEM_FORBIDDEN"),
         "expected E076_RAW_MEM_FORBIDDEN, got: {err}"
+    );
+}
+
+#[test]
+fn test_secret_pinned_only_to_secret_pipe_domain_not_sibling_net() {
+    let src = r#"
+use "std/capsule.ifm";
+use "std/json.ifm";
+
+fn call_stripe(api_key: Secret<str>) -[Mem, Net("api.stripe.com")]-> bool {
+  do Net.auth(reveal("api.stripe.com", api_key));
+  do Net.call(60, "https://api.stripe.com/v1/charges", 0);
+  true
+}
+
+fn call_fx_public() -[Mem, Net("api.fx.com")]-> bool {
+  // No reveal() for api.fx.com -> host runtime MUST NOT attach Authorization: Bearer!
+  do Net.call(60, "https://api.fx.com/v1/rates", 0);
+  true
+}
+
+fn run(out: [u8]) -[Mem, Net("api.stripe.com"), Net("api.fx.com")]-> Result<i64, i64> {
+  let key = cap_read_secret(32);
+  let _a = call_stripe(key);
+  let _b = call_fx_public();
+  let w = jw_begin_obj(out);
+  let w = jw_kv_str(out, w, "status", "ok");
+  jw_end_obj(out, w)
+}
+
+export fn cap_execute(in_len: i64) -[Mem, Net("api.stripe.com"), Net("api.fx.com")]-> i64 {
+  let _in = cap_input(in_len);
+  let out = cap_output_buf();
+  cap_finish(run(out))
+}
+"#;
+    let ifw = compile_ifm_inline(src, None);
+    let mut policy = ExecutionPolicy::default();
+    policy.allowed_net_domains.insert("api.stripe.com".to_string());
+    policy.allowed_net_domains.insert("api.fx.com".to_string());
+
+    let cap = CapsuleEngine::load_ifw(ifw, &policy).expect("load multi-domain capsule");
+    assert!(cap.secret_pipe_domains.contains("api.stripe.com"));
+    assert!(!cap.secret_pipe_domains.contains("api.fx.com"));
+
+    type ObservedCalls = Arc<Mutex<Vec<(String, Option<String>)>>>;
+    let calls: ObservedCalls = Arc::new(Mutex::new(Vec::new()));
+    let calls_cl = Arc::clone(&calls);
+
+    let res = CapsuleEngine::execute_json_with_http(
+        &cap,
+        "{}",
+        Some("sk_live_pinned_only_stripe"),
+        &policy,
+        Some(&move |_method, url, auth, _body| {
+            calls_cl
+                .lock()
+                .unwrap()
+                .push((url.to_string(), auth.map(str::to_string)));
+            Ok(b"{\"big_response\":\"must_be_discarded_at_dst_0\"}".to_vec())
+        }),
+    )
+    .expect("execute multi-domain capsule");
+    assert!(res.ok, "execution failed: {res:?}");
+    assert!(res.secret_buffer_zeroized);
+
+    let log = calls.lock().unwrap();
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0].0, "https://api.stripe.com/v1/charges");
+    assert_eq!(
+        log[0].1.as_deref(),
+        Some("Bearer sk_live_pinned_only_stripe"),
+        "pinned domain must receive secret"
+    );
+    assert_eq!(log[1].0, "https://api.fx.com/v1/rates");
+    assert_eq!(
+        log[1].1, None,
+        "sibling Net domain without secret_pipe MUST NOT receive Authorization: Bearer!"
+    );
+}
+
+#[test]
+fn test_curl_resolve_pinning_formats_ipv4_and_ipv6() {
+    let v4 = IpAddr::V4(Ipv4Addr::new(54, 187, 205, 235));
+    assert_eq!(
+        format_curl_resolve_entry("api.stripe.com", 443, v4),
+        "api.stripe.com:443:54.187.205.235"
+    );
+    let v6 = IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0, 0, 0, 0, 0, 1));
+    assert_eq!(
+        format_curl_resolve_entry("api.stripe.com", 443, v6),
+        "api.stripe.com:443:[2606:4700::1]"
     );
 }
 
