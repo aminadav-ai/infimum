@@ -413,6 +413,10 @@ pub struct Module {
     pub enums: Vec<EnumDef>,
     #[serde(default)]
     pub layouts: Vec<LayoutDef>,
+    /// Highest end word across ALL resolved layouts (including imported stdlib layouts like `CapsuleIo`),
+    /// independent of `pub` export filtering, so `str_pool` never overlaps any layout buffer.
+    #[serde(default)]
+    pub all_layouts_end_word: u32,
     #[serde(default)]
     pub formas: Vec<crate::forma::FormaDef>,
     pub functions: Vec<FnDef>,

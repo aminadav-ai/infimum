@@ -1,0 +1,107 @@
+// Copyright (c) 2026 Yehuda Aminadav
+// SPDX-License-Identifier: Apache-2.0
+//
+// Reference B2B Capsule #2: RBAC & Quota Policy Validator
+// - Role-based access control + daily quota enforcement
+// - Formal Z3 proof that remaining quota is always non-negative when approved
+// - Zero-copy UTF-8 JSON reader + safe escaping JsonWriter (`std/json.ifm` v2)
+// - Unified Headless B2B ABI (`std/capsule.ifm`)
+
+use "std/capsule.ifm";
+use "std/json.ifm";
+use "std/slice.ifm";
+
+pub enum PolicyErr {
+  InvalidQuotaInput = 3001,
+}
+
+/// Formally verified quota budget check:
+/// Returns `Some(remaining)` iff `used + requested <= limit`, with Z3 proving `remaining >= 0`.
+pub fn check_quota_budget(used: i64, requested: i64, limit: i64) -> Option<i64>
+  req used >= 0 && requested >= 0 && limit >= 0 && limit <= 1000000000
+{
+  if used > limit {
+    None
+  } else if requested > limit - used {
+    None
+  } else {
+    Some(limit - used - requested)
+  }
+}
+
+fn str_eq(a: str, b: str) -[Mem]-> bool {
+  bytes_eq(a.as_bytes(), b.as_bytes())
+}
+
+fn role_quota_limit(role: str) -[Mem]-> i64
+  ens result >= 0 && result <= 100000
+{
+  if str_eq(role, "admin") {
+    100000
+  } else if str_eq(role, "analyst") {
+    10000
+  } else if str_eq(role, "viewer") {
+    1000
+  } else {
+    0
+  }
+}
+
+fn role_can_perform(role: str, action: str) -[Mem]-> bool {
+  if str_eq(role, "admin") {
+    str_eq(action, "read") || str_eq(action, "write") || str_eq(action, "delete")
+  } else if str_eq(role, "analyst") {
+    str_eq(action, "read") || str_eq(action, "write")
+  } else if str_eq(role, "viewer") {
+    str_eq(action, "read")
+  } else {
+    false
+  }
+}
+
+fn write_verdict(out: [u8], allowed: bool, reason: str, remaining: i64) -[Mem]-> Result<i64, i64> {
+  let w = jw_begin_obj(out);
+  let w = jw_kv_bool(out, w, "allowed", allowed);
+  let w = jw_kv_str(out, w, "reason", reason);
+  let w = jw_kv_int(out, w, "remaining_quota", remaining);
+  jw_end_obj(out, w)
+}
+
+fn handle_policy(input: [u8], out: [u8]) -[Mem]-> Result<i64, i64> {
+  let role = json_get_str_raw(input, "role")?;
+  let action = json_get_str_raw(input, "action")?;
+  let daily_used = json_get_int(input, "daily_used")?;
+  let requested = json_get_int(input, "requested")?;
+
+  if daily_used < 0 || requested < 0 || daily_used > 1000000000 || requested > 1000000000 {
+    Err(PolicyErr::InvalidQuotaInput)
+  } else {
+    let limit = role_quota_limit(role);
+    if limit == 0 {
+      write_verdict(out, false, "unknown_role", 0)
+    } else if !role_can_perform(role, action) {
+      write_verdict(out, false, "action_forbidden_for_role", 0)
+    } else {
+      match check_quota_budget(daily_used, requested, limit) {
+        Some(rem) => write_verdict(out, true, "approved", rem),
+        None => write_verdict(out, false, "quota_exceeded", 0),
+      }
+    }
+  }
+}
+
+export fn cap_execute(in_len: i64) -[Mem]-> i64 {
+  let input = cap_input(in_len);
+  let out = cap_output_buf();
+  cap_finish(handle_policy(input, out))
+}
+
+test "policy_validator quota approval and denial" {
+  let ok = match check_quota_budget(250, 150, 1000) {
+    Some(rem) => rem == 600,
+    None => false,
+  };
+  assert(ok);
+  let denied = check_quota_budget(900, 200, 1000).is_none();
+  assert(denied);
+}

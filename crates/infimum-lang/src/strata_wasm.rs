@@ -196,9 +196,8 @@ fn strata_type_ok(ty: &Type) -> bool {
         | Type::Unit
         | Type::Str
         | Type::Slice(_) => true,
-        Type::Option(inner) | Type::Result(inner) => strata_type_ok(inner),
+        Type::Option(inner) | Type::Result(inner) | Type::Secret(inner) => strata_type_ok(inner),
         Type::Tuple(ts) => ts.iter().all(strata_type_ok),
-        Type::Secret(_) => false,
     }
 }
 
@@ -208,6 +207,7 @@ fn type_slot_count(ty: &Type) -> usize {
         Type::Slice(_) | Type::Str => 2,
         Type::Option(inner) => 1 + type_slot_count(inner),
         Type::Result(inner) => 2 + type_slot_count(inner),
+        Type::Secret(inner) => type_slot_count(inner),
         _ => 1,
     }
 }
@@ -248,7 +248,7 @@ const HEADLESS_LAYOUT_SEGMENT_START: u32 = 65_536; // First word above FrameScra
 
 /// Compute the highest word address used by any `layout` in a parsed module (aligned to 16 words).
 pub fn compute_module_layout_end_word(module: &Module) -> u32 {
-    let mut max_end: i64 = 0;
+    let mut max_end: i64 = module.all_layouts_end_word as i64;
     for l in &module.layouts {
         for f in &l.fields {
             let end = f.offset + f.len;
@@ -962,6 +962,11 @@ fn infer_codegen_expr_type(expr: &Expr, ctx: &FnCodegenCtx<'_>) -> Type {
         Expr::SliceLit { elem_ty, .. } => Type::Slice(Box::new(elem_ty.clone())),
         Expr::StrLit(_) | Expr::StrFromBytes(_) => Type::Str,
         Expr::StrToBytes(_) => Type::Slice(Box::new(Type::U8)),
+        Expr::SecretWrap(inner) => Type::Secret(Box::new(infer_codegen_expr_type(inner, ctx))),
+        Expr::Reveal { expr: inner, .. } => match infer_codegen_expr_type(inner, ctx) {
+            Type::Secret(t) => *t,
+            other => other,
+        },
         Expr::TupleLit(elems) => Type::Tuple(
             elems
                 .iter()
@@ -1013,6 +1018,7 @@ fn expr_result_arity(expr: &Expr, ctx: &FnCodegenCtx<'_>) -> usize {
         | Expr::StrLit(_)
         | Expr::StrToBytes(_)
         | Expr::StrFromBytes(_) => 2,
+        Expr::SecretWrap(inner) | Expr::Reveal { expr: inner, .. } => expr_result_arity(inner, ctx),
         Expr::OptionSome { inner_ty, .. } | Expr::OptionNone { inner_ty } => {
             1 + type_slot_count(inner_ty)
         }
@@ -1434,14 +1440,10 @@ fn emit_expr(
             out.push(0x42); // i64.const <byte_len>
             push_i64_leb(out, byte_len);
         }
-        Expr::SecretWrap(_) | Expr::Reveal { .. } => {
-            return Err(InfimumDiagnostic::new(
-                "E085_STRATA_UNSUPPORTED_EXPR",
-                "strata-wasm",
-                "Secret expressions belong to Infimum.Flux, not low-level Infimum.Strata kernels",
-                Span::zero(),
-                "Use i64, bool, str, unit, and linear memory inside Strata kernels",
-            ));
+        Expr::SecretWrap(inner) | Expr::Reveal { expr: inner, .. } => {
+            // Static taint-tracking and domain pinning are enforced by typecheck.rs + SecurityPassport.
+            // At Wasm runtime, Secret<T> has zero overhead and identical slot layout to T.
+            emit_expr(inner, ctx, out)?;
         }
         Expr::Var(name) => {
             if let Some(slots) = ctx.tuple_locals.get(name).cloned() {
@@ -1813,17 +1815,27 @@ fn emit_expr(
         }
         Expr::Perform { op, args, .. } => {
             if op == "call" {
-                // Capability Host ABI: `do <Effect>.call(op_id, a0, a1, a2)` -> `env.host_call`
-                // Stores the i64 host return code in `mem[62]` (byte offset 248).
+                // Capability Host ABI: `do <Effect>.call(...)` -> `env.host_call(op, a0, a1, a2)`.
+                // Supports both 4 scalar i64 args and multi-slot args such as `str` (byte_ptr, byte_len)
+                // packed cleanly into the 4 i64 ABI slots. Stores return code in `mem[62]` (byte 248).
                 out.push(0x41); // i32.const 248
                 push_i32_leb(out, 248);
-                for i in 0..4 {
-                    if let Some(a) = args.get(i) {
-                        emit_expr(a, ctx, out)?;
+                let mut emitted_slots = 0usize;
+                for a in args {
+                    let ar = expr_result_arity(a, ctx);
+                    emit_expr(a, ctx, out)?;
+                    if emitted_slots + ar <= 4 {
+                        emitted_slots += ar;
                     } else {
-                        out.push(0x42);
-                        push_i64_leb(out, 0);
+                        for _ in 0..ar {
+                            out.push(0x1A); // drop overflow slots
+                        }
                     }
+                }
+                while emitted_slots < 4 {
+                    out.push(0x42);
+                    push_i64_leb(out, 0);
+                    emitted_slots += 1;
                 }
                 out.push(0x10); // call 0 (`env.host_call`)
                 push_u32_leb(out, 0);

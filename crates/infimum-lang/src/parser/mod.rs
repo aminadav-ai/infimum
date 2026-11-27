@@ -507,10 +507,26 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
         }
     }
 
+    let mut all_layouts_max_end: i64 = 0;
+    for ldef in resolver.layouts.values() {
+        for f in &ldef.fields {
+            let end = f.offset + f.len;
+            if end > all_layouts_max_end {
+                all_layouts_max_end = end;
+            }
+        }
+    }
+    let all_layouts_end_word = if all_layouts_max_end > 0 {
+        (((all_layouts_max_end + 15) / 16) * 16).min(16_777_216) as u32
+    } else {
+        0
+    };
+
     Ok(Module {
         consts,
         enums,
         layouts,
+        all_layouts_end_word,
         formas,
         functions,
         tests,
