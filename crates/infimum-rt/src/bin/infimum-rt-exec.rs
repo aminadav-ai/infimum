@@ -37,10 +37,17 @@ fn main() -> ExitCode {
                 i += 2;
             }
             "--pubkey" if i + 1 < args.len() => {
-                if let Ok(k) = infimum_lang::passport_crypto::decode_key_32(&args[i + 1]) {
+                let raw = fs::read_to_string(&args[i + 1]).unwrap_or_else(|_| args[i + 1].clone());
+                if let Ok(k) = infimum_lang::passport_crypto::decode_key_32(raw.trim()) {
                     policy.trusted_pubkeys.push(k);
                     policy.require_signature = true;
                 }
+                i += 2;
+            }
+            "--allow-net" if i + 1 < args.len() => {
+                policy
+                    .allowed_net_domains
+                    .insert(args[i + 1].to_ascii_lowercase());
                 i += 2;
             }
             _ => {

@@ -198,15 +198,16 @@ export fn cap_execute(in_len: i64) -[Mem]-> i64 {
 }
 "#;
     let ifw = compile_ifm_inline(src, None);
-    let mut policy = ExecutionPolicy::default();
-    policy.require_z3_proved = false;
-    policy.fuel_limit = 100_000;
+    let policy = ExecutionPolicy {
+        require_z3_proved: false,
+        fuel_limit: 100_000,
+        ..Default::default()
+    };
 
     let cap = CapsuleEngine::load_ifw(ifw, &policy).expect("load infinite loop capsule");
     let t0 = Instant::now();
     let err = CapsuleEngine::execute_json(&cap, "{}", None, &policy)
-        .err()
-        .expect("infinite loop must trap with OutOfFuel");
+        .expect_err("infinite loop must trap with OutOfFuel");
     let elapsed_ms = t0.elapsed().as_millis();
 
     assert!(
@@ -225,8 +226,10 @@ fn test_memory_limit_rejected_on_load() {
     let src = root.join("crates/infimum-lang/examples/b2b/fintech_pricing.ifm");
     let ifw = compile_ifm_file(&src, None);
 
-    let mut tight_policy = ExecutionPolicy::default();
-    tight_policy.max_memory_bytes = 64 * 1024; // 64 KiB < 512 KiB capsule memory
+    let tight_policy = ExecutionPolicy {
+        max_memory_bytes: 64 * 1024, // 64 KiB < 512 KiB capsule memory
+        ..Default::default()
+    };
 
     let err = CapsuleEngine::load_ifw(ifw, &tight_policy)
         .err()
@@ -254,8 +257,8 @@ fn test_vault_secret_injected_and_zeroized() {
     vault.insert("api.stripe.com", secret_raw);
     let secret_val = vault.resolve("api.stripe.com").expect("vault secret");
 
-    let observed_calls: Arc<Mutex<Vec<(String, Option<String>)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    type ObservedCalls = Arc<Mutex<Vec<(String, Option<String>)>>>;
+    let observed_calls: ObservedCalls = Arc::new(Mutex::new(Vec::new()));
     let obs_clone = Arc::clone(&observed_calls);
 
     let res = CapsuleEngine::execute_json_with_http(

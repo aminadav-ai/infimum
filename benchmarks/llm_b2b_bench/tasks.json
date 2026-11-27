@@ -1,0 +1,297 @@
+{
+  "schema_version": 1,
+  "name": "Infimum B2B Capsule LLM Benchmark (25 Tasks)",
+  "description": "25 real-world B2B tasks evaluating LLM generation of formally verified (Z3), zero-heap, signed .ifw capsules executed in infimum-rt.",
+  "tasks": [
+    {
+      "id": "FT-01",
+      "category": "fintech_dec64",
+      "title": "Invoice Discount & Tax Calculator",
+      "prompt": "Write a headless Infimum capsule (`use \"std/capsule.ifm\"; use \"std/json.ifm\"; use \"std/dec.ifm\";`) exporting `cap_execute(in_len: i64) -[Mem]-> i64`. Read `amount` (dec64, 0..=10000000), `discount_pct` (dec64, 0..=0.5, default 0.0), `tax_rate` (dec64, 0..=0.3), `currency` (str, default \"USD\"). Compute net = amount - round_half_even_cents(amount * discount_pct), tax = round_half_even_cents(net * tax_rate), total = net + tax. Return JSON {\"status\":\"ok\",\"currency\":...,\"total_cents\":...} or Err(2001) on out-of-range inputs.",
+      "reference_ifm": "crates/infimum-lang/examples/b2b/fintech_pricing.ifm",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "normal_eur", "input": {"amount": 100.0, "discount_pct": 0.1, "tax_rate": 0.2, "currency": "EUR"}, "expect_ok": true, "expect_fields": {"status": "ok", "currency": "EUR", "total_cents": 10800}},
+        {"name": "adversarial_negative_amount", "input": {"amount": -50.0, "discount_pct": 0.0, "tax_rate": 0.1}, "expect_ok": false},
+        {"name": "adversarial_excessive_tax", "input": {"amount": 100.0, "tax_rate": 0.99}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "FT-02",
+      "category": "fintech_dec64",
+      "title": "FX Currency Conversion with Spread",
+      "prompt": "Write a headless Infimum capsule using `dec64`. Read `amount` (dec64, >0..=1000000), `fx_rate` (dec64, >0..=1000), `spread_bps` (i64, 0..=500). Apply effective_rate = fx_rate * (1.0d - spread_bps / 10000), convert amount, round half-even to cents, and return JSON {\"converted_cents\": int, \"effective_rate\": dec64}. Reject invalid bounds with negative error code.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "usd_to_eur", "input": {"amount": 250.0, "fx_rate": 0.92, "spread_bps": 50}, "expect_ok": true, "expect_fields_present": ["converted_cents", "effective_rate"]},
+        {"name": "adversarial_zero_rate", "input": {"amount": 100.0, "fx_rate": 0.0, "spread_bps": 10}, "expect_ok": false},
+        {"name": "adversarial_bps_overflow", "input": {"amount": 100.0, "fx_rate": 1.1, "spread_bps": 5000}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "FT-03",
+      "category": "fintech_dec64",
+      "title": "Tiered Merchant Processing Fee",
+      "prompt": "Write a headless Infimum capsule using `dec64`. Read `gross_amount` (dec64, 0.01..=500000.0). Fee schedule: <= 100.0d -> 2.9% + 0.30d; <= 10000.0d -> 2.4% + 0.25d; > 10000.0d -> 1.9% + 0.20d. Prove via Z3 that `fee >= 0.0d` and `net <= gross_amount`. Output JSON {\"fee_cents\": int, \"net_cents\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "tier1_small", "input": {"gross_amount": 50.0}, "expect_ok": true, "expect_fields": {"fee_cents": 175, "net_cents": 4825}},
+        {"name": "tier3_large", "input": {"gross_amount": 20000.0}, "expect_ok": true, "expect_fields_present": ["fee_cents", "net_cents"]},
+        {"name": "adversarial_negative", "input": {"gross_amount": -1.0}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "FT-04",
+      "category": "fintech_dec64",
+      "title": "Late Invoice Penalty Accrual",
+      "prompt": "Write a headless Infimum capsule using `dec64`. Read `principal` (dec64, 0..=1000000), `days_overdue` (i64, 0..=365), `daily_rate` (dec64, 0..=0.01). Cap total penalty at 25% of principal. Prove via Z3 that `penalty >= 0.0d && penalty <= principal * 0.25d`. Output JSON {\"penalty_cents\": int, \"total_due_cents\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "10_days", "input": {"principal": 1000.0, "days_overdue": 10, "daily_rate": 0.001}, "expect_ok": true, "expect_fields": {"penalty_cents": 1000, "total_due_cents": 101000}},
+        {"name": "capped_at_25pct", "input": {"principal": 1000.0, "days_overdue": 300, "daily_rate": 0.005}, "expect_ok": true, "expect_fields": {"penalty_cents": 25000, "total_due_cents": 125000}},
+        {"name": "adversarial_negative_days", "input": {"principal": 1000.0, "days_overdue": -5, "daily_rate": 0.001}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "FT-05",
+      "category": "fintech_dec64",
+      "title": "Exact Penny-Conserving Bill Split",
+      "prompt": "Write a headless Infimum capsule using `dec64`. Read `total` (dec64, 0.01..=1000000.0) and `participants` (i64, 1..=100). Convert to integer cents, compute `base_share_cents = total_cents / participants` and `remainder_cents = total_cents % participants`. Prove via Z3 that `base_share_cents * participants + remainder_cents == total_cents`. Output JSON {\"base_share_cents\": int, \"remainder_cents\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "split_100_by_3", "input": {"total": 100.0, "participants": 3}, "expect_ok": true, "expect_fields": {"base_share_cents": 3333, "remainder_cents": 1}},
+        {"name": "adversarial_zero_participants", "input": {"total": 100.0, "participants": 0}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "FT-06",
+      "category": "fintech_dec64",
+      "title": "Minimum Balance Withdrawal Guard",
+      "prompt": "Write a headless Infimum capsule using `dec64`. Read `balance` (dec64, 0..=10000000), `withdraw` (dec64, 0.01..=10000000), `min_reserve` (dec64, 0..=1000000). Approve iff `balance - withdraw >= min_reserve`. Output JSON {\"approved\": bool, \"new_balance_cents\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "approved", "input": {"balance": 500.0, "withdraw": 150.25, "min_reserve": 100.0}, "expect_ok": true, "expect_fields": {"approved": true, "new_balance_cents": 34975}},
+        {"name": "denied_reserve", "input": {"balance": 500.0, "withdraw": 450.0, "min_reserve": 100.0}, "expect_ok": true, "expect_fields": {"approved": false, "new_balance_cents": 50000}},
+        {"name": "adversarial_negative_withdraw", "input": {"balance": 500.0, "withdraw": -10.0, "min_reserve": 0.0}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "FT-07",
+      "category": "fintech_dec64",
+      "title": "Prorated SaaS Subscription Upgrade",
+      "prompt": "Write a headless Infimum capsule using `dec64`. Read `old_monthly` (dec64, 0..=100000), `new_monthly` (dec64, 0..=100000), `days_remaining` (i64, 0..=31), `days_in_cycle` (i64, 28..=31). Compute prorated delta = (new_monthly - old_monthly) * days_remaining / days_in_cycle. Output JSON {\"delta_cents\": int, \"is_credit\": bool}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "upgrade_mid_month", "input": {"old_monthly": 30.0, "new_monthly": 90.0, "days_remaining": 15, "days_in_cycle": 30}, "expect_ok": true, "expect_fields": {"delta_cents": 3000, "is_credit": false}},
+        {"name": "adversarial_zero_cycle", "input": {"old_monthly": 30.0, "new_monthly": 90.0, "days_remaining": 15, "days_in_cycle": 0}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "FT-08",
+      "category": "fintech_dec64",
+      "title": "VAT Reverse-Charge Extraction",
+      "prompt": "Write a headless Infimum capsule using `dec64`. Read `gross_total` (dec64, 0..=10000000), `vat_rate` (dec64, 0..=0.3), `b2b_reverse_charge` (bool). If `b2b_reverse_charge` is true, `vat = 0` and `net = gross_total`; otherwise `net = round_half_even_cents(gross_total / (1.0d + vat_rate))` and `vat = gross_total - net`. Output JSON {\"net_cents\": int, \"vat_cents\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "standard_vat", "input": {"gross_total": 120.0, "vat_rate": 0.2, "b2b_reverse_charge": false}, "expect_ok": true, "expect_fields": {"net_cents": 10000, "vat_cents": 2000}},
+        {"name": "reverse_charge", "input": {"gross_total": 120.0, "vat_rate": 0.2, "b2b_reverse_charge": true}, "expect_ok": true, "expect_fields": {"net_cents": 12000, "vat_cents": 0}}
+      ]
+    },
+    {
+      "id": "JV-01",
+      "category": "json_validator",
+      "title": "Purchase Order Schema Validator",
+      "prompt": "Write a headless Infimum capsule using `std/json.ifm`. Validate JSON input has required `order_id` (non-empty str), `qty` (i64, 1..=10000), `unit_price` (dec64, >0..=100000), and `approved` (bool). Return JSON {\"valid\": bool, \"order_id\": str, \"line_total_cents\": int}. Return negative error code on missing required keys.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "valid_order", "input": {"order_id": "PO-42", "qty": 5, "unit_price": 12.5, "approved": true}, "expect_ok": true, "expect_fields": {"valid": true, "order_id": "PO-42", "line_total_cents": 6250}},
+        {"name": "adversarial_missing_key", "input": {"order_id": "PO-42", "qty": 5}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "JV-02",
+      "category": "json_validator",
+      "title": "Webhook Event Normalizer",
+      "prompt": "Write a headless Infimum capsule using `std/json.ifm`. Read `event_type` (str), `tenant_id` (str), `timestamp` (i64, >0), and optional `retry_count` (i64, default 0). Map `event_type` to severity: \"payment.failed\" -> \"high\", \"invoice.paid\" -> \"info\", else \"low\". Output JSON {\"tenant_id\": str, \"severity\": str, \"retry_count\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "payment_failed", "input": {"event_type": "payment.failed", "tenant_id": "t_99", "timestamp": 1700000000}, "expect_ok": true, "expect_fields": {"tenant_id": "t_99", "severity": "high", "retry_count": 0}},
+        {"name": "adversarial_bad_ts", "input": {"event_type": "invoice.paid", "tenant_id": "t_99", "timestamp": -1}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "JV-03",
+      "category": "json_validator",
+      "title": "Safe Escaping Audit Log Formatter",
+      "prompt": "Write a headless Infimum capsule using `std/json.ifm`. Read `actor` (str), `action` (str), `note` (str, may contain quotes/newlines via `json_decode_str` or raw). Emit a safely escaped JSON object {\"actor\": str, \"action\": str, \"logged\": true} using `JsonWriter`.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "normal", "input": {"actor": "svc-billing", "action": "refund", "note": "ok"}, "expect_ok": true, "expect_fields": {"actor": "svc-billing", "action": "refund", "logged": true}},
+        {"name": "adversarial_missing_actor", "input": {"action": "refund"}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "JV-04",
+      "category": "json_validator",
+      "title": "Nested Customer Address Extractor",
+      "prompt": "Write a headless Infimum capsule using `std/json.ifm` `json_get_object`. Read top-level `customer_id` (str) and nested object `address` containing `country` (str) and `zip` (str). Output flat JSON {\"customer_id\": str, \"country\": str, \"zip\": str}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "nested_ok", "input": {"customer_id": "c_1", "address": {"country": "DE", "zip": "10115"}}, "expect_ok": true, "expect_fields": {"customer_id": "c_1", "country": "DE", "zip": "10115"}},
+        {"name": "adversarial_missing_nested", "input": {"customer_id": "c_1"}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "JV-05",
+      "category": "json_validator",
+      "title": "JSON Array Line-Item Counter & Sum",
+      "prompt": "Write a headless Infimum capsule using `std/json.ifm` `json_get_array` and `json_array_iter_next`. Read `items` (array of integers) and compute `count` and `sum`. Output JSON {\"count\": int, \"sum\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "three_items", "input": {"items": [10, 20, 12]}, "expect_ok": true, "expect_fields": {"count": 3, "sum": 42}},
+        {"name": "empty_array", "input": {"items": []}, "expect_ok": true, "expect_fields": {"count": 0, "sum": 0}}
+      ]
+    },
+    {
+      "id": "JV-06",
+      "category": "json_validator",
+      "title": "Feature Flag Targeting Evaluator",
+      "prompt": "Write a headless Infimum capsule using `std/json.ifm`. Read `plan` (str), `beta_opt_in` (bool), `rollout_bucket` (i64, 0..=99). Enable flag if `plan == \"enterprise\"` OR (`beta_opt_in == true` AND `rollout_bucket < 25`). Output JSON {\"enabled\": bool, \"plan\": str}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "enterprise_always_on", "input": {"plan": "enterprise", "beta_opt_in": false, "rollout_bucket": 90}, "expect_ok": true, "expect_fields": {"enabled": true}},
+        {"name": "beta_out_of_bucket", "input": {"plan": "pro", "beta_opt_in": true, "rollout_bucket": 50}, "expect_ok": true, "expect_fields": {"enabled": false}},
+        {"name": "adversarial_bucket_oob", "input": {"plan": "pro", "beta_opt_in": true, "rollout_bucket": 150}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "JV-07",
+      "category": "json_validator",
+      "title": "HTTP Status Code Classifier",
+      "prompt": "Write a headless Infimum capsule using `std/json.ifm`. Read `status_code` (i64, 100..=599) and `latency_ms` (i64, 0..=60000). Classify: 200..=299 -> \"success\", 400..=499 -> \"client_error\", 500..=599 -> \"server_error\", else \"other\"; mark `retryable = (status_code == 429 || status_code >= 500)`. Output JSON {\"class\": str, \"retryable\": bool}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "rate_limited", "input": {"status_code": 429, "latency_ms": 45}, "expect_ok": true, "expect_fields": {"class": "client_error", "retryable": true}},
+        {"name": "adversarial_invalid_code", "input": {"status_code": 999, "latency_ms": 10}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "RB-01",
+      "category": "rbac_quota",
+      "title": "RBAC & Daily Quota Policy Validator",
+      "prompt": "Write a headless Infimum capsule (`use \"std/capsule.ifm\"; use \"std/json.ifm\"; use \"std/slice.ifm\";`). Read `role` (\"admin\"|\"analyst\"|\"viewer\"), `action` (\"read\"|\"write\"|\"delete\"), `daily_used` (i64 >= 0), `requested` (i64 >= 0). Limits: admin=100000 (read/write/delete), analyst=10000 (read/write), viewer=1000 (read). Output JSON {\"allowed\": bool, \"reason\": str, \"remaining_quota\": int}.",
+      "reference_ifm": "crates/infimum-lang/examples/b2b/policy_validator.ifm",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "analyst_write_ok", "input": {"role": "analyst", "action": "write", "daily_used": 2500, "requested": 500}, "expect_ok": true, "expect_fields": {"allowed": true, "reason": "approved", "remaining_quota": 7000}},
+        {"name": "viewer_delete_denied", "input": {"role": "viewer", "action": "delete", "daily_used": 0, "requested": 1}, "expect_ok": true, "expect_fields": {"allowed": false, "reason": "action_forbidden_for_role"}},
+        {"name": "adversarial_negative_quota", "input": {"role": "admin", "action": "read", "daily_used": -10, "requested": 1}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "RB-02",
+      "category": "rbac_quota",
+      "title": "Multi-Tier Wire Approval Policy",
+      "prompt": "Write a headless Infimum capsule. Read `amount` (dec64, 0..=10000000), `approvals` (i64, 0..=10), `is_cfo_signed` (bool). Policy: <= 1000d needs 1 approval; <= 50000d needs 2 approvals; > 50000d needs >= 2 approvals AND `is_cfo_signed == true`. Output JSON {\"approved\": bool, \"required_approvals\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "large_with_cfo", "input": {"amount": 75000.0, "approvals": 2, "is_cfo_signed": true}, "expect_ok": true, "expect_fields": {"approved": true, "required_approvals": 2}},
+        {"name": "large_without_cfo", "input": {"amount": 75000.0, "approvals": 3, "is_cfo_signed": false}, "expect_ok": true, "expect_fields": {"approved": false}}
+      ]
+    },
+    {
+      "id": "RB-03",
+      "category": "rbac_quota",
+      "title": "API Token-Bucket Rate Limiter",
+      "prompt": "Write a headless Infimum capsule. Read `tier` (\"free\"|\"pro\"|\"enterprise\"), `tokens_available` (i64, 0..=100000), `cost` (i64, 1..=1000). Max burst: free=60, pro=600, enterprise=6000. Clamp `tokens_available` to tier burst, allow iff `clamped >= cost`. Output JSON {\"allowed\": bool, \"tokens_left\": int}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "pro_allowed", "input": {"tier": "pro", "tokens_available": 500, "cost": 25}, "expect_ok": true, "expect_fields": {"allowed": true, "tokens_left": 475}},
+        {"name": "free_denied", "input": {"tier": "free", "tokens_available": 5, "cost": 10}, "expect_ok": true, "expect_fields": {"allowed": false}}
+      ]
+    },
+    {
+      "id": "RB-04",
+      "category": "rbac_quota",
+      "title": "Sanctions & Geo-Compliance Gate",
+      "prompt": "Write a headless Infimum capsule. Read `country` (str), `kyc_verified` (bool), `risk_score` (i64, 0..=100). Block countries \"KP\", \"IR\", \"SY\" unconditionally; block if `!kyc_verified` or `risk_score >= 80`. Output JSON {\"allowed\": bool, \"reason\": str}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "us_verified_ok", "input": {"country": "US", "kyc_verified": true, "risk_score": 15}, "expect_ok": true, "expect_fields": {"allowed": true}},
+        {"name": "sanctioned_blocked", "input": {"country": "KP", "kyc_verified": true, "risk_score": 1}, "expect_ok": true, "expect_fields": {"allowed": false}}
+      ]
+    },
+    {
+      "id": "RB-05",
+      "category": "rbac_quota",
+      "title": "Maintenance Window Deployment Guard",
+      "prompt": "Write a headless Infimum capsule. Read `hour_utc` (i64, 0..=23), `is_hotfix` (bool), `env` (\"prod\"|\"staging\"). Staging is always allowed; prod is allowed only during 02..=05 UTC unless `is_hotfix == true`. Output JSON {\"can_deploy\": bool, \"reason\": str}.",
+      "required_net_domains": [],
+      "test_cases": [
+        {"name": "prod_off_window_blocked", "input": {"hour_utc": 14, "is_hotfix": false, "env": "prod"}, "expect_ok": true, "expect_fields": {"can_deploy": false}},
+        {"name": "prod_hotfix_allowed", "input": {"hour_utc": 14, "is_hotfix": true, "env": "prod"}, "expect_ok": true, "expect_fields": {"can_deploy": true}}
+      ]
+    },
+    {
+      "id": "ZT-01",
+      "category": "zero_trust_secret",
+      "title": "Stripe Charge Guard with Vault Secret",
+      "prompt": "Write a headless Zero-Trust Infimum capsule (`use \"std/capsule.ifm\"; use \"std/json.ifm\"; use \"std/dec.ifm\";`). Read `amount` (dec64, >0..=10000) and `currency` (str, default \"USD\"). Read Vault secret via `cap_read_secret(32)`, pin to `Net(\"api.stripe.com\")` via `do Net.auth(reveal(\"api.stripe.com\", api_key))` and `do Net.call(60, \"https://api.stripe.com/v1/charges\", 0)`. Output JSON {\"status\":\"dispatched\",\"provider\":\"api.stripe.com\",\"currency\":...} without leaking the secret.",
+      "reference_ifm": "crates/infimum-lang/examples/b2b/secret_api_rule.ifm",
+      "required_net_domains": ["api.stripe.com"],
+      "secret_value": "sk_live_bench_secret_000111222333",
+      "test_cases": [
+        {"name": "valid_charge", "input": {"amount": 49.95, "currency": "USD"}, "expect_ok": true, "expect_fields": {"status": "dispatched", "provider": "api.stripe.com", "currency": "USD"}},
+        {"name": "adversarial_over_limit", "input": {"amount": 50000.0, "currency": "USD"}, "expect_ok": false}
+      ]
+    },
+    {
+      "id": "ZT-02",
+      "category": "zero_trust_secret",
+      "title": "Slack Incident Alert Dispatcher",
+      "prompt": "Write a headless Zero-Trust Infimum capsule pinned to `Net(\"hooks.slack.com\")`. Read `severity` (\"critical\"|\"warning\"|\"info\") and `service` (str). Only dispatch when `severity == \"critical\"`: read Vault token via `cap_read_secret(32)`, call `do Net.auth(reveal(\"hooks.slack.com\", tok))` and `do Net.call(60, \"https://hooks.slack.com/services/T00/B00/XXX\", 0)`. Output JSON {\"notified\": bool, \"service\": str}.",
+      "required_net_domains": ["hooks.slack.com"],
+      "secret_value": "xoxb-bench-secret-slack-token-99",
+      "test_cases": [
+        {"name": "critical_notifies", "input": {"severity": "critical", "service": "payments"}, "expect_ok": true, "expect_fields": {"notified": true, "service": "payments"}},
+        {"name": "info_suppressed", "input": {"severity": "info", "service": "payments"}, "expect_ok": true, "expect_fields": {"notified": false}}
+      ]
+    },
+    {
+      "id": "ZT-03",
+      "category": "zero_trust_secret",
+      "title": "Twilio OTP Rate-Guarded Sender",
+      "prompt": "Write a headless Zero-Trust Infimum capsule pinned to `Net(\"api.twilio.com\")`. Read `attempts_last_hour` (i64, 0..=100) and `channel` (str). Allow dispatch iff `attempts_last_hour < 5`; reveal Vault secret only to `api.twilio.com`. Output JSON {\"sent\": bool, \"channel\": str}.",
+      "required_net_domains": ["api.twilio.com"],
+      "secret_value": "twilio_bench_secret_auth_token_7",
+      "test_cases": [
+        {"name": "allowed_otp", "input": {"attempts_last_hour": 2, "channel": "sms"}, "expect_ok": true, "expect_fields": {"sent": true, "channel": "sms"}},
+        {"name": "rate_blocked", "input": {"attempts_last_hour": 6, "channel": "sms"}, "expect_ok": true, "expect_fields": {"sent": false}}
+      ]
+    },
+    {
+      "id": "ZT-04",
+      "category": "zero_trust_secret",
+      "title": "GitHub Commit Status Gatekeeper",
+      "prompt": "Write a headless Zero-Trust Infimum capsule pinned to `Net(\"api.github.com\")`. Read `tests_passed` (bool) and `coverage_pct` (i64, 0..=100). If `tests_passed && coverage_pct >= 80`, reveal Vault token to `api.github.com` and call `https://api.github.com/repos/org/repo/statuses`. Output JSON {\"gate\": \"pass\"|\"fail\"}.",
+      "required_net_domains": ["api.github.com"],
+      "secret_value": "ghp_bench_secret_token_abcdef123",
+      "test_cases": [
+        {"name": "gate_pass", "input": {"tests_passed": true, "coverage_pct": 92}, "expect_ok": true, "expect_fields": {"gate": "pass"}},
+        {"name": "gate_fail_cov", "input": {"tests_passed": true, "coverage_pct": 50}, "expect_ok": true, "expect_fields": {"gate": "fail"}}
+      ]
+    },
+    {
+      "id": "ZT-05",
+      "category": "zero_trust_secret",
+      "title": "Datadog Anomaly Metric Forwarder",
+      "prompt": "Write a headless Zero-Trust Infimum capsule pinned to `Net(\"api.datadoghq.com\")`. Read `cpu_pct` (i64, 0..=100) and `threshold` (i64, 1..=100). If `cpu_pct >= threshold`, reveal Vault API key to `api.datadoghq.com` and call `https://api.datadoghq.com/api/v2/series`. Output JSON {\"forwarded\": bool, \"cpu_pct\": int}.",
+      "required_net_domains": ["api.datadoghq.com"],
+      "secret_value": "dd_bench_secret_api_key_88776655",
+      "test_cases": [
+        {"name": "anomaly_forwarded", "input": {"cpu_pct": 95, "threshold": 80}, "expect_ok": true, "expect_fields": {"forwarded": true, "cpu_pct": 95}},
+        {"name": "normal_skipped", "input": {"cpu_pct": 30, "threshold": 80}, "expect_ok": true, "expect_fields": {"forwarded": false, "cpu_pct": 30}}
+      ]
+    }
+  ]
+}

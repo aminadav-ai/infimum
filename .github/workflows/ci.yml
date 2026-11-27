@@ -29,6 +29,13 @@ jobs:
       - name: Lint workspace with Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Verify infimum-rt zero-GPU dependency tree
+        run: |
+          if cargo tree -p infimum-rt | grep -E "wgpu|winit|fontdue|arboard"; then
+            echo "ERROR: infimum-rt must not depend on GPU/GUI/clipboard crates!"
+            exit 1
+          fi
+
       - name: Run full workspace test suite
         run: cargo test --workspace
 
