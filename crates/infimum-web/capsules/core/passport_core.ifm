@@ -17,77 +17,45 @@ const CAP_FS: i64 = 16;
 const CAP_NET: i64 = 32;
 const CAP_UNKNOWN: i64 = 64;
 
-const MAX_EFF_CHARS: i64 = 256;
+const MAX_EFF_BYTES: i64 = 256;
 
 layout PassMem {
-  eff_buf: words[256],
+  eff_buf: bytes[256],
 }
 
-export fn core_abi_version() -> i64 { 1 }
+export fn core_abi_version() -> i64 { 2 }
 export fn get_eff_buf_word() -> i64 { PassMem::eff_buf }
 
-fn words_eq_ascii_ci(w: [i64], b: [u8]) -[Mem]-> bool {
-  if w.len != b.len {
-    false
-  } else {
-    let mut ok = true;
-    for i in 0..b.len max 256 {
-      let mut x = w[i];
-      let mut y = b[i];
-      if x >= 'A' && x <= 'Z' { x += 32; }
-      if y >= 'A' && y <= 'Z' { y += 32; }
-      if x != y { ok = false; break; }
-    }
-    ok
-  }
-}
-
-fn words_starts_with_ascii_ci(w: [i64], b: [u8]) -[Mem]-> bool {
-  if b.len > w.len {
-    false
-  } else {
-    let mut ok = true;
-    for i in 0..b.len max 256 {
-      let mut x = w[i];
-      let mut y = b[i];
-      if x >= 'A' && x <= 'Z' { x += 32; }
-      if y >= 'A' && y <= 'Z' { y += 32; }
-      if x != y { ok = false; break; }
-    }
-    ok
-  }
-}
-
-// Classify a single capability token written into `eff_buf[0..raw_len)`.
+// Classify a single UTF-8 capability token written into `eff_buf[0..raw_len)`.
 export fn classify_effect_ifm(raw_len: i64) -[Mem]-> i64 {
-  let n = clamp_i64(raw_len, 0, MAX_EFF_CHARS);
+  let n = clamp_i64(raw_len, 0, MAX_EFF_BYTES);
   if n == 0 {
     CAP_NONE
   } else {
     let tok = PassMem.eff_buf[0..n];
-    if words_eq_ascii_ci(tok, "mem".as_bytes())
-      || words_eq_ascii_ci(tok, "pure".as_bytes())
-      || words_eq_ascii_ci(tok, "time".as_bytes())
-      || words_eq_ascii_ci(tok, "state".as_bytes())
+    if bytes_eq_ascii_ci(tok, "mem".as_bytes())
+      || bytes_eq_ascii_ci(tok, "pure".as_bytes())
+      || bytes_eq_ascii_ci(tok, "time".as_bytes())
+      || bytes_eq_ascii_ci(tok, "state".as_bytes())
     {
       CAP_NONE
-    } else if words_starts_with_ascii_ci(tok, "gpu".as_bytes()) {
+    } else if bytes_starts_with_ascii_ci(tok, "gpu".as_bytes()) {
       CAP_GPU
-    } else if words_starts_with_ascii_ci(tok, "input".as_bytes()) {
+    } else if bytes_starts_with_ascii_ci(tok, "input".as_bytes()) {
       CAP_INPUT
-    } else if words_starts_with_ascii_ci(tok, "clipboard".as_bytes()) {
+    } else if bytes_starts_with_ascii_ci(tok, "clipboard".as_bytes()) {
       CAP_CLIPBOARD
-    } else if words_starts_with_ascii_ci(tok, "proc".as_bytes())
-      || words_starts_with_ascii_ci(tok, "exec".as_bytes())
-      || words_starts_with_ascii_ci(tok, "shell".as_bytes())
+    } else if bytes_starts_with_ascii_ci(tok, "proc".as_bytes())
+      || bytes_starts_with_ascii_ci(tok, "exec".as_bytes())
+      || bytes_starts_with_ascii_ci(tok, "shell".as_bytes())
     {
       CAP_PROC
-    } else if words_starts_with_ascii_ci(tok, "fs".as_bytes())
-      || words_starts_with_ascii_ci(tok, "file".as_bytes())
+    } else if bytes_starts_with_ascii_ci(tok, "fs".as_bytes())
+      || bytes_starts_with_ascii_ci(tok, "file".as_bytes())
     {
       CAP_FS
-    } else if words_starts_with_ascii_ci(tok, "net".as_bytes())
-      || words_starts_with_ascii_ci(tok, "http".as_bytes())
+    } else if bytes_starts_with_ascii_ci(tok, "net".as_bytes())
+      || bytes_starts_with_ascii_ci(tok, "http".as_bytes())
     {
       CAP_NET
     } else {

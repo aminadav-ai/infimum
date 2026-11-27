@@ -271,7 +271,7 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
                 ret_type: Type::I64,
                 requires: vec![],
                 ensures: vec![],
-                body: Expr::IntLit(4),
+                body: Expr::IntLit(5),
                 source_file: None,
                 span: None,
             });

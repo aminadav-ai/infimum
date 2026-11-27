@@ -2,7 +2,7 @@
 #![allow(dead_code, clippy::all)]
 
 // --- Constants ---
-pub const IFW_ABI_VERSION: i64 = 4;
+pub const IFW_ABI_VERSION: i64 = 5;
 pub const CLIPBOARD_MAX_CHARS: i64 = 4096;
 pub const INPUT_MAX_CHARS: i64 = 8192;
 pub const LARGE_COPY_MAX_CHARS: i64 = 32768;

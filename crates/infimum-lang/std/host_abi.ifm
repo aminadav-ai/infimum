@@ -12,7 +12,7 @@ pub use "std/sys_mem.ifm";
 pub use "std/input.ifm";
 
 // Canonical GPU capsule ABI version exported automatically by `ifw_abi_version()`.
-pub const IFW_ABI_VERSION: i64 = 4;
+pub const IFW_ABI_VERSION: i64 = 5;
 
 // Standard host <-> capsule UTF-32 transfer limits.
 pub const CLIPBOARD_MAX_CHARS: i64 = 4096;

@@ -53,30 +53,18 @@ pub fn get_i32(mem: &[u8], word: usize) -> i32 {
     }
 }
 
-#[inline]
-pub fn put_i32(mem: &mut [u8], word: usize, val: i32) {
-    let off = word * 4;
-    if off + 4 <= mem.len() {
-        mem[off..off + 4].copy_from_slice(&val.to_le_bytes());
-    }
-}
-
-pub fn write_raw_chars(mem: &mut [u8], base_word: usize, s: &str, max_chars: usize) -> usize {
-    let mut n = 0usize;
-    for ch in s.chars().take(max_chars) {
-        put_i32(mem, base_word + n, ch as i32);
-        n += 1;
-    }
+pub fn write_utf8_bytes(mem: &mut [u8], base_byte: usize, s: &str, max_bytes: usize) -> usize {
+    let raw = s.as_bytes();
+    let cap = max_bytes.min(mem.len().saturating_sub(base_byte));
+    let n = raw.len().min(cap);
+    mem[base_byte..base_byte + n].copy_from_slice(&raw[..n]);
     n
 }
 
-pub fn read_raw_chars(mem: &[u8], base_word: usize, len: usize) -> String {
-    let mut out = String::with_capacity(len);
-    for idx in 0..len {
-        let cp = get_i32(mem, base_word + idx) as u32;
-        if let Some(ch) = char::from_u32(cp) {
-            out.push(ch);
-        }
+pub fn read_utf8_bytes(mem: &[u8], base_byte: usize, len: usize) -> String {
+    let end = base_byte.saturating_add(len).min(mem.len());
+    if base_byte >= end {
+        return String::new();
     }
-    out
+    String::from_utf8_lossy(&mem[base_byte..end]).into_owned()
 }

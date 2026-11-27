@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 use wasmi::{Engine, Linker, Module, Store};
 
 const SANITIZER_AXW: &[u8] = include_bytes!("../capsules/core/sanitizer_core.ifw");
-const SANITIZER_CORE_ABI: i32 = 1;
-const MAX_IN_CHARS: usize = 65_536;
-const MAX_OUT_CHARS: usize = 65_536;
+const SANITIZER_CORE_ABI: i32 = 2;
+const MAX_IN_BYTES: usize = 65_536;
+const MAX_OUT_BYTES: usize = 65_536;
 const SANITIZER_FUEL: u64 = 80_000_000;
 
 #[derive(Debug, Clone, Default)]
@@ -75,17 +75,17 @@ pub fn sanitize_html(raw: &str) -> SanitizedDoc {
         return SanitizedDoc::default();
     };
 
-    let n_chars = {
+    let n_bytes = {
         let mem = memory.data_mut(&mut store);
-        crate::core_mem::write_raw_chars(mem, in_buf_word, raw, MAX_IN_CHARS)
+        crate::core_mem::write_utf8_bytes(mem, in_buf_word * 4, raw, MAX_IN_BYTES)
     };
 
-    let Ok(out_len_raw) = func.call(&mut store, n_chars as i32) else {
+    let Ok(out_len_raw) = func.call(&mut store, n_bytes as i32) else {
         return SanitizedDoc::default();
     };
-    let out_len = (out_len_raw.max(0) as usize).min(MAX_OUT_CHARS);
+    let out_len = (out_len_raw.max(0) as usize).min(MAX_OUT_BYTES);
     let mem = memory.data(&store);
-    let clean_text = crate::core_mem::read_raw_chars(mem, out_buf_word, out_len);
+    let clean_text = crate::core_mem::read_utf8_bytes(mem, out_buf_word * 4, out_len);
 
     SanitizedDoc {
         clean_text,

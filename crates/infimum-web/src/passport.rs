@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use wasmi::{Engine, Linker, Module, Store};
 
 const PASSPORT_AXW: &[u8] = include_bytes!("../capsules/core/passport_core.ifw");
-const PASSPORT_CORE_ABI: i32 = 1;
+const PASSPORT_CORE_ABI: i32 = 2;
 const MAX_EFF_CHARS: usize = 256;
 const CAP_NET: i32 = 32;
 
@@ -467,12 +467,12 @@ pub fn verify_capsule_passport(
     let allow_mask = policy_to_allow_mask(policy);
     for token in passport.effect_names() {
         let norm = token.trim();
-        let n_chars = {
+        let n_bytes = {
             let mem = memory.data_mut(&mut store);
-            crate::core_mem::write_raw_chars(mem, eff_buf_word, norm, MAX_EFF_CHARS)
+            crate::core_mem::write_utf8_bytes(mem, eff_buf_word * 4, norm, MAX_EFF_CHARS)
         };
         let cap_bit = classify_fn
-            .call(&mut store, n_chars as i32)
+            .call(&mut store, n_bytes as i32)
             .map_err(|_| GatekeeperError::UnauthorizedCapability(norm.to_string()))?;
         let denied = check_fn
             .call(&mut store, (cap_bit, allow_mask))
