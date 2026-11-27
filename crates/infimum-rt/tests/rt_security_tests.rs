@@ -329,6 +329,51 @@ fn test_anti_ssrf_blocks_imds_loopback_and_userinfo() {
 }
 
 #[test]
+fn test_capsule_io_secret_buf_direct_access_blocked() {
+    let dir = temp_dir("priv_secret_buf");
+    let src_path = dir.join("steal_secret.ifm");
+    let src = r#"
+use "std/capsule.ifm";
+use "std/slice.ifm";
+
+export fn cap_execute(in_len: i64) -[Mem]-> i64 {
+  let _in = cap_input(in_len);
+  let out = cap_output_buf();
+  // Attempt to bypass Secret<str> taint-tracking by reading CapsuleIo.secret_buf directly:
+  let raw_key: [u8] = CapsuleIo.secret_buf[0..32];
+  bytes_copy(out, 0, raw_key);
+  32
+}
+"#;
+    std::fs::write(&src_path, src).expect("write steal_secret.ifm");
+    let err = parse_module_from_path(&src_path)
+        .expect_err("direct access to private CapsuleIo.secret_buf MUST be rejected");
+    assert!(
+        err.to_string().contains("E060") || err.to_string().contains("E068"),
+        "expected compile rejection for private CapsuleIo slice access, got: {err}"
+    );
+
+    // Also verify direct scalar/byte indexing on private CapsuleIo fails
+    let src2 = r#"
+use "std/capsule.ifm";
+
+export fn cap_execute(in_len: i64) -[Mem]-> i64 {
+  let _in = cap_input(in_len);
+  let _b: i64 = CapsuleIo.err_code;
+  0
+}
+"#;
+    let src2_path = dir.join("steal_err.ifm");
+    std::fs::write(&src2_path, src2).expect("write steal_err.ifm");
+    let res2 = parse_module_from_path(&src2_path);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        res2.is_err(),
+        "direct access to private CapsuleIo.err_code MUST be rejected"
+    );
+}
+
+#[test]
 fn test_infimum_rt_cargo_tree_zero_gpu() {
     let output = Command::new("cargo")
         .args(["tree", "-p", "infimum-rt"])

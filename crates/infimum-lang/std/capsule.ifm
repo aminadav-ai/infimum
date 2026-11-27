@@ -11,7 +11,9 @@ pub const CAP_MAX_INPUT_BYTES: i64 = 65536;
 pub const CAP_MAX_OUTPUT_BYTES: i64 = 65536;
 pub const CAP_MAX_SECRET_BYTES: i64 = 4096;
 
-pub layout CapsuleIo {
+// Private layout: user capsules MUST access I/O buffers via `cap_input`, `cap_output_buf`,
+// `cap_read_secret` (which enforces `Secret<str>` taint tracking), and `cap_finish`.
+layout CapsuleIo {
   input_buf:  bytes[65536],
   output_buf: bytes[65536],
   secret_buf: bytes[4096],
