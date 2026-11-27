@@ -252,7 +252,7 @@ pub mod daemon {
   pub fn list_convs() -[Mem, Net]-> i64 {
     let code = http("GET", "/conversations?format=ifm", 0);
     if code == 200 {
-      let n = buf_len(StudioMem::http_resp_buf, 3500);
+      let n = buf_len(StudioMem::http_resp_buf, CONVS_BUF_MAX_CHARS);
       buf_copy_slice(StudioMem::convs_buf, CONVS_BUF_MAX_CHARS, StudioMem::http_resp_buf, 0, n);
       n
     } else {
@@ -352,7 +352,7 @@ pub mod daemon {
     buf_push_int(StudioMem::http_body_tmp, 64, idx);
     let code = http("POST", "/conversations/delete?format=ifm", StudioMem::http_body_tmp);
     if code == 200 {
-      let n = buf_len(StudioMem::http_resp_buf, 3500);
+      let n = buf_len(StudioMem::http_resp_buf, CONVS_BUF_MAX_CHARS);
       buf_copy_slice(StudioMem::convs_buf, CONVS_BUF_MAX_CHARS, StudioMem::http_resp_buf, 0, n);
       n
     } else {
