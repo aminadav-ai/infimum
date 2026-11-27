@@ -74,6 +74,7 @@ pub(super) struct TaggedVarMeta {
 pub(super) struct ModuleResolver {
     pub(super) tables: Vec<UnitTables>,
     pub(super) unit_labels: Vec<String>,
+    pub(super) unit_is_builtin: Vec<bool>,
     pub(super) cur_uid: UnitId,
     pub(super) has_std_gfx: bool,
     pub(super) std_text_uid: Option<UnitId>,
@@ -168,6 +169,7 @@ impl ModuleResolver {
     pub(super) fn new(
         tables: Vec<UnitTables>,
         unit_labels: Vec<String>,
+        unit_is_builtin: Vec<bool>,
         entry_uid: UnitId,
         has_std_gfx: bool,
         std_text_uid: Option<UnitId>,
@@ -175,6 +177,7 @@ impl ModuleResolver {
         Self {
             tables,
             unit_labels,
+            unit_is_builtin,
             cur_uid: entry_uid,
             has_std_gfx,
             std_text_uid,
@@ -650,17 +653,10 @@ impl ModuleResolver {
     }
 
     fn allow_raw_mem(&self) -> bool {
-        let lbl = self
-            .unit_labels
+        self.unit_is_builtin
             .get(self.cur_uid)
-            .map(String::as_str)
-            .unwrap_or("");
-        let norm = lbl.replace('\\', "/");
-        norm.starts_with("__std__/")
-            || norm.starts_with("__forma__/")
-            || norm.starts_with("std/")
-            || norm.contains("/std/")
-            || norm.ends_with("/widgets_rt.ifm")
+            .copied()
+            .unwrap_or(false)
     }
 
     fn forbid_raw_mem(&self, op: &str, span: Span) -> Result<(), InfimumDiagnostic> {

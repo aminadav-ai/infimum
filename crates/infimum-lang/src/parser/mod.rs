@@ -36,6 +36,7 @@ pub fn parse_module(src: &str) -> Result<Module, InfimumDiagnostic> {
         src,
         true,
         false,
+        false,
         Span::zero(),
     )?;
     let graph = loader.finish(entry_uid)?;
@@ -77,6 +78,7 @@ pub fn parse_module_from_path(entry_path: &Path) -> Result<Module, InfimumDiagno
         &src,
         true,
         false,
+        false,
         Span::zero(),
     )?;
     let graph = loader.finish(entry_uid)?;
@@ -101,7 +103,7 @@ pub fn parse_module_from_virtual_fs(
     };
     let source = VirtualFsSource { files };
     let mut loader = UnitLoader::new(&source);
-    let entry_uid = loader.load_unit(norm.clone(), norm, src, true, false, Span::zero())?;
+    let entry_uid = loader.load_unit(norm.clone(), norm, src, true, false, false, Span::zero())?;
     let graph = loader.finish(entry_uid)?;
     resolve_and_lower(graph)
 }
@@ -110,6 +112,7 @@ pub fn parse_module_from_virtual_fs(
 fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> {
     let tables = build_unit_tables(&graph)?;
     let unit_labels: Vec<String> = graph.units.iter().map(|u| u.display_label.clone()).collect();
+    let unit_is_builtin: Vec<bool> = graph.units.iter().map(|u| u.is_builtin).collect();
     let entry_uid = graph.entry_uid;
     let has_std_gfx = graph.find_unit("__std__/gfx.ifm").is_some()
         || tables[entry_uid].scope.consts.contains_key("GPU_CMD_BYTE_OFFSET");
@@ -117,7 +120,14 @@ fn resolve_and_lower(mut graph: UnitGraph) -> Result<Module, InfimumDiagnostic> 
     let std_text_uid = graph.find_unit("__std__/text.ifm");
     let std_mesh3d_uid = graph.find_unit("__std__/mesh3d.ifm");
 
-    let mut resolver = ModuleResolver::new(tables, unit_labels, entry_uid, has_std_gfx, std_text_uid);
+    let mut resolver = ModuleResolver::new(
+        tables,
+        unit_labels,
+        unit_is_builtin,
+        entry_uid,
+        has_std_gfx,
+        std_text_uid,
+    );
 
     // 1. Register all consts, enums, structs, and layouts in topological order
     let topo = graph.topo_order.clone();

@@ -397,6 +397,9 @@ pub(super) struct RawUnit {
     pub(super) inline_mod: Option<(String, bool, Span)>,
     pub(super) is_entry: bool,
     pub(super) is_forma_rt: bool,
+    /// True ONLY for compiler-embedded stdlib (`__std__/*`) and forma runtime (`__forma__/widgets_rt.ifm`).
+    /// Never set for user files loaded from disk or virtual FS, regardless of directory/file name.
+    pub(super) is_builtin: bool,
     pub(super) uses: Vec<(RawUse, UnitId)>,
     pub(super) items: Vec<RawItem>,
     pub(super) formas: Vec<crate::forma::FormaDef<RawExpr>>,

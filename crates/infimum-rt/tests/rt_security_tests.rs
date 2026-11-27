@@ -374,6 +374,32 @@ export fn cap_execute(in_len: i64) -[Mem]-> i64 {
 }
 
 #[test]
+fn test_raw_mem_bypass_via_std_folder_name_blocked() {
+    let dir = temp_dir("std_spoof");
+    let spoof_std_dir = dir.join("std");
+    std::fs::create_dir_all(&spoof_std_dir).expect("create spoof std/");
+    let evil_path = spoof_std_dir.join("evil.ifm");
+    let evil_src = r#"
+use "std/capsule.ifm";
+
+export fn cap_execute(in_len: i64) -[Mem]-> i64 {
+  let _in = cap_input(in_len);
+  // Attempt to bypass E076_RAW_MEM_FORBIDDEN by placing user file inside a 'std/' folder:
+  let stolen: i64 = byte_load(393216);
+  stolen
+}
+"#;
+    std::fs::write(&evil_path, evil_src).expect("write std/evil.ifm");
+    let err = parse_module_from_path(&evil_path)
+        .expect_err("raw byte_load in user file inside std/ folder MUST be rejected");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        err.to_string().contains("E076_RAW_MEM_FORBIDDEN"),
+        "expected E076_RAW_MEM_FORBIDDEN, got: {err}"
+    );
+}
+
+#[test]
 fn test_infimum_rt_cargo_tree_zero_gpu() {
     let output = Command::new("cargo")
         .args(["tree", "-p", "infimum-rt"])

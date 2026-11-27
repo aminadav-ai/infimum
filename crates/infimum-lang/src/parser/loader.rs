@@ -257,12 +257,13 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
         requester_key: &str,
         spec: &str,
         use_span: Span,
-    ) -> Result<(String, String, String), InfimumDiagnostic> {
+    ) -> Result<(String, String, String, bool), InfimumDiagnostic> {
         if spec == "__forma__/widgets_rt.ifm" {
             return Ok((
                 "__forma__/widgets_rt.ifm".to_string(),
                 "forma/widgets_rt.ifm".to_string(),
                 include_str!("../forma/widgets_rt.ifm").to_string(),
+                true,
             ));
         }
         if spec.starts_with("std/") {
@@ -276,11 +277,13 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
                 ));
             };
             let label = format!("std/{}", virtual_key.trim_start_matches("__std__/"));
-            return Ok((virtual_key.to_string(), label, text.to_string()));
+            return Ok((virtual_key.to_string(), label, text.to_string(), true));
         }
-        self.source.resolve_use(requester_key, spec, use_span)
+        let (k, l, s) = self.source.resolve_use(requester_key, spec, use_span)?;
+        Ok((k, l, s, false))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn load_unit(
         &mut self,
         canonical_key: String,
@@ -288,6 +291,7 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
         src: &str,
         is_entry: bool,
         is_forma_rt: bool,
+        is_builtin: bool,
         use_span: Span,
     ) -> Result<UnitId, InfimumDiagnostic> {
         if let Some(pos) = self.visiting.iter().position(|(k, _)| k == &canonical_key) {
@@ -322,9 +326,10 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
 
         let mut resolved_uses = Vec::with_capacity(raw.uses.len());
         for u in raw.uses {
-            let (dep_key, dep_label, dep_src) =
+            let (dep_key, dep_label, dep_src, dep_builtin) =
                 self.resolve_spec(&canonical_key, &u.path, u.span)?;
-            let dep_uid = self.load_unit(dep_key, dep_label, &dep_src, false, false, u.span)?;
+            let dep_uid =
+                self.load_unit(dep_key, dep_label, &dep_src, false, false, dep_builtin, u.span)?;
             resolved_uses.push((u, dep_uid));
         }
 
@@ -348,6 +353,7 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
             inline_mod: None,
             is_entry,
             is_forma_rt,
+            is_builtin,
             uses: resolved_uses,
             items: own_items,
             formas: raw.formas,
@@ -375,8 +381,10 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
     ) -> Result<UnitId, InfimumDiagnostic> {
         let mut resolved_uses = Vec::with_capacity(rm.uses.len());
         for u in rm.uses {
-            let (dep_key, dep_label, dep_src) = self.resolve_spec(parent_key, &u.path, u.span)?;
-            let dep_uid = self.load_unit(dep_key, dep_label, &dep_src, false, false, u.span)?;
+            let (dep_key, dep_label, dep_src, dep_builtin) =
+                self.resolve_spec(parent_key, &u.path, u.span)?;
+            let dep_uid =
+                self.load_unit(dep_key, dep_label, &dep_src, false, false, dep_builtin, u.span)?;
             resolved_uses.push((u, dep_uid));
         }
 
@@ -391,6 +399,7 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
 
         let child_uid = self.units.len();
         let child_label = parent_label.to_string();
+        let parent_builtin = self.units[parent_uid].is_builtin;
         self.units.push(RawUnit {
             id: child_uid,
             display_label: child_label,
@@ -398,6 +407,7 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
             inline_mod: Some((rm.name, rm.is_pub, rm.span)),
             is_entry: false,
             is_forma_rt: false,
+            is_builtin: parent_builtin,
             uses: resolved_uses,
             items: own_items,
             formas: rm.formas,
@@ -417,9 +427,9 @@ impl<'a, S: FileSource> UnitLoader<'a, S> {
     pub(super) fn finish(mut self, entry_uid: UnitId) -> Result<UnitGraph, InfimumDiagnostic> {
         let has_forma = self.units.iter().any(|u| !u.formas.is_empty());
         if has_forma {
-            let (k, l, s) =
+            let (k, l, s, is_builtin) =
                 self.resolve_spec("", "__forma__/widgets_rt.ifm", Span::zero())?;
-            let _ = self.load_unit(k, l, &s, false, true, Span::zero())?;
+            let _ = self.load_unit(k, l, &s, false, true, is_builtin, Span::zero())?;
         }
         Ok(UnitGraph {
             units: self.units,
