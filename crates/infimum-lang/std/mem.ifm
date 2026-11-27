@@ -137,6 +137,24 @@ pub fn scratch_calloc_u8(len: i64) -[Mem]-> [u8] {
   }
 }
 
+/// Fallible typed `[u8]` byte slice allocation from FrameScratch.
+/// Returns `Some(slice)` with `slice.len == len` on success, or `None` if `len <= 0` or exhausted.
+pub fn scratch_try_alloc_u8(len: i64) -[Mem]-> Option<[u8]>
+  ens match result { Some(s) => s.len == len && len > 0, None => true }
+{
+  if len <= 0 || len > 180224 {
+    None
+  } else {
+    let words = (len + 3) / 4;
+    let ptr = scratch_alloc(words);
+    if ptr >= 0 {
+      Some(slice_u8(ptr * 4, len))
+    } else {
+      None
+    }
+  }
+}
+
 // ============================================================================
 // 2. Arena (Static Linear Bump Region over any `layout` buffer)
 // ============================================================================

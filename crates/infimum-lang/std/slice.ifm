@@ -285,3 +285,9 @@ pub fn bytes_copy(dst: [u8], src: [u8]) -[Mem]-> i64
   }
   n
 }
+
+/// Find the first index of byte `needle` in `haystack`, returning `Some(idx)` or `None`.
+pub fn bytes_find_opt(haystack: [u8], needle: i64) -[Mem]-> Option<i64> {
+  let idx = bytes_find(haystack, needle);
+  if idx >= 0 { Some(idx) } else { None }
+}

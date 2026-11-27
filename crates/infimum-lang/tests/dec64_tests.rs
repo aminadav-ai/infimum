@@ -399,19 +399,19 @@ fn std_dec_rounding_format_and_parse_verify_and_run() {
           assert(fmt_and_check(19.99d, "19.9900"));
           assert(fmt_and_check(-0.0001d, "-0.0001"));
 
-          // Parsing
-          let (ok0, v0) = dec64_parse("0.0000".as_bytes());
-          assert(ok0 && v0 == 0.0d);
-          let (ok1, v1) = dec64_parse("-12345.6789".as_bytes());
-          assert(ok1 && v1 == -12345.6789d);
-          let (ok2, v2) = dec64_parse("19.99".as_bytes());
-          assert(ok2 && v2 == 19.99d);
-          let (ok3, v3) = dec64_parse("100".as_bytes());
-          assert(ok3 && v3 == 100d);
-          let (ok_bad1, _) = dec64_parse("1.12345".as_bytes());
-          assert(!ok_bad1);
-          let (ok_bad2, _) = dec64_parse("abc".as_bytes());
-          assert(!ok_bad2);
+          // Parsing (returns Result<dec64, i64>)
+          let r0 = dec64_parse("0.0000".as_bytes());
+          assert(r0.is_ok() && r0.unwrap_or(1.0d) == 0.0d);
+          let r1 = dec64_parse("-12345.6789".as_bytes());
+          assert(r1.is_ok() && r1.unwrap_or(0.0d) == -12345.6789d);
+          let r2 = dec64_parse("19.99".as_bytes());
+          assert(r2.is_ok() && r2.unwrap_or(0.0d) == 19.99d);
+          let r3 = dec64_parse("100".as_bytes());
+          assert(r3.is_ok() && r3.unwrap_or(0.0d) == 100d);
+          let r_bad1 = dec64_parse("1.12345".as_bytes());
+          assert(r_bad1.is_err());
+          let r_bad2 = dec64_parse("abc".as_bytes());
+          assert(r_bad2.is_err());
         }
     "#;
 
