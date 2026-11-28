@@ -11,6 +11,7 @@ pub(super) struct ToolSpecOptions {
     pub dev_mode: bool,
     pub include_repo_snapshot: bool,
     pub include_pbr_tools: bool,
+    pub include_cargo: bool,
 }
 
 struct ToolSpec {
@@ -103,39 +104,53 @@ fn build_tool_specs(opts: ToolSpecOptions) -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "get_symbol",
-            description: "Fetch exact source and line range of a top-level declaration (fn, struct, enum, forma, layout, const, impl, class, function) in .ifm, .rs, .js, .mjs, or .ts.",
+            description: "Fetch exact AST source and line range of a declaration (fn, struct, enum, forma, layout, const, impl, class, function) or method ('Type::method', 'Class::method') in .rs, .js, .mjs, .ts, .tsx, or .ifm.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "name": { "type": "string" }
+                    "name": { "type": "string", "description": "Symbol name or 'Type::method' / 'Class::method'" }
                 },
                 "required": ["path", "name"]
             }),
         },
         ToolSpec {
             name: "replace_symbol",
-            description: "Atomically replace a top-level declaration by name in .ifm, .rs, .js, .mjs, or .ts, avoiding brittle whitespace matching.",
+            description: "Atomically replace a declaration or method ('Type::method', 'Class::method') by name using AST spans in .rs, .js, .mjs, .ts, .tsx, or .ifm, avoiding brittle whitespace matching.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "name": { "type": "string" },
+                    "name": { "type": "string", "description": "Symbol name or 'Type::method' / 'Class::method'" },
                     "new_source": { "type": "string" }
                 },
                 "required": ["path", "name", "new_source"]
             }),
         },
         ToolSpec {
-            name: "find_ifm_callers",
-            description: "Find references/callers of a symbol across .ifm files (or a specified .ifm/.rs/.js/.ts file), with enclosing function names and line numbers.",
+            name: "find_references",
+            description: "Find references/callers of an identifier across .rs, .ifm, .js, .mjs, .ts, .tsx files with AST-resolved enclosing symbol names and line numbers.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "symbol": { "type": "string" },
-                    "path": { "type": "string" }
+                    "path": { "type": "string", "description": "Optional relative file or subdirectory" },
+                    "glob": { "type": "string", "description": "Optional glob filter (e.g. '*.rs', '*.ifm')" },
+                    "max_matches": { "type": "integer", "description": "Max matches (default 60, max 200)" }
                 },
                 "required": ["symbol"]
+            }),
+        },
+        ToolSpec {
+            name: "apply_patch",
+            description: "Atomically apply a multi-file unified diff patch (create via '--- /dev/null', delete via '+++ /dev/null', or modify multiple hunks/files in one call). Validates all hunks before writing anything.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "patch": { "type": "string", "description": "Standard unified diff ('--- a/path' / '+++ b/path' + '@@ ... @@' hunks)" },
+                    "dry_run": { "type": "boolean", "description": "Validate patch without writing to disk (default false)" }
+                },
+                "required": ["patch"]
             }),
         },
         ToolSpec {
@@ -375,6 +390,25 @@ fn build_tool_specs(opts: ToolSpecOptions) -> Vec<ToolSpec> {
         });
     }
 
+    if opts.include_cargo {
+        specs.push(ToolSpec {
+            name: "cargo_check",
+            description: "Run Rust `cargo check|test|clippy|build --message-format=json` and return compact grouped errors/warnings (`file:line:col [code] message + help`) and test summaries without noisy logs.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "description": "'check' (default), 'test', 'clippy', or 'build'" },
+                    "package": { "type": "string", "description": "Optional crate/package name (-p <pkg>)" },
+                    "cwd": { "type": "string", "description": "Optional relative directory containing Cargo.toml (auto-detected if omitted)" },
+                    "filter": { "type": "string", "description": "Optional test name filter (for action='test')" },
+                    "release": { "type": "boolean", "description": "Build/check with --release (default false)" },
+                    "max_diagnostics": { "type": "integer", "description": "Max errors/warnings per category (default 30, max 100)" },
+                    "timeout_secs": { "type": "integer", "description": "Timeout in seconds (default 180, max 300)" }
+                }
+            }),
+        });
+    }
+
     if opts.dev_mode {
         specs.push(ToolSpec {
             name: "gh_cli",
@@ -443,10 +477,12 @@ pub(super) fn detect_tool_options(proj_dir: &std::path::Path, dev_mode: bool) ->
     // omit the redundant bundled repo-snapshot tools to save per-turn prompt tokens.
     let is_local_monorepo = proj_dir.join("crates/infimum-lang/Cargo.toml").is_file()
         || proj_dir.join("infimum/crates/infimum-lang/Cargo.toml").is_file();
+    let include_cargo = super::tools::has_cargo_project(proj_dir);
     ToolSpecOptions {
         dev_mode,
         include_repo_snapshot: !is_local_monorepo,
         include_pbr_tools: !is_local_monorepo || !dev_mode,
+        include_cargo,
     }
 }
 

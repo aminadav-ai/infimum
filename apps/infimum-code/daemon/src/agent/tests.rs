@@ -82,7 +82,7 @@ fn get_file_outline_extracts_real_ifm_and_rs_files() {
         "missing struct"
     );
 
-    let tools_rs = project_root.join("daemon/src/agent/tools.rs");
+    let tools_rs = project_root.join("daemon/src/agent/tools/mod.rs");
     let res_tools = execute_native_tool(
         &policy,
         &project_root,
@@ -90,13 +90,13 @@ fn get_file_outline_extracts_real_ifm_and_rs_files() {
         &json!({ "path": tools_rs.display().to_string() }),
         None,
     );
-    assert_eq!(res_tools["ok"], true, "tools.rs outline failed: {res_tools}");
+    assert_eq!(res_tools["ok"], true, "tools/mod.rs outline failed: {res_tools}");
     assert!(
         res_tools["outline"].as_str().unwrap().contains("fn execute_native_tool("),
         "missing execute_native_tool"
     );
 
-    let prov_rs = project_root.join("daemon/src/agent/providers.rs");
+    let prov_rs = project_root.join("daemon/src/agent/providers/gemini.rs");
     let res_rs = execute_native_tool(
         &policy,
         &project_root,
@@ -104,7 +104,7 @@ fn get_file_outline_extracts_real_ifm_and_rs_files() {
         &json!({ "path": prov_rs.display().to_string() }),
         None,
     );
-    assert_eq!(res_rs["ok"], true, "providers.rs outline failed: {res_rs}");
+    assert_eq!(res_rs["ok"], true, "providers/gemini.rs outline failed: {res_rs}");
     let rs_outline = res_rs["outline"].as_str().unwrap();
     assert!(rs_outline.contains("impl SseTurnAccumulator"), "missing impl");
     assert!(rs_outline.contains("fn ingest_line("), "missing method inside impl");
@@ -1191,11 +1191,13 @@ fn tool_specs_filter_by_dev_mode_and_monorepo_context() {
         dev_mode: false,
         include_repo_snapshot: true,
         include_pbr_tools: true,
+        include_cargo: false,
     };
     let dev_opts = ToolSpecOptions {
         dev_mode: true,
         include_repo_snapshot: false,
         include_pbr_tools: false,
+        include_cargo: true,
     };
 
     let safe_names: Vec<String> = openai_tool_declarations(safe_opts)
@@ -1219,6 +1221,10 @@ fn tool_specs_filter_by_dev_mode_and_monorepo_context() {
         .iter()
         .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
         .collect();
+    assert!(!safe_names.contains(&"cargo_check".to_string()));
+    assert!(safe_names.contains(&"apply_patch".to_string()));
+    assert!(safe_names.contains(&"find_references".to_string()));
+    assert!(dev_names.contains(&"cargo_check".to_string()));
     assert!(dev_names.contains(&"gh_cli".to_string()));
     assert!(dev_names.contains(&"wrangler_cli".to_string()));
     assert!(dev_names.contains(&"web_fetch".to_string()));
@@ -1466,4 +1472,382 @@ fn turbo_mode_policy_and_bridge_roundtrip_work() {
     assert!(decoded.dev_mode);
     assert!(!decoded.confirm_external_mutations);
     assert_eq!(crate::bridge_gen::APPROVAL_DECISION_ALLOW_ALWAYS, 2);
+}
+
+#[test]
+fn apply_patch_multi_file_create_modify_delete_and_atomic_rollback() {
+    let base = std::env::temp_dir().join(format!("ifm_patch_test_{}", now_millis()));
+    let _ = fs::create_dir_all(&base);
+    fs::write(
+        base.join("a.txt"),
+        "line1\nline2\nline3\nline4\nline5\nline6\n",
+    )
+    .unwrap();
+    fs::write(base.join("old.txt"), "remove me\n").unwrap();
+    let pol = test_policy_with_root(base.clone());
+
+    let patch = "\
+--- a/a.txt
++++ b/a.txt
+@@ -1,3 +1,3 @@
+ line2
+-line3
++LINE_THREE
+ line4
+--- /dev/null
++++ b/sub/new.txt
+@@ -0,0 +1,2 @@
++hello created
++world
+--- a/old.txt
++++ /dev/null
+@@ -1,1 +0,0 @@
+-remove me
+";
+    let dry = execute_native_tool(
+        &pol,
+        &base,
+        "apply_patch",
+        &json!({ "patch": patch, "dry_run": true }),
+        None,
+    );
+    assert_eq!(dry["ok"], true, "dry_run failed: {dry}");
+    assert_eq!(dry["dry_run"], true);
+    assert!(base.join("old.txt").exists(), "dry_run must not delete old.txt");
+    assert!(!base.join("sub/new.txt").exists(), "dry_run must not create sub/new.txt");
+
+    let res = execute_native_tool(&pol, &base, "apply_patch", &json!({ "patch": patch }), None);
+    assert_eq!(res["ok"], true, "apply_patch failed: {res}");
+    assert_eq!(res["hunks_applied"], 3);
+    assert_eq!(
+        fs::read_to_string(base.join("a.txt")).unwrap(),
+        "line1\nline2\nLINE_THREE\nline4\nline5\nline6\n"
+    );
+    assert_eq!(
+        fs::read_to_string(base.join("sub/new.txt")).unwrap(),
+        "hello created\nworld\n"
+    );
+    assert!(!base.join("old.txt").exists());
+
+    // Atomic rollback: file 1 valid, file 2 invalid -> file 1 MUST remain unchanged
+    let failing_patch = "\
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+-line1
++MODIFIED_SHOULD_ROLLBACK
+ line2
+--- a/sub/new.txt
++++ b/sub/new.txt
+@@ -1,2 +1,2 @@
+-non_existent_context_line
++broken
+";
+    let fail = execute_native_tool(
+        &pol,
+        &base,
+        "apply_patch",
+        &json!({ "patch": failing_patch }),
+        None,
+    );
+    assert_eq!(fail["ok"], false);
+    assert!(
+        fs::read_to_string(base.join("a.txt"))
+            .unwrap()
+            .starts_with("line1\n"),
+        "failed multi-file patch must NOT modify earlier files"
+    );
+
+    // Sandbox rejects traversal and sensitive files
+    let esc_patch = "--- /dev/null\n+++ b/../escaped.txt\n@@ -0,0 +1,1 @@\n+nope\n";
+    let esc = execute_native_tool(&pol, &base, "apply_patch", &json!({ "patch": esc_patch }), None);
+    assert_eq!(esc["ok"], false);
+
+    let env_patch = "--- /dev/null\n+++ b/.env\n@@ -0,0 +1,1 @@\n+SECRET=1\n";
+    let env_res = execute_native_tool(&pol, &base, "apply_patch", &json!({ "patch": env_patch }), None);
+    assert_eq!(env_res["ok"], false);
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn rust_syn_ast_parses_impl_methods_raw_strings_attributes_and_fallback() {
+    let base = std::env::temp_dir().join(format!("ifm_syn_ast_test_{}", now_millis()));
+    let _ = fs::create_dir_all(&base);
+    let rs_src = r##"/// Raw string should never confuse the AST parser!
+const RAW_SAMPLE: &str = r#"
+fn fake_inside_raw() {
+    struct FakeStruct {}
+}
+"#;
+
+pub struct Counter {
+    val: i64,
+}
+
+impl Counter {
+    /// Increments the counter.
+    #[inline]
+    pub fn increment(&mut self, delta: i64) -> i64 {
+        self.val += delta;
+        self.val
+    }
+
+    pub fn value(&self) -> i64 {
+        self.val
+    }
+}
+"##;
+    fs::write(base.join("counter.rs"), rs_src).unwrap();
+    let pol = test_policy_with_root(base.clone());
+
+    let spans = parse_rs_symbol_spans(rs_src);
+    assert!(
+        !spans.iter().any(|s| s.name == "fake_inside_raw"),
+        "syn AST must not parse fake symbols inside raw strings: {spans:?}"
+    );
+    assert!(spans.iter().any(|s| s.name == "Counter::increment" && s.kind == "method"));
+
+    let got = execute_native_tool(
+        &pol,
+        &base,
+        "get_symbol",
+        &json!({ "path": "counter.rs", "name": "Counter::increment" }),
+        None,
+    );
+    assert_eq!(got["ok"], true, "get_symbol Counter::increment failed: {got}");
+    assert_eq!(got["ast_fallback"], false);
+    let src_snip = got["source"].as_str().unwrap();
+    assert!(src_snip.contains("/// Increments the counter."));
+    assert!(src_snip.contains("#[inline]"));
+
+    let got_short = execute_native_tool(
+        &pol,
+        &base,
+        "get_symbol",
+        &json!({ "path": "counter.rs", "name": "value" }),
+        None,
+    );
+    assert_eq!(got_short["ok"], true);
+    assert_eq!(got_short["name"], "Counter::value");
+
+    let rep = execute_native_tool(
+        &pol,
+        &base,
+        "replace_symbol",
+        &json!({
+            "path": "counter.rs",
+            "name": "Counter::increment",
+            "new_source": "    /// Increments doubled.\n    pub fn increment(&mut self, delta: i64) -> i64 {\n        self.val += delta * 2;\n        self.val\n    }"
+        }),
+        None,
+    );
+    assert_eq!(rep["ok"], true, "replace_symbol failed: {rep}");
+    let updated = fs::read_to_string(base.join("counter.rs")).unwrap();
+    assert!(updated.contains("delta * 2"));
+    assert!(updated.contains("pub fn value(&self)"));
+
+    // Temporarily broken syntax falls back gracefully without crashing
+    let broken_src = "fn intact() -> i32 { 42 }\nfn broken( {\n";
+    fs::write(base.join("broken.rs"), broken_src).unwrap();
+    let fb = execute_native_tool(
+        &pol,
+        &base,
+        "get_symbol",
+        &json!({ "path": "broken.rs", "name": "intact" }),
+        None,
+    );
+    assert_eq!(fb["ok"], true, "fallback get_symbol failed: {fb}");
+    assert_eq!(fb["ast_fallback"], true);
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn js_state_machine_lexer_handles_templates_regex_and_class_methods() {
+    let base = std::env::temp_dir().join(format!("ifm_js_lex_test_{}", now_millis()));
+    let _ = fs::create_dir_all(&base);
+    let js_src = r#"export class Widget {
+  render(name) {
+    // Comment with stray brace }
+    /* Block comment with } { */
+    const rx = /\{|\}/g;
+    const html = `<div>${ { label: name }.label } }</div>`;
+    return html.replace(rx, "");
+  }
+
+  async refresh() {
+    return this.render("ok");
+  }
+}
+
+export const helper = (x) => {
+  return x + 1;
+};
+"#;
+    fs::write(base.join("widget.js"), js_src).unwrap();
+    let pol = test_policy_with_root(base.clone());
+
+    let spans = parse_js_symbol_spans(js_src);
+    assert!(spans.iter().any(|s| s.name == "Widget" && s.kind == "class"));
+    assert!(spans.iter().any(|s| s.name == "Widget::render" && s.kind == "method"));
+    assert!(spans.iter().any(|s| s.name == "Widget::refresh" && s.kind == "method"));
+    assert!(spans.iter().any(|s| s.name == "helper" && s.kind == "const"));
+
+    let (outline, _) = extract_js_outline(js_src);
+    assert!(outline.iter().any(|l| l.contains("export class Widget")));
+    assert!(outline.iter().any(|l| l.contains("render(name)")));
+
+    let rep = execute_native_tool(
+        &pol,
+        &base,
+        "replace_symbol",
+        &json!({
+            "path": "widget.js",
+            "name": "Widget::refresh",
+            "new_source": "  async refresh() {\n    return this.render(\"updated\");\n  }"
+        }),
+        None,
+    );
+    assert_eq!(rep["ok"], true, "JS method replace failed: {rep}");
+    assert!(fs::read_to_string(base.join("widget.js")).unwrap().contains("\"updated\""));
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn find_references_resolves_enclosing_symbols_across_rs_and_js() {
+    let base = std::env::temp_dir().join(format!("ifm_refs_test_{}", now_millis()));
+    let _ = fs::create_dir_all(&base);
+    fs::write(
+        base.join("engine.rs"),
+        "pub fn compute_step(x: i32) -> i32 { x + 1 }\npub struct Engine;\nimpl Engine {\n    pub fn tick(&self) -> i32 { compute_step(10) }\n}\n",
+    )
+    .unwrap();
+    let pol = test_policy_with_root(base.clone());
+
+    let refs = execute_native_tool(
+        &pol,
+        &base,
+        "find_references",
+        &json!({ "symbol": "compute_step", "glob": "*.rs" }),
+        None,
+    );
+    assert_eq!(refs["ok"], true);
+    assert_eq!(refs["count"], 1);
+    let callers = refs["callers"].as_array().unwrap();
+    assert_eq!(callers[0]["enclosing"], "method Engine::tick");
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn cargo_json_parser_extracts_compact_errors_warnings_and_failed_tests() {
+    let sample = r#"{"reason":"compiler-message","message":{"level":"error","message":"mismatched types","code":{"code":"E0308"},"spans":[{"file_name":"src/lib.rs","line_start":12,"column_start":5,"is_primary":true,"label":"expected `i32`, found `&str`"}],"children":[{"level":"help","message":"try parsing","spans":[{"suggested_replacement":"42"}]}]}}
+{"reason":"compiler-message","message":{"level":"warning","message":"unused variable: `x`","code":{"code":"unused_variables"},"spans":[{"file_name":"src/lib.rs","line_start":4,"column_start":9,"is_primary":true,"label":null}],"children":[]}}
+running 2 tests
+test ok_test ... ok
+test broken_test ... FAILED
+
+failures:
+
+---- broken_test stdout ----
+thread 'broken_test' panicked at src/lib.rs:30:5:
+assertion `left == right` failed
+
+failures:
+    broken_test
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored
+"#;
+    let parsed = parse_cargo_json_output(sample, 20);
+    assert_eq!(parsed.errors.len(), 1);
+    assert!(parsed.errors[0].contains("src/lib.rs:12:5 [E0308]: mismatched types"));
+    assert!(parsed.errors[0].contains("-> help: try parsing: `42`"));
+    assert_eq!(parsed.warnings.len(), 1);
+    assert!(parsed.warnings[0].contains("src/lib.rs:4:9 [unused_variables]"));
+    assert_eq!(parsed.failed_tests, vec!["broken_test".to_string()]);
+    assert_eq!(parsed.test_summary.len(), 1);
+}
+
+#[test]
+fn history_compaction_shrinks_old_edit_args_and_preserves_thought_signature_and_cache() {
+    let huge = "X".repeat(800);
+
+    let mut gemini_contents = vec![
+        json!({
+            "role": "model",
+            "parts": [
+                {
+                    "functionCall": {
+                        "name": "write_project_file",
+                        "args": { "path": "unsigned.rs", "content": huge }
+                    }
+                },
+                {
+                    "thoughtSignature": "sig-keep-intact",
+                    "functionCall": {
+                        "name": "write_project_file",
+                        "args": { "path": "signed.rs", "content": huge }
+                    }
+                }
+            ]
+        }),
+        json!({
+            "role": "user",
+            "parts": [{ "functionResponse": { "name": "write_project_file", "response": { "ok": true } } }]
+        }),
+        json!({
+            "role": "model",
+            "parts": [{ "functionCall": { "name": "read_project_file", "args": { "path": "a.rs" } } }]
+        }),
+        json!({
+            "role": "user",
+            "parts": [{ "functionResponse": { "name": "read_project_file", "response": { "content": "small" } } }]
+        }),
+    ];
+    compact_old_tool_responses(&mut gemini_contents, 1);
+    let unsigned_content = gemini_contents[0]["parts"][0]["functionCall"]["args"]["content"]
+        .as_str()
+        .unwrap();
+    assert!(unsigned_content.starts_with("[compacted old write_project_file"));
+    let signed_content = gemini_contents[0]["parts"][1]["functionCall"]["args"]["content"]
+        .as_str()
+        .unwrap();
+    assert_eq!(signed_content.len(), 800, "signed Gemini functionCall must NEVER be mutated");
+    assert_eq!(gemini_contents[0]["parts"][1]["thoughtSignature"], "sig-keep-intact");
+
+    let mut oai_msgs = vec![
+        json!({
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "apply_patch",
+                    "arguments": json!({ "patch": huge }).to_string()
+                }
+            }]
+        }),
+        json!({ "role": "tool", "tool_call_id": "call_1", "name": "apply_patch", "content": "{\"ok\":true}" }),
+        json!({ "role": "tool", "tool_call_id": "call_2", "name": "read_project_file", "content": "{\"content\":\"ok\"}" }),
+    ];
+    compact_old_openai_tool_messages(&mut oai_msgs, 1);
+    let compacted_args = oai_msgs[0]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .unwrap();
+    assert!(compacted_args.contains("compacted old apply_patch"));
+
+    assert_eq!(cache_aligned_keep_recent(5, 4, 4), 5);
+    assert_eq!(cache_aligned_keep_recent(7, 4, 4), 7);
+    assert_eq!(cache_aligned_keep_recent(8, 4, 4), 4);
+    assert_eq!(cache_aligned_keep_recent(9, 4, 4), 5);
+
+    let mut acc = SseTurnAccumulator::default();
+    acc.ingest_line(
+        r#"data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":10000,"cachedContentTokenCount":8000,"candidatesTokenCount":120}}"#,
+    );
+    assert_eq!(acc.cached_tokens, 8000);
+    assert_eq!(acc.in_tokens, 2000);
+    assert_eq!(acc.out_tokens, 120);
 }
