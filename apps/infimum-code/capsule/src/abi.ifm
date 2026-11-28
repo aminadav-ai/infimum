@@ -165,6 +165,7 @@ pub layout StudioMem {
   currency_id: word inv 0..=2,
   dev_mode: word inv 0..=1,
   confirm_external_mutations: word inv 0..=1,
+  turbo_mode: word inv 0..=1,
   total_milli_ils: word,
   ai_running: word,
   copy_override_ptr: word,

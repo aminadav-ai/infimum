@@ -126,6 +126,22 @@ pub fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem, N
     if dcnt > 0 {
       ui_int(tx_after + 6, dy_p + (dh_p - sm_sz) / 2, dcnt, sm_sz, 1, pack_rgba(245, 158, 11, 255), ClipId::Root);
     }
+    if StudioMem.turbo_mode == 1 {
+      let tw_t = clamp_i64((72 * scale) / 100, 62, 116);
+      let tx_t = dx_p - tw_t - 8;
+      let t_hov = modal_none && point_in_rect(StudioMem.frame_mx, StudioMem.frame_my, tx_t, dy_p, tw_t, dh_p);
+      if t_hov {
+        gfx_set_cursor(CursorKind::Pointer);
+        if StudioMem.frame_m_clicked == 1 {
+          StudioMem.settings_open = 1;
+          StudioMem.frame_settings_just_opened = 1;
+        }
+      }
+      let t_bg = if t_hov { pack_rgba(245, 158, 11, 56) } else { pack_rgba(245, 158, 11, 32) };
+      let t_brd = pack_rgba(245, 158, 11, 220);
+      ui_rect(tx_t, dy_p, tw_t, dh_p, 8, 1, 0, t_bg, t_brd, ClipId::Root);
+      ui_text(tx_t + 11, dy_p + (dh_p - sm_sz) / 2, "TURBO", sm_sz, 1, pack_rgba(245, 158, 11, 255), ClipId::Root);
+    }
   }
 }
 

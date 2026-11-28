@@ -761,6 +761,7 @@ fn semantic_ifm_tools_and_templates_work_and_verify() {
         allow_proc: false,
         allow_user_workspaces: false,
         dev_mode: false,
+        turbo_mode: false,
         confirm_external_mutations_override: None,
     };
 
@@ -1242,7 +1243,7 @@ fn bridge_settings_wire_and_json_roundtrip() {
     s.confirm_external_mutations = false;
 
     let wire_get = s.to_ifm_wire(true, s.dev_mode);
-    assert_eq!(wire_get, "1 1 125 2 5 1 0\n");
+    assert_eq!(wire_get, "1 1 125 2 5 1 0 0\n");
     assert_eq!(s.to_ifm_wire(false, false), "0\n");
 
     let wire_put = wire_get.strip_prefix("1 ").unwrap();
@@ -1425,4 +1426,44 @@ fn diff_view_collects_status_and_paginates_unified_diff() {
     assert!(p1.total_lines > 3);
 
     let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn turbo_mode_policy_and_bridge_roundtrip_work() {
+    let base = std::env::temp_dir().join(format!("ifm_turbo_test_{}", now_millis()));
+    let mut pol = test_policy_with_root(base);
+    assert!(!pol.is_turbo_mode());
+    assert!(!pol.is_dev_mode());
+    assert_eq!(pol.max_agent_steps(), 80);
+
+    pol.turbo_mode = true;
+    assert!(pol.is_turbo_mode());
+    assert!(pol.is_dev_mode(), "turbo_mode must automatically enable dev_mode");
+    assert!(
+        !pol.confirm_external_mutations(),
+        "turbo_mode must skip external mutation confirmations"
+    );
+    assert_eq!(pol.max_agent_steps(), 160);
+
+    // Bridge JSON + IFM wire round-trip for turbo_mode and allow_always constant
+    let s = crate::bridge_gen::NativeSettings {
+        theme: 1,
+        font_scale_pct: 110,
+        currency_id: 2,
+        model_idx: 3,
+        dev_mode: true,
+        confirm_external_mutations: false,
+        turbo_mode: true,
+    };
+    let wire = s.to_ifm_wire(true, true);
+    let parts: Vec<&str> = wire.trim().split_whitespace().collect();
+    assert_eq!(parts[0], "1");
+    let decoded = crate::bridge_gen::NativeSettings::from_ifm_wire(
+        &parts[1..].join(" "),
+        crate::bridge_gen::NativeSettings::default(),
+    );
+    assert!(decoded.turbo_mode);
+    assert!(decoded.dev_mode);
+    assert!(!decoded.confirm_external_mutations);
+    assert_eq!(crate::bridge_gen::APPROVAL_DECISION_ALLOW_ALWAYS, 2);
 }

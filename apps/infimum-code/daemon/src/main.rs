@@ -66,6 +66,9 @@ fn main() {
             policy.allow_proc = true;
         } else if a == "--dev-mode" {
             policy.dev_mode = true;
+        } else if a == "--turbo" || a == "--turbo-mode" {
+            policy.turbo_mode = true;
+            policy.dev_mode = true;
         } else if let Some(v) = a.strip_prefix("--allow-net=") {
             for d in v.split(',') {
                 let d = d.trim();

@@ -1152,17 +1152,26 @@ fn main() {
     #[cfg(target_arch = "x86_64")]
     let _ = ();
     #[cfg(target_os = "linux")]
-    if app_id == "infimum-web" {
+    {
         let stem = capsule_name.trim_end_matches(".ifw");
         if let Some(icon_path) = find_capsule_icon_path(capsule_dir.as_deref(), stem) {
-            app_id = format!("infimum-ifw-{}", sanitize_app_id_stem(stem));
             let display_name = args
                 .window_title
                 .as_deref()
                 .filter(|t| !t.is_empty())
                 .map(|t| t.to_string())
                 .unwrap_or_else(|| pretty_capsule_title(stem));
-            ensure_wayland_desktop_icon(&app_id, &display_name, &icon_path, &abs_capsule_path);
+            if app_id == "infimum-web" {
+                app_id = format!("infimum-ifw-{}", sanitize_app_id_stem(stem));
+                ensure_wayland_desktop_icon(&app_id, &display_name, &icon_path, &abs_capsule_path);
+            } else if let Ok(home) = std::env::var("HOME") {
+                let desktop_file = std::path::PathBuf::from(home)
+                    .join(".local/share/applications")
+                    .join(format!("{app_id}.desktop"));
+                if !desktop_file.exists() {
+                    ensure_wayland_desktop_icon(&app_id, &display_name, &icon_path, &abs_capsule_path);
+                }
+            }
         }
     }
 

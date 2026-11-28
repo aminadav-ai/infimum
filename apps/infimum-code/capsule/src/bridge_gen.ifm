@@ -7,9 +7,10 @@ use "primitives.ifm";
 use "std/buf.ifm";
 
 pub const BRIDGE_SCHEMA_VERSION: i64 = 1;
-pub const SETTINGS_WIRE_FIELD_COUNT: i64 = 6;
+pub const SETTINGS_WIRE_FIELD_COUNT: i64 = 7;
 pub const APPROVAL_DECISION_DENY: i64 = 0;
 pub const APPROVAL_DECISION_ALLOW: i64 = 1;
+pub const APPROVAL_DECISION_ALLOW_ALWAYS: i64 = 2;
 pub const SIDE_TAB_CONVS: i64 = 0;
 pub const SIDE_TAB_FILES: i64 = 1;
 pub const SIDE_TAB_DIFF: i64 = 2;
@@ -63,6 +64,7 @@ pub fn bridge_settings_decode(resp_buf: i64) -[Mem]-> i64 {
     StudioMem.model_idx = clamp_i64(bridge_parse_i64(resp_buf), 0, 21);
     StudioMem.dev_mode = clamp_i64(bridge_parse_i64(resp_buf), 0, 1);
     StudioMem.confirm_external_mutations = clamp_i64(bridge_parse_i64(resp_buf), 0, 1);
+    StudioMem.turbo_mode = clamp_i64(bridge_parse_i64(resp_buf), 0, 1);
     1
   } else {
     0
@@ -83,4 +85,6 @@ pub fn bridge_settings_encode(dst_buf: i64) -[Mem]-> unit {
   buf_push_int(dst_buf, 128, StudioMem.dev_mode);
   buf_push_cp(dst_buf, 128, ' ');
   buf_push_int(dst_buf, 128, StudioMem.confirm_external_mutations);
+  buf_push_cp(dst_buf, 128, ' ');
+  buf_push_int(dst_buf, 128, StudioMem.turbo_mode);
 }

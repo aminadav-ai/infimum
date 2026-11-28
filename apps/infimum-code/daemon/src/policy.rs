@@ -16,6 +16,9 @@ pub struct CapabilityPolicy {
     /// `web_fetch`, and `web_search` (Gemini Search grounding). Disabled by
     /// default for regular users.
     pub dev_mode: bool,
+    /// Turbo Mode: enables Developer Mode, disables all mutation confirmation
+    /// prompts, and doubles the per-turn agent step limit.
+    pub turbo_mode: bool,
     /// Optional explicit override for external-mutation confirmation prompts
     /// (used in tests or headless automation). `None` delegates to persisted
     /// `NativeSettings::confirm_external_mutations` (default `true`).
@@ -27,8 +30,27 @@ impl CapabilityPolicy {
         !self.allowed_fs_roots.is_empty() || self.allow_user_workspaces
     }
 
+    pub fn is_turbo_mode(&self) -> bool {
+        if self.turbo_mode {
+            return true;
+        }
+        #[cfg(test)]
+        {
+            false
+        }
+        #[cfg(not(test))]
+        {
+            std::env::var("INFIMUM_TURBO_MODE")
+                .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+                .unwrap_or(false)
+                || crate::agent::load_native_settings()
+                    .map(|s| s.turbo_mode)
+                    .unwrap_or(false)
+        }
+    }
+
     pub fn is_dev_mode(&self) -> bool {
-        if self.dev_mode {
+        if self.dev_mode || self.is_turbo_mode() {
             return true;
         }
         #[cfg(test)]
@@ -52,6 +74,9 @@ impl CapabilityPolicy {
         if let Some(v) = self.confirm_external_mutations_override {
             return v;
         }
+        if self.is_turbo_mode() {
+            return false;
+        }
         #[cfg(test)]
         {
             false
@@ -65,5 +90,10 @@ impl CapabilityPolicy {
                 .map(|s| s.confirm_external_mutations)
                 .unwrap_or(true)
         }
+    }
+
+    /// Maximum tool-calling rounds per user message (doubled in Turbo Mode).
+    pub fn max_agent_steps(&self) -> usize {
+        if self.is_turbo_mode() { 160 } else { 80 }
     }
 }

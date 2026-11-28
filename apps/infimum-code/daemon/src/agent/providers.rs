@@ -47,6 +47,7 @@ pub(super) fn render_studio_system_prompt(
     imported_plan: &str,
     imported_task: &str,
     dev_mode: bool,
+    turbo_mode: bool,
 ) -> String {
     let mut tpl = None;
     for root in studio_root_candidates() {
@@ -65,7 +66,11 @@ pub(super) fn render_studio_system_prompt(
         .replace("{proj}", &proj_s)
         .replace("{plan}", plan_s)
         .replace("{task}", task_s);
-    if dev_mode {
+    if turbo_mode {
+        rendered.push_str(
+            "\nРЕЖИМ TURBO: ВКЛЮЧЁН. Developer Mode активен, все внешние мутации (`git push`, `gh`, `wrangler`) разрешены без подтверждения, лимит шагов увеличен до 160.\n",
+        );
+    } else if dev_mode {
         rendered.push_str(
             "\nРЕЖИМ РАЗРАБОТЧИКА (Developer Mode): ВКЛЮЧЁН. Доступны сетевые операции `git_tool` (`fetch`/`pull`/`push`), GitHub CLI (`gh_cli`), Cloudflare Wrangler (`wrangler_cli`), загрузка веб-страниц (`web_fetch`) и веб-поиск через Gemini Search grounding (`web_search`).\n",
         );
@@ -191,10 +196,10 @@ pub(super) fn run_openai_compat_native_agent_loop<F>(
 where
     F: FnMut(String),
 {
-    const MAX_OPENAI_AGENT_STEPS: usize = 80;
+    let max_openai_steps: usize = policy.max_agent_steps();
     let t0 = Instant::now();
     ASYNC_CANCELLED.store(false, Ordering::SeqCst);
-    reset_live_timeline(MAX_OPENAI_AGENT_STEPS as i64);
+    reset_live_timeline(max_openai_steps as i64);
 
     let pending_imgs: Vec<AttachedImage> = take_pending_images();
     let effective_prompt = if prompt.trim().is_empty() && !pending_imgs.is_empty() {
@@ -242,7 +247,8 @@ where
     };
 
     let dev_mode = policy.is_dev_mode();
-    let sys_prompt = render_studio_system_prompt(&proj_dir, &imported_plan, &imported_task, dev_mode);
+    let turbo_mode = policy.is_turbo_mode();
+    let sys_prompt = render_studio_system_prompt(&proj_dir, &imported_plan, &imported_task, dev_mode, turbo_mode);
     let tool_opts = detect_tool_options(&proj_dir, dev_mode);
     let tools_decl = openai_tool_declarations(tool_opts);
 
@@ -306,13 +312,13 @@ where
     let mut tool_steps: usize = 0;
     let mut action_log: Vec<String> = Vec::new();
 
-    for step in 0..MAX_OPENAI_AGENT_STEPS {
+    for step in 0..max_openai_steps {
         if ASYNC_CANCELLED.load(Ordering::SeqCst) {
             break;
         }
-        let is_last_step = step + 1 >= MAX_OPENAI_AGENT_STEPS;
+        let is_last_step = step + 1 >= max_openai_steps;
         timeline_set_round((step + 1) as i64);
-        set_status(format!("Шаг {}/{MAX_OPENAI_AGENT_STEPS}: думаю ({display_model})…", step + 1));
+        set_status(format!("Шаг {}/{max_openai_steps}: думаю ({display_model})…", step + 1));
 
         let mut req_messages = messages.clone();
         compact_old_openai_tool_messages(&mut req_messages, 4);
@@ -368,7 +374,7 @@ where
             }
             if attempt > 0 {
                 set_status(format!(
-                    "Шаг {}/{MAX_OPENAI_AGENT_STEPS}: повтор запроса ({display_model}, попытка {}/3)…",
+                    "Шаг {}/{max_openai_steps}: повтор запроса ({display_model}, попытка {}/3)…",
                     step + 1,
                     attempt + 1
                 ));
@@ -677,10 +683,10 @@ where
         );
     }
     const GEMINI_HOST: &str = "generativelanguage.googleapis.com";
-    const MAX_OPENAI_AGENT_STEPS: usize = 80;
+    let max_agent_steps: usize = policy.max_agent_steps();
     let t0 = Instant::now();
     ASYNC_CANCELLED.store(false, Ordering::SeqCst);
-    reset_live_timeline(MAX_OPENAI_AGENT_STEPS as i64);
+    reset_live_timeline(max_agent_steps as i64);
 
     // 1. Take any attached screenshot/image and update shared ActiveConversation + save to disk
     let pending_imgs: Vec<AttachedImage> = take_pending_images();
@@ -729,7 +735,8 @@ where
     };
 
     let dev_mode = policy.is_dev_mode();
-    let sys_prompt = render_studio_system_prompt(&proj_dir, &imported_plan, &imported_task, dev_mode);
+    let turbo_mode = policy.is_turbo_mode();
+    let sys_prompt = render_studio_system_prompt(&proj_dir, &imported_plan, &imported_task, dev_mode, turbo_mode);
     let tool_opts = detect_tool_options(&proj_dir, dev_mode);
     let tools_decl = json!([gemini_tool_declarations(tool_opts)]);
 
@@ -788,7 +795,6 @@ where
     let mut final_reply = String::new();
     let mut tool_steps = 0usize;
     let mut action_log: Vec<String> = Vec::new();
-    const MAX_AGENT_STEPS: usize = 80;
 
     let pid = std::process::id();
     let req_path = PathBuf::from(format!("/tmp/infimum_web_agent_{pid}.json"));
@@ -808,11 +814,11 @@ where
     let url = format!("https://{GEMINI_HOST}/v1beta/models/{model}:streamGenerateContent?alt=sse");
 
     let mut include_thoughts = true;
-    for step in 0..MAX_AGENT_STEPS {
+    for step in 0..max_agent_steps {
         if ASYNC_CANCELLED.load(Ordering::SeqCst) {
             break;
         }
-        let is_last = step == MAX_AGENT_STEPS - 1;
+        let is_last = step == max_agent_steps - 1;
         timeline_set_round((step + 1) as i64);
         let think_title = if step == 0 {
             "Анализ задачи и планирование".to_string()
@@ -823,11 +829,11 @@ where
         };
         let think_step_idx = timeline_push_step(STEP_KIND_THINK, think_title, model.to_string());
         set_status(if step == 0 {
-            format!("Шаг 1/{MAX_AGENT_STEPS}: анализирую ({model})…")
+            format!("Шаг 1/{max_agent_steps}: анализирую ({model})…")
         } else if is_last {
-            format!("Шаг {MAX_AGENT_STEPS}/{MAX_AGENT_STEPS}: подвожу итог…")
+            format!("Шаг {max_agent_steps}/{max_agent_steps}: подвожу итог…")
         } else {
-            format!("Шаг {}/{MAX_AGENT_STEPS}: думаю ({model})…", step + 1)
+            format!("Шаг {}/{max_agent_steps}: думаю ({model})…", step + 1)
         });
 
         // Non-destructively compact older large read-only tool payloads on a working copy
@@ -867,7 +873,7 @@ where
             &req_path,
             model,
             step + 1,
-            MAX_AGENT_STEPS,
+            max_agent_steps,
             &mut set_status,
         );
 
@@ -884,7 +890,7 @@ where
                         &req_path,
                         model,
                         step + 1,
-                        MAX_AGENT_STEPS,
+                        max_agent_steps,
                         &mut set_status,
                     );
                 }
@@ -998,7 +1004,7 @@ where
         if fn_responses.is_empty() || is_last {
             break;
         }
-        if step == MAX_AGENT_STEPS - 2 {
+        if step == max_agent_steps - 2 {
             fn_responses.push(json!({
                 "text": "Это был последний доступный шаг инструментов. Подведи итог выполненной работы и ответь пользователю на русском языке."
             }));

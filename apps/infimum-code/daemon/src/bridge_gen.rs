@@ -7,7 +7,7 @@
 use serde_json::{json, Value};
 
 pub const BRIDGE_SCHEMA_VERSION: u32 = 1;
-pub const SETTINGS_WIRE_FIELD_COUNT: usize = 6;
+pub const SETTINGS_WIRE_FIELD_COUNT: usize = 7;
 
 pub const ENDPOINT_SETTINGS: &str = "/settings";
 pub const ENDPOINT_AGENT_POLL: &str = "/agent/poll";
@@ -17,6 +17,7 @@ pub const ENDPOINT_GIT_DIFF: &str = "/git/diff";
 
 pub const APPROVAL_DECISION_DENY: i64 = 0;
 pub const APPROVAL_DECISION_ALLOW: i64 = 1;
+pub const APPROVAL_DECISION_ALLOW_ALWAYS: i64 = 2;
 pub const SIDE_TAB_CONVS: i64 = 0;
 pub const SIDE_TAB_FILES: i64 = 1;
 pub const SIDE_TAB_DIFF: i64 = 2;
@@ -29,6 +30,7 @@ pub struct NativeSettings {
     pub model_idx: i32,
     pub dev_mode: bool,
     pub confirm_external_mutations: bool,
+    pub turbo_mode: bool,
 }
 
 impl Default for NativeSettings {
@@ -40,6 +42,7 @@ impl Default for NativeSettings {
             model_idx: 0,
             dev_mode: false,
             confirm_external_mutations: true,
+            turbo_mode: false,
         }
     }
 }
@@ -62,6 +65,7 @@ impl NativeSettings {
             model_idx: (v.get("model_idx").and_then(|x| x.as_i64()).unwrap_or(d.model_idx as i64) as i32).clamp(0, 21),
             dev_mode: v.get("dev_mode").and_then(|x| x.as_bool()).or_else(|| v.get("dev_mode").and_then(|x| x.as_i64()).map(|n| n != 0)).unwrap_or(d.dev_mode),
             confirm_external_mutations: v.get("confirm_external_mutations").and_then(|x| x.as_bool()).or_else(|| v.get("confirm_external_mutations").and_then(|x| x.as_i64()).map(|n| n != 0)).unwrap_or(d.confirm_external_mutations),
+            turbo_mode: v.get("turbo_mode").and_then(|x| x.as_bool()).or_else(|| v.get("turbo_mode").and_then(|x| x.as_i64()).map(|n| n != 0)).unwrap_or(d.turbo_mode),
         }
     }
 
@@ -73,6 +77,7 @@ impl NativeSettings {
             model_idx: (v.get("model_idx").and_then(|x| x.as_i64()).unwrap_or(prev.model_idx as i64) as i32).clamp(0, 21),
             dev_mode: v.get("dev_mode").and_then(|x| x.as_bool()).or_else(|| v.get("dev_mode").and_then(|x| x.as_i64()).map(|n| n != 0)).unwrap_or(prev.dev_mode),
             confirm_external_mutations: v.get("confirm_external_mutations").and_then(|x| x.as_bool()).or_else(|| v.get("confirm_external_mutations").and_then(|x| x.as_i64()).map(|n| n != 0)).unwrap_or(prev.confirm_external_mutations),
+            turbo_mode: v.get("turbo_mode").and_then(|x| x.as_bool()).or_else(|| v.get("turbo_mode").and_then(|x| x.as_i64()).map(|n| n != 0)).unwrap_or(prev.turbo_mode),
         }
     }
 
@@ -84,6 +89,7 @@ impl NativeSettings {
             "model_idx": self.model_idx,
             "dev_mode": self.dev_mode,
             "confirm_external_mutations": self.confirm_external_mutations,
+            "turbo_mode": self.turbo_mode,
         })
     }
 
@@ -99,6 +105,7 @@ impl NativeSettings {
             model_idx: nums.get(3).copied().unwrap_or(prev.model_idx).clamp(0, 21),
             dev_mode: nums.get(4).map(|&n| n != 0).unwrap_or(prev.dev_mode),
             confirm_external_mutations: nums.get(5).map(|&n| n != 0).unwrap_or(prev.confirm_external_mutations),
+            turbo_mode: nums.get(6).map(|&n| n != 0).unwrap_or(prev.turbo_mode),
         }
     }
 
@@ -106,6 +113,6 @@ impl NativeSettings {
         if !found {
             return "0\n".to_string();
         }
-        format!("1 {} {} {} {} {} {}\n", self.theme, self.font_scale_pct, self.currency_id, self.model_idx, if dev_mode_effective { 1 } else { 0 }, if self.confirm_external_mutations { 1 } else { 0 })
+        format!("1 {} {} {} {} {} {} {}\n", self.theme, self.font_scale_pct, self.currency_id, self.model_idx, if dev_mode_effective { 1 } else { 0 }, if self.confirm_external_mutations { 1 } else { 0 }, if self.turbo_mode { 1 } else { 0 })
     }
 }

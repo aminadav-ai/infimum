@@ -849,12 +849,10 @@ pub fn handle_request(
             ("POST", "/agent/approval") => {
                 let mut it = text.split_whitespace();
                 let id = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-                let allow = it
-                    .next()
-                    .and_then(|s| s.parse::<i64>().ok())
-                    .map(|n| n != 0)
-                    .unwrap_or(false);
-                json!({ "id": id, "allow": allow })
+                let decision = it.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+                let allow = decision != 0;
+                let always = decision == crate::bridge_gen::APPROVAL_DECISION_ALLOW_ALWAYS;
+                json!({ "id": id, "allow": allow, "always": always })
             }
             ("PUT", "/settings") => {
                 let prev = agent::load_native_settings().unwrap_or_default();
@@ -1189,20 +1187,35 @@ pub fn handle_request(
                 return (403, "Forbidden", json!({ "ok": false, "error": "fs_denied" }));
             }
             if let Some(s) = agent::load_native_settings() {
-                let effective_dev = s.dev_mode || ctx.policy.dev_mode;
+                let effective_turbo = s.turbo_mode || ctx.policy.turbo_mode;
+                let effective_dev = s.dev_mode || ctx.policy.dev_mode || effective_turbo;
+                let effective_confirm = if effective_turbo {
+                    false
+                } else {
+                    s.confirm_external_mutations
+                };
                 let mut out = s.to_json();
                 if let Some(obj) = out.as_object_mut() {
                     obj.insert("ok".to_string(), json!(true));
                     obj.insert("found".to_string(), json!(true));
                     obj.insert("dev_mode".to_string(), json!(effective_dev));
+                    obj.insert(
+                        "confirm_external_mutations".to_string(),
+                        json!(effective_confirm),
+                    );
+                    obj.insert("turbo_mode".to_string(), json!(effective_turbo));
                 }
                 (200, "OK", out)
-            } else if ctx.policy.dev_mode {
+            } else if ctx.policy.dev_mode || ctx.policy.turbo_mode {
                 let mut out = crate::bridge_gen::NativeSettings::default().to_json();
                 if let Some(obj) = out.as_object_mut() {
                     obj.insert("ok".to_string(), json!(true));
                     obj.insert("found".to_string(), json!(true));
                     obj.insert("dev_mode".to_string(), json!(true));
+                    if ctx.policy.turbo_mode {
+                        obj.insert("turbo_mode".to_string(), json!(true));
+                        obj.insert("confirm_external_mutations".to_string(), json!(false));
+                    }
                 }
                 (200, "OK", out)
             } else {
@@ -1223,6 +1236,7 @@ pub fn handle_request(
                         "ok": true,
                         "dev_mode": s.dev_mode,
                         "confirm_external_mutations": s.confirm_external_mutations,
+                        "turbo_mode": s.turbo_mode,
                     }),
                 )
             } else {
@@ -1253,10 +1267,23 @@ pub fn handle_request(
         }
         ("POST", "/agent/approval") => {
             let id = body_json.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-            let allow = body_json
-                .get("allow")
-                .and_then(|x| x.as_bool().or_else(|| x.as_i64().map(|n| n != 0)))
-                .unwrap_or(false);
+            let decision_num = body_json.get("decision").and_then(|x| x.as_i64());
+            let always = body_json
+                .get("always")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false)
+                || decision_num == Some(crate::bridge_gen::APPROVAL_DECISION_ALLOW_ALWAYS);
+            let allow = always
+                || body_json
+                    .get("allow")
+                    .and_then(|x| x.as_bool().or_else(|| x.as_i64().map(|n| n != 0)))
+                    .unwrap_or(false)
+                || decision_num.map(|n| n != 0).unwrap_or(false);
+            if always && ctx.policy.fs_enabled() {
+                let mut s = agent::load_native_settings().unwrap_or_default();
+                s.confirm_external_mutations = false;
+                let _ = agent::save_native_settings(s);
+            }
             let resolved = if id > 0 {
                 agent::approval::resolve_pending_approval(id, allow)
             } else {
@@ -1265,7 +1292,7 @@ pub fn handle_request(
             (
                 200,
                 "OK",
-                json!({ "ok": resolved, "id": id, "allow": allow }),
+                json!({ "ok": resolved, "id": id, "allow": allow, "always": always }),
             )
         }
         ("GET", "/git/status") | ("POST", "/git/status") => {

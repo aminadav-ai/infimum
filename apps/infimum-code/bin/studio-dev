@@ -189,6 +189,35 @@ if [[ "$RUN_TESTS" -eq 1 ]]; then
   echo "[studio-dev] tests:          passed ($(fmt_dur "$t0"))"
 fi
 
+# 6b. Sync desktop entry and icon for Ubuntu Dock / GNOME Wayland
+if [[ -f "$APP_DIR/capsule/icon.png" && -n "${HOME:-}" ]]; then
+  ICON_DST="$HOME/.local/share/icons/hicolor/256x256/apps/infimum-code.png"
+  DESKTOP_DST="$HOME/.local/share/applications/infimum-code.desktop"
+  mkdir -p "$(dirname "$ICON_DST")" "$(dirname "$DESKTOP_DST")" 2>/dev/null || true
+  if [[ ! -f "$ICON_DST" || "$APP_DIR/capsule/icon.png" -nt "$ICON_DST" ]]; then
+    cp -f "$APP_DIR/capsule/icon.png" "$ICON_DST" 2>/dev/null || true
+  fi
+  DESKTOP_CONTENT="[Desktop Entry]
+Type=Application
+Name=Infimum Code
+Comment=Z3-Verified Native AI IDE built on Infimum Lang
+Exec=$APP_DIR/bin/infimum-code %F
+Icon=$APP_DIR/capsule/icon.png
+Terminal=false
+Categories=Development;IDE;
+StartupNotify=true
+StartupWMClass=infimum-code
+NoDisplay=false
+"
+  if [[ ! -f "$DESKTOP_DST" ]] || [[ "$(cat "$DESKTOP_DST" 2>/dev/null)" != "${DESKTOP_CONTENT%$'\n'}" ]]; then
+    printf '%s' "$DESKTOP_CONTENT" >"$DESKTOP_DST" 2>/dev/null || true
+    chmod 644 "$DESKTOP_DST" 2>/dev/null || true
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+    echo "[studio-dev] desktop icon:   installed ($DESKTOP_DST)"
+  fi
+fi
+
 echo "[studio-dev] build complete in $(fmt_dur "$TOTAL_START")"
 
 if [[ "$RESTART" -eq 0 ]]; then

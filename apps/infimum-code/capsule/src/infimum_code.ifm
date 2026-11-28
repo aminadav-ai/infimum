@@ -182,6 +182,7 @@ export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu, Net]-> i64 {
   StudioMem.approval_id = 0;
   StudioMem.approval_loaded_id = 0;
   StudioMem.confirm_external_mutations = 1;
+  StudioMem.turbo_mode = 0;
   buf_clear(StudioMem::agent_status_buf);
   buf_clear(StudioMem::active_hdr_buf);
   reset_messages();

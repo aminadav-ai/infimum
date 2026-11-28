@@ -31,12 +31,14 @@ pub enum SetAct {
   CompactConv = 333,
   DevMode = 334,
   ConfirmMutations = 335,
+  TurboMode = 336,
 }
 
 pub enum ApprAct {
   None = 0,
   Deny = 601,
   Allow = 602,
+  AllowAlways = 603,
 }
 
 pub enum CtxAct {
@@ -219,9 +221,13 @@ forma SettingsModal(
   dev_col: i64,
   is_confirm_mut: bool,
   confirm_lbl: str,
-  confirm_col: i64
+  confirm_col: i64,
+  is_turbo_mode: bool,
+  turbo_lbl: str,
+  turbo_col: i64,
+  col_turbo: i64
 )
-  req vw >= 680 && vh >= 460 && mw >= 460 && mh >= 560 && row_h >= 42 && row_h <= 58 && s_bh >= 28 && s_bh <= 42 && row_h >= s_bh && tbtn_w >= 110 && tbtn_w <= 170 && seg_w >= 120 && seg_w <= 210 && cur_w >= 86 && cur_w <= 130 && rst_w >= 76 && rst_w <= 110 && cdd_w >= 118 && cdd_rh >= 28 && cdd_rh <= 44 && s_h >= 12 && s_h <= 24 && s_l >= 10 && s_l <= 20 && s_s >= 10 && s_s <= 18 && mh >= 5 * row_h + s_bh + s_s + 280
+  req vw >= 680 && vh >= 460 && mw >= 460 && mh >= 640 && row_h >= 42 && row_h <= 58 && s_bh >= 28 && s_bh <= 42 && row_h >= s_bh && tbtn_w >= 110 && tbtn_w <= 170 && seg_w >= 120 && seg_w <= 210 && cur_w >= 86 && cur_w <= 130 && rst_w >= 76 && rst_w <= 110 && cdd_w >= 118 && cdd_rh >= 28 && cdd_rh <= 44 && s_h >= 12 && s_h <= 24 && s_l >= 10 && s_l <= 20 && s_s >= 10 && s_s <= 18 && mh >= 6 * row_h + s_bh + s_s + 310
   -[Mem]-> i64
 {
   Box(x: 0, y: 0, w: vw, h: vh, bg: col_scrim) {
@@ -319,7 +325,7 @@ forma SettingsModal(
             }
           }
         } else {
-          Col(gap: 6) {
+          Col(h: 3 * row_h + 12, gap: 6) {
             Row(h: row_h, gap: 8, align: center) {
               Col(grow: 1, gap: 2) {
                 Text("Режим разработчика (Dev)", size: s_l, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
@@ -338,6 +344,16 @@ forma SettingsModal(
               Row(w: tbtn_w, h: s_bh, gap: 8, align: center, justify: end) {
                 Text(confirm_lbl, size: s_s, style: 1, color: confirm_col, shrink: 1, overflow: ellipsis)
                 Toggle(id: 335, w: 46, h: 24, checked: is_confirm_mut, bg: bg_bg, border_col: col_brd, accent: col_ok, on_change: SetAct::ConfirmMutations)
+              }
+            }
+            Row(h: row_h, gap: 8, align: center) {
+              Col(grow: 1, gap: 2) {
+                Text("Режим Turbo (всё разрешено)", size: s_l, style: 1, color: col_turbo, shrink: 1, overflow: ellipsis)
+                Text("Включает Dev, снимает подтверждения и удваивает лимит шагов", size: s_s, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
+              }
+              Row(w: tbtn_w, h: s_bh, gap: 8, align: center, justify: end) {
+                Text(turbo_lbl, size: s_s, style: 1, color: turbo_col, shrink: 1, overflow: ellipsis)
+                Toggle(id: 336, w: 46, h: 24, checked: is_turbo_mode, bg: bg_bg, border_col: col_brd, accent: col_turbo, on_change: SetAct::TurboMode)
               }
             }
           }
@@ -361,12 +377,13 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
     let s_bh = 34;
     let row_h = 48;
     let is_online = StudioMem.online_mode == 1;
-    let is_dev_mode = StudioMem.dev_mode == 1;
-    let is_confirm_mut = StudioMem.confirm_external_mutations == 1;
-    let min_mh = max_i64(560, 5 * row_h + s_bh + s_s + 280);
-    let target_mh = 650;
+    let is_turbo_mode = StudioMem.turbo_mode == 1;
+    let is_dev_mode = StudioMem.dev_mode == 1 || is_turbo_mode;
+    let is_confirm_mut = StudioMem.confirm_external_mutations == 1 && !is_turbo_mode;
+    let min_mh = max_i64(640, 6 * row_h + s_bh + s_s + 310);
+    let target_mh = 700;
     let mw = clamp_i64(640, 460, safe_w - 40);
-    let mh = clamp_i64(target_mh, min_mh, max_i64(min_mh, safe_h - 32));
+    let mh = clamp_i64(target_mh, min_mh, max_i64(min_mh, safe_h - 24));
     let mx0 = (safe_w - mw) / 2;
     let my0 = (safe_h - mh) / 2;
 
@@ -385,6 +402,9 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
     let dev_col = if is_dev_mode { col_emerald() } else { col_muted(th) };
     let confirm_lbl = if is_confirm_mut { "Вкл" } else { "Выкл" };
     let confirm_col = if is_confirm_mut { col_emerald() } else { col_muted(th) };
+    let col_turbo = pack_rgba(245, 158, 11, 255);
+    let turbo_lbl = if is_turbo_mode { "TURBO" } else { "Выкл" };
+    let turbo_col = if is_turbo_mode { col_turbo } else { col_muted(th) };
     let sel_p = clamp_i64(StudioMem.keys_sel_prov, 0, 6);
     let cur_has = ((StudioMem.keys_status_mask >> sel_p) & 1) == 1;
     let key_ph = if cur_has { "Ключ задан (вставьте новый Ctrl+V)" } else { "Вставьте API-ключ (Ctrl+V)..." };
@@ -395,7 +415,7 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
       safe_w, safe_h, mx0, my0, mw, mh, row_h, s_bh, tbtn_w, seg_w, cur_w, rst_w,
       cdd_x, cdd_y, cdd_w, cdd_rh, cur_dd_open,
       pack_rgba(0, 0, 0, 150), col_surf(th), col_surf2(th), col_bg(th), col_border(th),
-      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph, is_online, is_dev_mode, dev_lbl, dev_col, is_confirm_mut, confirm_lbl, confirm_col
+      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph, is_online, is_dev_mode, dev_lbl, dev_col, is_confirm_mut, confirm_lbl, confirm_col, is_turbo_mode, turbo_lbl, turbo_col, col_turbo
     );
     let fc = forma_cursor();
     if fc != 0 {
@@ -458,7 +478,22 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
         save_settings();
       },
       SetAct::ConfirmMutations => {
-        StudioMem.confirm_external_mutations = if StudioMem.confirm_external_mutations == 0 { 1 } else { 0 };
+        if StudioMem.turbo_mode == 1 {
+          StudioMem.turbo_mode = 0;
+          StudioMem.confirm_external_mutations = 1;
+        } else {
+          StudioMem.confirm_external_mutations = if StudioMem.confirm_external_mutations == 0 { 1 } else { 0 };
+        }
+        save_settings();
+      },
+      SetAct::TurboMode => {
+        if StudioMem.turbo_mode == 0 {
+          StudioMem.turbo_mode = 1;
+          StudioMem.dev_mode = 1;
+          StudioMem.confirm_external_mutations = 0;
+        } else {
+          StudioMem.turbo_mode = 0;
+        }
         save_settings();
       },
       _ => {},
@@ -826,24 +861,28 @@ fn draw_approval_body(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem]->
 }
 
 forma ApprovalModal(
-  vw: i64, vh: i64, mx: i64, my: i64, mw: i64, mh: i64,
-  scrim: i64, bg_surf: i64, bg_surf2: i64, col_brd: i64, col_txt: i64, col_ok: i64, col_ok_hov: i64, col_warn: i64,
+  vw: i64, vh: i64, px: i64, py: i64, pw: i64, ph: i64,
+  scrim: i64, bg_surf: i64, bg_surf2: i64, col_brd: i64, col_txt: i64,
+  col_ok: i64, col_ok_hov: i64, col_warn: i64, col_warn_hov: i64,
   btn_sz: i64
 )
-  req vw >= 520 && vh >= 320 && mw >= 420 && mh >= 210 && mx >= 0 && my >= 0 && mx + mw <= vw && my + mh <= vh && btn_sz >= 11 && btn_sz <= 18
+  req vw >= 580 && vh >= 320 && pw >= 520 && ph >= 220 && px >= 0 && py >= 0 && px + pw <= vw && py + ph <= vh && btn_sz >= 11 && btn_sz <= 18
   -[Mem]-> i64 {
   Box(x: 0, y: 0, w: vw, h: vh, bg: scrim) {
-    Overlay(x: mx, y: my, w: mw, h: mh, radius: 14, border: 1, shadow: 14, bg: bg_surf, border_col: col_warn, pad: 18) {
+    Overlay(x: px, y: py, w: pw, h: ph, radius: 14, border: 1, shadow: 14, bg: bg_surf, border_col: col_warn, pad: 18, visible: true) {
       Col(grow: 1, gap: 12) {
         Box(grow: 1) {
           Slot(render: draw_approval_body)
         }
         Row(h: 36, gap: 10, justify: end, align: center) {
-          Button(id: 601, w: 124, h: 34, pad_x: 10, radius: 8, bg: bg_surf2, hover_bg: col_brd, border: 1, border_col: col_brd, align: center, on_click: ApprAct::Deny) {
+          Button(id: 601, w: 116, h: 34, pad_x: 10, radius: 8, bg: bg_surf2, hover_bg: col_brd, border: 1, border_col: col_brd, align: center, on_click: ApprAct::Deny) {
             Text("Отклонить", size: btn_sz, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
           }
-          Button(id: 602, w: 136, h: 34, pad_x: 10, radius: 8, bg: col_ok, hover_bg: col_ok_hov, align: center, on_click: ApprAct::Allow) {
-            Text("Разрешить", size: btn_sz, style: 1, color: pack_rgba(255, 255, 255, 255), align: center, shrink: 1, overflow: ellipsis)
+          Button(id: 602, w: 148, h: 34, pad_x: 10, radius: 8, bg: col_ok, hover_bg: col_ok_hov, align: center, on_click: ApprAct::Allow) {
+            Text("Разрешить 1 раз", size: btn_sz, style: 1, color: pack_rgba(255, 255, 255, 255), align: center, shrink: 1, overflow: ellipsis)
+          }
+          Button(id: 603, w: 170, h: 34, pad_x: 10, radius: 8, bg: col_warn, hover_bg: col_warn_hov, align: center, on_click: ApprAct::AllowAlways) {
+            Text("Разрешить всегда", size: btn_sz, style: 1, color: pack_rgba(18, 18, 22, 255), align: center, shrink: 1, overflow: ellipsis)
           }
         }
       }
@@ -854,20 +893,21 @@ forma ApprovalModal(
 pub fn render_approval_modal(w: i64, h: i64) -[Mem, Net]-> unit {
   if StudioMem.approval_id > 0 {
     let th = StudioMem.theme;
-    let safe_w = clamp_i64(w, 520, 4096);
+    let safe_w = clamp_i64(w, 580, 4096);
     let safe_h = clamp_i64(h, 320, 2160);
-    let mw = clamp_i64(540, 420, safe_w - 40);
-    let mh = clamp_i64(236, 210, safe_h - 40);
-    let mx0 = (safe_w - mw) / 2;
-    let my0 = (safe_h - mh) / 2;
+    let pw = clamp_i64(580, 520, safe_w - 40);
+    let ph = clamp_i64(240, 220, safe_h - 40);
+    let px = (safe_w - pw) / 2;
+    let py = (safe_h - ph) / 2;
     let btn_sz = clamp_i64(sf(13), 11, 18);
-    let col_warn = pack_rgba(245, 158, 11, 220);
+    let col_warn = pack_rgba(245, 158, 11, 240);
+    let col_warn_hov = pack_rgba(251, 191, 36, 255);
 
     forma_set_pointer(StudioMem.frame_mx, StudioMem.frame_my, StudioMem.frame_m_clicked, 0);
     let act = ApprovalModal(
-      safe_w, safe_h, mx0, my0, mw, mh,
+      safe_w, safe_h, px, py, pw, ph,
       pack_rgba(0, 0, 0, 165), col_surf(th), col_surf2(th), col_border(th), col_text(th),
-      col_emerald(), pack_rgba(16, 185, 129, 255), col_warn,
+      col_emerald(), pack_rgba(16, 185, 129, 255), col_warn, col_warn_hov,
       btn_sz
     );
     if forma_hovered() {
@@ -877,6 +917,9 @@ pub fn render_approval_modal(w: i64, h: i64) -[Mem, Net]-> unit {
       daemon::approval_decide(StudioMem.approval_id, 0);
     } else if act == ApprAct::Allow {
       daemon::approval_decide(StudioMem.approval_id, 1);
+    } else if act == ApprAct::AllowAlways {
+      StudioMem.confirm_external_mutations = 0;
+      daemon::approval_decide(StudioMem.approval_id, 2);
     }
   }
 }

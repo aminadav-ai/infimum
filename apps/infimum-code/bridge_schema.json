@@ -55,6 +55,15 @@
       "max": 1,
       "capsule_field": "confirm_external_mutations",
       "json_key": "confirm_external_mutations"
+    },
+    {
+      "name": "turbo_mode",
+      "type": "bool",
+      "default": false,
+      "min": 0,
+      "max": 1,
+      "capsule_field": "turbo_mode",
+      "json_key": "turbo_mode"
     }
   ],
   "endpoints": {
@@ -67,6 +76,7 @@
   "constants": {
     "APPROVAL_DECISION_DENY": 0,
     "APPROVAL_DECISION_ALLOW": 1,
+    "APPROVAL_DECISION_ALLOW_ALWAYS": 2,
     "SIDE_TAB_CONVS": 0,
     "SIDE_TAB_FILES": 1,
     "SIDE_TAB_DIFF": 2
