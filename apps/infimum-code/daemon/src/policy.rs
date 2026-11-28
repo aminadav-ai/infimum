@@ -31,16 +31,14 @@ impl CapabilityPolicy {
     }
 
     pub fn is_turbo_mode(&self) -> bool {
-        if self.turbo_mode {
-            return true;
-        }
         #[cfg(test)]
         {
-            false
+            self.turbo_mode
         }
         #[cfg(not(test))]
         {
-            std::env::var("INFIMUM_TURBO_MODE")
+            self.turbo_mode
+                || std::env::var("INFIMUM_TURBO_MODE")
                 .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
                 .unwrap_or(false)
                 || crate::agent::load_native_settings()
@@ -50,16 +48,15 @@ impl CapabilityPolicy {
     }
 
     pub fn is_dev_mode(&self) -> bool {
-        if self.dev_mode || self.is_turbo_mode() {
-            return true;
-        }
         #[cfg(test)]
         {
-            false
+            self.dev_mode || self.is_turbo_mode()
         }
         #[cfg(not(test))]
         {
-            std::env::var("INFIMUM_DEV_MODE")
+            self.dev_mode
+                || self.is_turbo_mode()
+                || std::env::var("INFIMUM_DEV_MODE")
                 .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
                 .unwrap_or(false)
                 || crate::agent::load_native_settings()

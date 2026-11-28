@@ -1462,7 +1462,7 @@ fn turbo_mode_policy_and_bridge_roundtrip_work() {
         turbo_mode: true,
     };
     let wire = s.to_ifm_wire(true, true);
-    let parts: Vec<&str> = wire.trim().split_whitespace().collect();
+    let parts: Vec<&str> = wire.split_whitespace().collect();
     assert_eq!(parts[0], "1");
     let decoded = crate::bridge_gen::NativeSettings::from_ifm_wire(
         &parts[1..].join(" "),

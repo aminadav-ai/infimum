@@ -444,16 +444,15 @@ pub(in crate::agent) fn is_unsafe_fallback_command(cmd: &str) -> bool {
     let normalized = lower
         .replace("&&", "\n")
         .replace("||", "\n")
-        .replace(';', "\n")
-        .replace('|', "\n")
+        .replace([';', '|'], "\n")
         .replace("$(", "\n")
         .replace('`', "\n");
     for seg in normalized.lines() {
         let mut iter = seg.split_whitespace().peekable();
         while let Some(&w) = iter.peek() {
-            if w.contains('=') && !w.starts_with('-') {
-                iter.next();
-            } else if matches!(w, "env" | "time" | "command" | "nohup" | "nice") {
+            if (w.contains('=') && !w.starts_with('-'))
+                || matches!(w, "env" | "time" | "command" | "nohup" | "nice")
+            {
                 iter.next();
             } else {
                 break;

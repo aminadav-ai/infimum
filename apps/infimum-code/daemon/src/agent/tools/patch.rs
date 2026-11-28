@@ -74,15 +74,15 @@ fn parse_unified_diff(patch_text: &str) -> Result<Vec<FilePatch>, String> {
     while i < lines.len() {
         let line = lines[i];
         // Skip preamble lines (`diff --git ...`, `index ...`, `new file mode ...`, blank lines)
-        if line.starts_with("--- ") {
-            if i + 1 >= lines.len() || !lines[i + 1].starts_with("+++ ") {
+        if let Some(old_raw) = line.strip_prefix("--- ") {
+            let Some(new_raw) = lines.get(i + 1).and_then(|l| l.strip_prefix("+++ ")) else {
                 return Err(format!(
                     "Malformed unified diff at line {}: '--- ' not followed by '+++ '",
                     i + 1
                 ));
-            }
-            let old_path = strip_diff_path_header(&line[4..]);
-            let new_path = strip_diff_path_header(&lines[i + 1][4..]);
+            };
+            let old_path = strip_diff_path_header(old_raw);
+            let new_path = strip_diff_path_header(new_raw);
             if old_path.is_none() && new_path.is_none() {
                 return Err(format!(
                     "Malformed unified diff at line {}: both old and new paths are /dev/null",

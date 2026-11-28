@@ -153,7 +153,7 @@ def generate_rust(schema: dict) -> str:
     lines.append("    }")
     lines.append("")
 
-    lines.append("    pub fn to_json(&self) -> Value {")
+    lines.append("    pub fn to_json(self) -> Value {")
     lines.append("        json!({")
     for field in settings:
         name = field["name"]
@@ -171,21 +171,22 @@ def generate_rust(schema: dict) -> str:
     lines.append("        Self {")
     for idx, field in enumerate(settings):
         name = field["name"]
+        get_expr = "nums.first()" if idx == 0 else f"nums.get({idx})"
         if field["type"] == "bool":
             lines.append(
-                f"            {name}: nums.get({idx}).map(|&n| n != 0).unwrap_or(prev.{name}),"
+                f"            {name}: {get_expr}.map(|&n| n != 0).unwrap_or(prev.{name}),"
             )
         else:
             lo = int(field["min"])
             hi = int(field["max"])
             lines.append(
-                f"            {name}: nums.get({idx}).copied().unwrap_or(prev.{name}).clamp({lo}, {hi}),"
+                f"            {name}: {get_expr}.copied().unwrap_or(prev.{name}).clamp({lo}, {hi}),"
             )
     lines.append("        }")
     lines.append("    }")
     lines.append("")
 
-    lines.append("    pub fn to_ifm_wire(&self, found: bool, dev_mode_effective: bool) -> String {")
+    lines.append("    pub fn to_ifm_wire(self, found: bool, dev_mode_effective: bool) -> String {")
     lines.append("        if !found {")
     lines.append('            return "0\\n".to_string();')
     lines.append("        }")

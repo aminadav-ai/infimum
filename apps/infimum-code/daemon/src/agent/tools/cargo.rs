@@ -188,14 +188,13 @@ pub(in crate::agent) fn parse_cargo_json_output(raw: &str, max_diagnostics: usiz
             continue;
         }
         // Keep genuine cargo errors (e.g. Cargo.toml parse error / missing package) while skipping noise
-        if trimmed.starts_with("error:")
+        if (trimmed.starts_with("error:")
             || trimmed.starts_with("error[")
             || trimmed.starts_with("Caused by:")
-            || trimmed.starts_with("panicked at")
+            || trimmed.starts_with("panicked at"))
+            && out.non_json_tail.len() < 30
         {
-            if out.non_json_tail.len() < 30 {
-                out.non_json_tail.push(trimmed.to_string());
-            }
+            out.non_json_tail.push(trimmed.to_string());
         }
     }
 

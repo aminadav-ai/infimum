@@ -185,6 +185,7 @@ if [[ "$RUN_TESTS" -eq 1 ]]; then
   if [[ -f "$BRIDGE_GEN" ]]; then
     python3 "$BRIDGE_GEN" --check
   fi
+  cargo clippy -p infimum-agentd --all-targets --quiet -- -D warnings
   cargo test -p infimum-agentd --quiet
   echo "[studio-dev] tests:          passed ($(fmt_dur "$t0"))"
 fi

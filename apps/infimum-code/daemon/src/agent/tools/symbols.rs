@@ -905,8 +905,7 @@ fn lex_js_lines(src: &str) -> Vec<JsLineInfo> {
 /// Find the 1-based end line of a JS/TS block starting at 0-based `start_idx` using pre-lexed depths.
 fn js_block_end_line(lexed: &[JsLineInfo], start_idx: usize, base_depth: i32) -> usize {
     let mut saw_open = false;
-    for j in start_idx..lexed.len() {
-        let info = &lexed[j];
+    for (j, info) in lexed.iter().enumerate().skip(start_idx) {
         if info.code.contains('{') || info.depth_after > base_depth {
             saw_open = true;
         }

@@ -115,7 +115,7 @@ impl NativeSettings {
         }
     }
 
-    pub fn to_json(&self) -> Value {
+    pub fn to_json(self) -> Value {
         json!({
             "theme": self.theme,
             "font_scale_pct": self.font_scale_pct,
@@ -133,7 +133,7 @@ impl NativeSettings {
             .filter_map(|t| t.parse::<i32>().ok())
             .collect();
         Self {
-            theme: nums.get(0).copied().unwrap_or(prev.theme).clamp(0, 1),
+            theme: nums.first().copied().unwrap_or(prev.theme).clamp(0, 1),
             font_scale_pct: nums.get(1).copied().unwrap_or(prev.font_scale_pct).clamp(80, 200),
             currency_id: nums.get(2).copied().unwrap_or(prev.currency_id).clamp(0, 2),
             model_idx: nums.get(3).copied().unwrap_or(prev.model_idx).clamp(0, 21),
@@ -143,7 +143,7 @@ impl NativeSettings {
         }
     }
 
-    pub fn to_ifm_wire(&self, found: bool, dev_mode_effective: bool) -> String {
+    pub fn to_ifm_wire(self, found: bool, dev_mode_effective: bool) -> String {
         if !found {
             return "0\n".to_string();
         }

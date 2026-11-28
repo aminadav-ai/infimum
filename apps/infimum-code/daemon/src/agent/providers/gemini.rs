@@ -324,7 +324,6 @@ where
     let mut total_out_tok: u64 = 0;
     let mut final_reply = String::new();
     let mut tool_steps = 0usize;
-    let mut tool_rounds_done = 0usize;
     let mut action_log: Vec<String> = Vec::new();
 
     let pid = std::process::id();
@@ -370,7 +369,7 @@ where
         // Cache-aligned non-destructive compaction: advances prefix compaction every 4 rounds
         // so Gemini Implicit Context Caching hits on 3 out of 4 consecutive rounds.
         let mut req_contents = contents.clone();
-        let keep_recent = cache_aligned_keep_recent(tool_rounds_done, 4, 4);
+        let keep_recent = cache_aligned_keep_recent(step, 4, 4);
         compact_old_tool_responses(&mut req_contents, keep_recent);
 
         let build_req_body = |with_thoughts: bool| -> Value {
@@ -548,7 +547,6 @@ where
             "role": "user",
             "parts": fn_responses,
         }));
-        tool_rounds_done += 1;
     }
 
     let _ = fs::remove_file(&req_path);
