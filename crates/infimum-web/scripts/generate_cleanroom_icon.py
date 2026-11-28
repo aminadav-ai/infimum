@@ -1,169 +1,183 @@
 #!/usr/bin/env python3
 """
-100% Clean-Room Procedural Mathematical Icon Generator for Infimum Code.
-Copyright (c) 2026 Yehuda Aminadav. Zero external assets, zero stock art, zero AI datasets.
-Synthesizes multi-resolution RGBA PNGs purely from analytical SDF equations.
+Generate canonical Infimum application icons matching infimum-site/public/favicon.svg.
+
+Design (64x64 viewBox):
+- Rounded square plate: x=2, y=2, w=60, h=60, rx=14, fill=#0b0e14, stroke=#263042 (width=2)
+- Upper white circle:   cx=32, cy=24, r=10, fill=#ffffff
+- Lower white pill bar: x=14, y=43, w=36, h=6, rx=3, fill=#ffffff
+
+Uses pure Python stdlib with 8x8 supersampling (64 samples/pixel) for crisp anti-aliased
+PNGs across all standard desktop/PWA sizes, plus writes the canonical SVG.
 """
 
 import math
+import shutil
 import struct
 import zlib
 from pathlib import Path
 
+SVG_CONTENT = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0b0e14" stroke="#263042" stroke-width="2"/>
+  <circle cx="32" cy="24" r="10" fill="#ffffff"/>
+  <rect x="14" y="43" width="36" height="6" rx="3" fill="#ffffff"/>
+</svg>
+"""
 
-def write_rgba_png(path: Path, width: int, height: int, rgba_bytes: bytes) -> None:
+BG_COLOR = (0x0B, 0x0E, 0x14, 0xFF)
+STROKE_COLOR = (0x26, 0x30, 0x42, 0xFF)
+FG_COLOR = (0xFF, 0xFF, 0xFF, 0xFF)
+
+
+def sd_rounded_box(px: float, py: float, cx: float, cy: float, hx: float, hy: float, r: float) -> float:
+    """Exact signed distance to a centered rounded rectangle (negative inside)."""
+    qx = abs(px - cx) - (hx - r)
+    qy = abs(py - cy) - (hy - r)
+    ox = max(qx, 0.0)
+    oy = max(qy, 0.0)
+    return math.hypot(ox, oy) + min(max(qx, qy), 0.0) - r
+
+
+def sd_circle(px: float, py: float, cx: float, cy: float, r: float) -> float:
+    return math.hypot(px - cx, py - cy) - r
+
+
+def over(dst: tuple[float, float, float, float], src: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """Porter-Duff source-over compositing in straight RGBA (0..255)."""
+    sa = src[3] / 255.0
+    da = dst[3] / 255.0
+    out_a = sa + da * (1.0 - sa)
+    if out_a <= 1e-6:
+        return (0.0, 0.0, 0.0, 0.0)
+    inv_a = 1.0 / out_a
+    r = (src[0] * sa + dst[0] * da * (1.0 - sa)) * inv_a
+    g = (src[1] * sa + dst[1] * da * (1.0 - sa)) * inv_a
+    b = (src[2] * sa + dst[2] * da * (1.0 - sa)) * inv_a
+    return (r, g, b, out_a * 255.0)
+
+
+def sample_point(u: float, v: float) -> tuple[float, float, float, float]:
+    """Evaluate exact SVG layers at viewBox coordinates (u, v) in [0, 64]."""
+    # Base rounded rect: x=2..62, y=2..62 => center=(32,32), half=(30,30), rx=14
+    # SVG stroke-width=2 is centered on the path: outer at +1, inner at -1.
+    d_plate = sd_rounded_box(u, v, 32.0, 32.0, 30.0, 30.0, 14.0)
+
+    col = (0.0, 0.0, 0.0, 0.0)
+    if d_plate <= 0.0:
+        col = (float(BG_COLOR[0]), float(BG_COLOR[1]), float(BG_COLOR[2]), 255.0)
+    if abs(d_plate) <= 1.0:
+        col = over(col, (float(STROKE_COLOR[0]), float(STROKE_COLOR[1]), float(STROKE_COLOR[2]), 255.0))
+
+    # White circle: cx=32, cy=24, r=10
+    d_circle = sd_circle(u, v, 32.0, 24.0, 10.0)
+    # White pill bar: x=14..50, y=43..49 => center=(32,46), half=(18,3), rx=3
+    d_bar = sd_rounded_box(u, v, 32.0, 46.0, 18.0, 3.0, 3.0)
+
+    if d_circle <= 0.0 or d_bar <= 0.0:
+        col = over(col, (float(FG_COLOR[0]), float(FG_COLOR[1]), float(FG_COLOR[2]), 255.0))
+
+    return col
+
+
+def render_icon(size: int, ss: int = 8) -> bytes:
+    """Render size x size RGBA8 icon with ss x ss supersampling."""
+    scale = 64.0 / size
+    inv_ss = 1.0 / ss
+    inv_n = 1.0 / (ss * ss)
+    out = bytearray(size * size * 4)
+
+    for py in range(size):
+        row_off = py * size * 4
+        for px in range(size):
+            # Fast-path check at pixel center for completely flat interior/exterior pixels
+            cu = (px + 0.5) * scale
+            cv = (py + 0.5) * scale
+            d_plate = sd_rounded_box(cu, cv, 32.0, 32.0, 30.0, 30.0, 14.0)
+            d_circle = sd_circle(cu, cv, 32.0, 24.0, 10.0)
+            d_bar = sd_rounded_box(cu, cv, 32.0, 46.0, 18.0, 3.0, 3.0)
+            margin = scale * 1.5
+
+            if d_plate > 1.0 + margin:
+                # Fully transparent outside plate
+                continue
+            if d_plate < -1.0 - margin and d_circle > margin and d_bar > margin:
+                # Fully inside dark background plate
+                idx = row_off + px * 4
+                out[idx : idx + 4] = bytes(BG_COLOR)
+                continue
+            if d_circle < -margin or d_bar < -margin:
+                # Fully inside white foreground glyph
+                idx = row_off + px * 4
+                out[idx : idx + 4] = bytes(FG_COLOR)
+                continue
+
+            # Supersample boundary pixels (premultiplied accumulation)
+            acc_r = acc_g = acc_b = acc_a = 0.0
+            for sy in range(ss):
+                v = (py + (sy + 0.5) * inv_ss) * scale
+                for sx in range(ss):
+                    u = (px + (sx + 0.5) * inv_ss) * scale
+                    r, g, b, a = sample_point(u, v)
+                    af = a / 255.0
+                    acc_r += r * af
+                    acc_g += g * af
+                    acc_b += b * af
+                    acc_a += af
+
+            avg_a = acc_a * inv_n
+            idx = row_off + px * 4
+            if avg_a > 1e-6:
+                inv_avg_a = 1.0 / (avg_a * ss * ss)
+                out[idx] = max(0, min(255, int(round(acc_r * inv_avg_a))))
+                out[idx + 1] = max(0, min(255, int(round(acc_g * inv_avg_a))))
+                out[idx + 2] = max(0, min(255, int(round(acc_b * inv_avg_a))))
+                out[idx + 3] = max(0, min(255, int(round(avg_a * 255.0))))
+    return bytes(out)
+
+
+def write_png(path: Path, width: int, height: int, rgba: bytes) -> None:
     def chunk(tag: bytes, data: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(data))
-            + tag
-            + data
-            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        )
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
 
-    raw_rows = bytearray()
+    raw = bytearray()
     stride = width * 4
     for y in range(height):
-        raw_rows.append(0)  # Filter type 0 (None)
-        raw_rows.extend(rgba_bytes[y * stride : (y + 1) * stride])
+        raw.append(0)  # Filter type 0 (None)
+        raw.extend(rgba[y * stride : (y + 1) * stride])
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
     png = (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(bytes(raw_rows), 9))
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
         + chunk(b"IEND", b"")
     )
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(png)
 
 
-def sd_round_box(px: float, py: float, bx: float, by: float, r: float) -> float:
-    qx = abs(px) - bx + r
-    qy = abs(py) - by + r
-    out = math.hypot(max(qx, 0.0), max(qy, 0.0))
-    return min(max(qx, qy), 0.0) + out - r
-
-
-def sd_segment(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
-    pax, pay = px - ax, py - ay
-    bax, bay = bx - ax, by - ay
-    denom = max(bax * bax + bay * bay, 1e-6)
-    h = max(0.0, min(1.0, (pax * bax + pay * bay) / denom))
-    return math.hypot(pax - bax * h, pay - bay * h)
-
-
-def smoothstep(e0: float, e1: float, x: float) -> float:
-    t = max(0.0, min(1.0, (x - e0) / (e1 - e0)))
-    return t * t * (3.0 - 2.0 * t)
-
-
-def render_icon(size: int) -> bytes:
-    buf = bytearray(size * size * 4)
-    inv = 2.0 / size
-    aa = 2.4 / size
-
-    # 3 Connected Semantic Graph Vertices (Apex, Bottom-Left, Bottom-Right) + Center Core
-    v_top = (0.0, -0.44)
-    v_bl = (-0.42, 0.34)
-    v_br = (0.42, 0.34)
-    v_mid = (0.0, 0.05)
-
-    edges = [
-        (v_top, v_bl),
-        (v_top, v_br),
-        (v_bl, v_br),
-        (v_top, v_mid),
-        (v_bl, v_mid),
-        (v_br, v_mid),
-    ]
-    nodes = [
-        (v_top[0], v_top[1], 0.135, (52, 211, 153)),   # Emerald Z3 Apex
-        (v_bl[0], v_bl[1], 0.12, (82, 152, 255)),      # Sapphire Flux Left
-        (v_br[0], v_br[1], 0.12, (82, 152, 255)),      # Sapphire Strata Right
-        (v_mid[0], v_mid[1], 0.095, (250, 204, 21)),   # Golden Core Proof Node
-    ]
-
-    idx = 0
-    for py_i in range(size):
-        ny = (py_i + 0.5) * inv - 1.0
-        for px_i in range(size):
-            nx = (px_i + 0.5) * inv - 1.0
-
-            # 1. Rounded Squircle Body
-            d_box = sd_round_box(nx, ny, 0.88, 0.88, 0.36)
-            alpha_box = 1.0 - smoothstep(-aa, aa, d_box)
-            if alpha_box <= 0.001:
-                idx += 4
-                continue
-
-            # Deep obsidian-sapphire radial + diagonal gradient
-            grad_t = max(0.0, min(1.0, (nx * 0.45 + ny * 0.65 + 0.85) / 1.7))
-            r = 11.0 * (1.0 - grad_t) + 24.0 * grad_t
-            g = 18.0 * (1.0 - grad_t) + 41.0 * grad_t
-            b = 36.0 * (1.0 - grad_t) + 78.0 * grad_t
-
-            # Subtle ambient emerald-blue inner aura
-            aura = math.exp(-3.2 * (nx * nx + (ny - 0.02) * (ny - 0.02)))
-            r += 16.0 * aura
-            g += 58.0 * aura
-            b += 92.0 * aura
-
-            # Outer crisp metallic rim
-            rim = (1.0 - smoothstep(-0.045, -0.015, d_box)) * smoothstep(-0.085, -0.045, d_box)
-            r = r * (1.0 - 0.55 * rim) + 96.0 * 0.55 * rim
-            g = g * (1.0 - 0.55 * rim) + 165.0 * 0.55 * rim
-            b = b * (1.0 - 0.55 * rim) + 250.0 * 0.55 * rim
-
-            # 2. Glowing Faceted Prism & Graph Edges
-            d_edge = 999.0
-            for (ax, ay), (bx, by) in edges:
-                d_edge = min(d_edge, sd_segment(nx, ny, ax, ay, bx, by))
-
-            glow = math.exp(-18.0 * max(d_edge, 0.0)) * 0.55
-            r += 52.0 * glow
-            g += 195.0 * glow
-            b += 245.0 * glow
-
-            line_cov = 1.0 - smoothstep(0.030 - aa, 0.030 + aa, d_edge)
-            if line_cov > 0.0:
-                lt = max(0.0, min(1.0, (ny + 0.45) / 0.85))
-                lr = 52.0 * (1.0 - lt) + 82.0 * lt
-                lg = 211.0 * (1.0 - lt) + 152.0 * lt
-                lb = 153.0 * (1.0 - lt) + 255.0 * lt
-                r = r * (1.0 - line_cov) + lr * line_cov
-                g = g * (1.0 - line_cov) + lg * line_cov
-                b = b * (1.0 - line_cov) + lb * line_cov
-
-            # 3. Crisp Luminous Graph Nodes with White Specular Centers
-            for cx, cy, rad, (nr, ng, nb) in nodes:
-                dn = math.hypot(nx - cx, ny - cy)
-                ncov = 1.0 - smoothstep(rad - aa, rad + aa, dn)
-                if ncov > 0.0:
-                    r = r * (1.0 - ncov) + nr * ncov
-                    g = g * (1.0 - ncov) + ng * ncov
-                    b = b * (1.0 - ncov) + nb * ncov
-                icov = 1.0 - smoothstep(rad * 0.42 - aa, rad * 0.42 + aa, dn)
-                if icov > 0.0:
-                    r = r * (1.0 - icov) + 248.0 * icov
-                    g = g * (1.0 - icov) + 252.0 * icov
-                    b = b * (1.0 - icov) + 255.0 * icov
-
-            buf[idx + 0] = min(255, max(0, int(round(r))))
-            buf[idx + 1] = min(255, max(0, int(round(g))))
-            buf[idx + 2] = min(255, max(0, int(round(b))))
-            buf[idx + 3] = min(255, max(0, int(round(alpha_box * 255.0))))
-            idx += 4
-
-    return bytes(buf)
-
-
 def main() -> None:
-    web_dir = Path(__file__).resolve().parent.parent / "web"
-    icons_dir = web_dir / "icons"
-    icons_dir.mkdir(parents=True, exist_ok=True)
+    crate_root = Path(__file__).resolve().parent.parent
+    repo_root = crate_root.parent.parent
+    out_dir = crate_root / "icons"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    svg_path = out_dir / "icon.svg"
+    svg_path.write_text(SVG_CONTENT, encoding="utf-8")
+    print(f"Generated {svg_path}")
+
     for sz in (512, 256, 192, 128, 64, 48):
-        out = icons_dir / f"icon-{sz}.png"
-        write_rgba_png(out, sz, sz, render_icon(sz))
-        print(f"Generated {out} ({out.stat().st_size} bytes)")
+        ss = 8 if sz <= 256 else 4
+        rgba = render_icon(sz, ss=ss)
+        out_path = out_dir / f"icon-{sz}.png"
+        write_png(out_path, sz, sz, rgba)
+        print(f"Generated {out_path} ({sz}x{sz})")
+
+    capsule_icon = repo_root / "apps" / "infimum-code" / "capsule" / "icon.png"
+    if capsule_icon.parent.is_dir():
+        shutil.copy2(out_dir / "icon-256.png", capsule_icon)
+        print(f"Synced    {capsule_icon} (256x256)")
 
 
 if __name__ == "__main__":

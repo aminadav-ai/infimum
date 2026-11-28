@@ -15,6 +15,7 @@
 #   --force        Rebuild all components regardless of timestamps
 #   --no-verify    Skip Z3 `infimum verify` step (faster UI iteration)
 #   --no-restart   Build only; do not restart running Infimum Code
+#   --force-restart Force restart even when invoked from inside infimum-agentd
 #   --test         Run `cargo test -p infimum-agentd` and bridge check after build
 #   --fg           Run restarted Infimum Code in foreground instead of background
 #   --no-dev-mode  Launch without --dev-mode (Developer Mode is ON by default here)
@@ -30,6 +31,7 @@ TARGET_REL="$REPO_ROOT/target/release"
 FORCE=0
 VERIFY=1
 RESTART=1
+FORCE_RESTART=0
 RUN_TESTS=0
 FOREGROUND=0
 DEV_MODE=1
@@ -40,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=1; shift ;;
     --no-verify) VERIFY=0; shift ;;
     --no-restart) RESTART=0; shift ;;
+    --force-restart) FORCE_RESTART=1; shift ;;
     --test) RUN_TESTS=1; shift ;;
     --fg) FOREGROUND=1; shift ;;
     --no-dev-mode) DEV_MODE=0; shift ;;
@@ -87,6 +90,22 @@ needs_rebuild() {
     elif [[ -f "$src" ]] && [[ "$src" -nt "$artifact" ]]; then
       return 0
     fi
+  done
+  return 1
+}
+
+# Returns 0 if this script was invoked as a child of an active `infimum-agentd` process.
+running_inside_agentd() {
+  local pid="$$"
+  local comm ppid
+  while [[ -n "$pid" && "$pid" -gt 1 ]]; do
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')" || break
+    if [[ "$comm" == "infimum-agentd" ]]; then
+      return 0
+    fi
+    ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || break
+    [[ "$ppid" == "$pid" ]] && break
+    pid="$ppid"
   done
   return 1
 }
@@ -192,29 +211,47 @@ fi
 
 # 6b. Sync desktop entry and icon for Ubuntu Dock / GNOME Wayland
 if [[ -f "$APP_DIR/capsule/icon.png" && -n "${HOME:-}" ]]; then
-  ICON_DST="$HOME/.local/share/icons/hicolor/256x256/apps/infimum-code.png"
+  HICOLOR_DIR="$HOME/.local/share/icons/hicolor"
+  ICONS_SRC_DIR="$REPO_ROOT/crates/infimum-web/icons"
   DESKTOP_DST="$HOME/.local/share/applications/infimum-code.desktop"
-  mkdir -p "$(dirname "$ICON_DST")" "$(dirname "$DESKTOP_DST")" 2>/dev/null || true
-  if [[ ! -f "$ICON_DST" || "$APP_DIR/capsule/icon.png" -nt "$ICON_DST" ]]; then
-    cp -f "$APP_DIR/capsule/icon.png" "$ICON_DST" 2>/dev/null || true
+  ICON_CHANGED=0
+  mkdir -p "$HICOLOR_DIR/256x256/apps" "$HICOLOR_DIR/scalable/apps" "$(dirname "$DESKTOP_DST")" 2>/dev/null || true
+  for sz in 48 64 128 256 512; do
+    src_png="$ICONS_SRC_DIR/icon-${sz}.png"
+    [[ "$sz" == "256" && ! -f "$src_png" ]] && src_png="$APP_DIR/capsule/icon.png"
+    if [[ -f "$src_png" ]]; then
+      dst_png="$HICOLOR_DIR/${sz}x${sz}/apps/infimum-code.png"
+      mkdir -p "$(dirname "$dst_png")" 2>/dev/null || true
+      if [[ ! -f "$dst_png" ]] || ! cmp -s "$src_png" "$dst_png"; then
+        cp -f "$src_png" "$dst_png" 2>/dev/null || true
+        ICON_CHANGED=1
+      fi
+    fi
+  done
+  if [[ -f "$ICONS_SRC_DIR/icon.svg" ]]; then
+    dst_svg="$HICOLOR_DIR/scalable/apps/infimum-code.svg"
+    if [[ ! -f "$dst_svg" ]] || ! cmp -s "$ICONS_SRC_DIR/icon.svg" "$dst_svg"; then
+      cp -f "$ICONS_SRC_DIR/icon.svg" "$dst_svg" 2>/dev/null || true
+      ICON_CHANGED=1
+    fi
   fi
   DESKTOP_CONTENT="[Desktop Entry]
 Type=Application
 Name=Infimum Code
 Comment=Z3-Verified Native AI IDE built on Infimum Lang
 Exec=$APP_DIR/bin/infimum-code %F
-Icon=$APP_DIR/capsule/icon.png
+Icon=infimum-code
 Terminal=false
 Categories=Development;IDE;
 StartupNotify=true
 StartupWMClass=infimum-code
 NoDisplay=false
 "
-  if [[ ! -f "$DESKTOP_DST" ]] || [[ "$(cat "$DESKTOP_DST" 2>/dev/null)" != "${DESKTOP_CONTENT%$'\n'}" ]]; then
+  if [[ "$ICON_CHANGED" -eq 1 ]] || [[ ! -f "$DESKTOP_DST" ]] || [[ "$(cat "$DESKTOP_DST" 2>/dev/null)" != "${DESKTOP_CONTENT%$'\n'}" ]]; then
     printf '%s' "$DESKTOP_CONTENT" >"$DESKTOP_DST" 2>/dev/null || true
     chmod 644 "$DESKTOP_DST" 2>/dev/null || true
     command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
-    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$HICOLOR_DIR" >/dev/null 2>&1 || true
     echo "[studio-dev] desktop icon:   installed ($DESKTOP_DST)"
   fi
 fi
@@ -222,6 +259,11 @@ fi
 echo "[studio-dev] build complete in $(fmt_dur "$TOTAL_START")"
 
 if [[ "$RESTART" -eq 0 ]]; then
+  exit 0
+fi
+
+if [[ "$FORCE_RESTART" -eq 0 ]] && running_inside_agentd; then
+  echo "[studio-dev] running inside infimum-agentd; skipping self-restart to keep active studio open (pass --force-restart to override)."
   exit 0
 fi
 
