@@ -185,6 +185,7 @@ pub mod daemon {
         StudioMem.settings_scale = parse_i64(StudioMem::http_resp_buf);
         StudioMem.settings_currency = parse_i64(StudioMem::http_resp_buf);
         StudioMem.settings_model = parse_i64(StudioMem::http_resp_buf);
+        StudioMem.settings_dev_mode = parse_i64(StudioMem::http_resp_buf);
         1
       } else {
         0
@@ -201,6 +202,8 @@ pub mod daemon {
     buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_currency);
     buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
     buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_model);
+    buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
+    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_dev_mode);
     let code = http("PUT", "/settings?format=ifm", StudioMem::http_body_tmp);
     if code == 200 { 1 } else { 0 }
   }

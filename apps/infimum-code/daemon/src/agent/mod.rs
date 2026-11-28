@@ -5,9 +5,11 @@
 //! seamlessly switch between browser Infimum Code and Infimum Code Native (.ifw).
 
 mod conversations;
+mod dev_tools;
 mod providers;
 mod repo_index;
 mod timeline;
+mod tool_specs;
 mod tools;
 
 #[cfg(test)]

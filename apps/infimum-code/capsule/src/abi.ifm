@@ -163,6 +163,7 @@ pub layout StudioMem {
   settings_open: word,
   font_scale_pct: word inv 80..=200,
   currency_id: word inv 0..=2,
+  dev_mode: word inv 0..=1,
   total_milli_ils: word,
   ai_running: word,
   copy_override_ptr: word,
@@ -200,6 +201,7 @@ pub layout StudioMem {
   settings_scale: word,
   settings_currency: word,
   settings_model: word,
+  settings_dev_mode: word,
 
   // Per-Frame Forma Slot Context
   frame_vw: word,

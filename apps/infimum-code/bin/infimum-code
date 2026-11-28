@@ -56,10 +56,24 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+AGENTD_EXTRA_ARGS=()
+BROWSER_EXTRA_ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--dev-mode" ]]; then
+    AGENTD_EXTRA_ARGS+=("--dev-mode")
+  else
+    BROWSER_EXTRA_ARGS+=("$arg")
+  fi
+done
+if [[ "${INFIMUM_DEV_MODE:-0}" == "1" || "${INFIMUM_DEV_MODE:-}" == "true" ]]; then
+  AGENTD_EXTRA_ARGS+=("--dev-mode")
+fi
+
 "$AGENTD_BIN" \
   --port=0 \
   --allow-user-workspaces \
   --allow-proc \
+  "${AGENTD_EXTRA_ARGS[@]}" \
   >"$READY_FILE" 2>&1 &
 AGENTD_PID=$!
 
@@ -89,4 +103,4 @@ fi
   --allow-net=infimum-lang.org \
   "--cap-arg=AGENT_URL=http://127.0.0.1:${AGENTD_PORT}" \
   "--cap-arg=AGENT_TOKEN=${TOKEN}" \
-  "$@"
+  "${BROWSER_EXTRA_ARGS[@]}"

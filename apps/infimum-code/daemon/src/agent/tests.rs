@@ -1,6 +1,8 @@
 use super::conversations::*;
+use super::dev_tools::*;
 use super::providers::*;
 use super::timeline::*;
+use super::tool_specs::*;
 use super::tools::*;
 use crate::policy::CapabilityPolicy;
 use crate::studio_abi::*;
@@ -559,7 +561,15 @@ fn single_folder_jail_blocks_sibling_project_and_sensitive_files() {
         &json!({ "path": "ok.txt" }),
         None,
     );
-    assert_eq!(ok_res.get("content").and_then(|v| v.as_str()), Some("hello_safe"));
+    assert_eq!(ok_res.get("content").and_then(|v| v.as_str()), Some("1| hello_safe"));
+    let ok_raw = execute_native_tool(
+        &pol,
+        &proj_a,
+        "read_project_file",
+        &json!({ "path": "ok.txt", "with_line_numbers": false }),
+        None,
+    );
+    assert_eq!(ok_raw.get("content").and_then(|v| v.as_str()), Some("hello_safe"));
 
     // Reading sibling project via absolute path is DENIED
     let sib_res = execute_native_tool(
@@ -612,9 +622,21 @@ fn single_folder_jail_blocks_sibling_project_and_sensitive_files() {
     let _ = fs::remove_dir_all(&base);
 }
 
+fn bwrap_userns_available() -> bool {
+    std::process::Command::new("bwrap")
+        .args(["--ro-bind", "/", "/", "true"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 #[test]
 fn bwrap_sandbox_blocks_sibling_and_clears_env() {
     let _guard = test_cmd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    if !bwrap_userns_available() {
+        eprintln!("skipping bwrap_sandbox_blocks_sibling_and_clears_env: userns restricted by host AppArmor");
+        return;
+    }
     let base = std::env::temp_dir().join(format!("infimum_bwrap_test_{}", std::process::id()));
     let proj_a = base.join("proj_a");
     let proj_b = base.join("proj_b");
@@ -651,6 +673,10 @@ fn bwrap_sandbox_blocks_sibling_and_clears_env() {
 #[test]
 fn bwrap_sandbox_exposes_infimum_cli_without_source_leak() {
     let _guard = test_cmd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    if !bwrap_userns_available() {
+        eprintln!("skipping bwrap_sandbox_exposes_infimum_cli_without_source_leak: userns restricted by host AppArmor");
+        return;
+    }
     let base = std::env::temp_dir().join(format!("infimum_cli_test_{}", std::process::id()));
     let proj = base.join("proj");
     let _ = fs::remove_dir_all(&base);
@@ -734,6 +760,7 @@ fn semantic_ifm_tools_and_templates_work_and_verify() {
         allowed_fs_roots: vec![proj.clone()],
         allow_proc: false,
         allow_user_workspaces: false,
+        dev_mode: false,
     };
 
     let sample = r#"struct Vec2 {
@@ -851,4 +878,349 @@ fn main_fn(v: i64) -> i64 {
     assert!(repo_bad.get("error").is_some(), "Path traversal in read_infimum_repo must fail: {repo_bad}");
 
     let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn enhanced_list_search_edit_delete_and_move_tools_work() {
+    let base = std::env::temp_dir().join(format!("ifm_enhanced_fs_{}", now_millis()));
+    let proj = base.join("proj");
+    fs::create_dir_all(proj.join("src/nested")).unwrap();
+    fs::create_dir_all(proj.join("target/debug")).unwrap();
+    fs::create_dir_all(proj.join("node_modules/pkg")).unwrap();
+
+    fs::write(proj.join("src/lib.rs"), "pub fn alpha() -> i32 { 1 }\npub fn beta() -> i32 { 2 }\n").unwrap();
+    fs::write(proj.join("src/nested/util.rs"), "pub fn helper() -> i32 { alpha() + alpha() }\n").unwrap();
+    fs::write(proj.join("src/app.js"), "export function greet(name) {\n  return `hi ${name}`;\n}\n").unwrap();
+    fs::write(proj.join("Cargo.lock"), "alpha beta noise\n").unwrap();
+    fs::write(proj.join("target/debug/ignored.rs"), "alpha\n").unwrap();
+    fs::write(proj.join("node_modules/pkg/ignored.js"), "alpha\n").unwrap();
+
+    let pol = test_policy_with_root(proj.clone());
+
+    // 1. list_project_files with pattern, subdir, limit, and ignored dirs
+    let list_rs = execute_native_tool(
+        &pol,
+        &proj,
+        "list_project_files",
+        &json!({ "subdir": "src", "pattern": "*.rs" }),
+        None,
+    );
+    let files: Vec<String> = list_rs["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    assert_eq!(files.len(), 2, "expected 2 rs files, got {list_rs}");
+    assert_eq!(list_rs["truncated"].as_bool(), Some(false));
+    assert!(!files.iter().any(|f| f.contains("target") || f.contains("node_modules")));
+
+    // 2. list_project_files truncation reporting
+    let list_lim = execute_native_tool(
+        &pol,
+        &proj,
+        "list_project_files",
+        &json!({ "subdir": "src", "limit": 1 }),
+        None,
+    );
+    assert_eq!(list_lim["truncated"].as_bool(), Some(true));
+    assert!(list_lim["total_found"].as_u64().unwrap_or(0) >= 3);
+
+    // 3. search_project with glob, files mode, count mode, and Cargo.lock exclusion
+    let srch_files = execute_native_tool(
+        &pol,
+        &proj,
+        "search_project",
+        &json!({ "query": "alpha", "mode": "files" }),
+        None,
+    );
+    let out_files = srch_files["matches"].as_str().unwrap_or("");
+    assert!(out_files.contains("lib.rs"), "srch_files={srch_files}");
+    assert!(!out_files.contains("Cargo.lock"), "Cargo.lock must be ignored: {srch_files}");
+    assert!(!out_files.contains("target/"), "target/ must be ignored: {srch_files}");
+
+    let srch_glob = execute_native_tool(
+        &pol,
+        &proj,
+        "search_project",
+        &json!({ "query": "greet", "glob": "*.js", "mode": "count" }),
+        None,
+    );
+    assert_eq!(srch_glob["ok"].as_bool(), Some(true), "srch_glob={srch_glob}");
+    assert!(srch_glob["matches"].as_str().unwrap_or("").contains("app.js"));
+
+    // 4. edit_project_file replace_all + nearest_lines on miss
+    let ed_all = execute_native_tool(
+        &pol,
+        &proj,
+        "edit_project_file",
+        &json!({
+            "path": "src/nested/util.rs",
+            "target": "alpha()",
+            "replacement": "beta()",
+            "replace_all": true
+        }),
+        None,
+    );
+    assert_eq!(ed_all["ok"].as_bool(), Some(true), "ed_all={ed_all}");
+    assert_eq!(ed_all["replacements"].as_u64(), Some(2));
+
+    let ed_miss = execute_native_tool(
+        &pol,
+        &proj,
+        "edit_project_file",
+        &json!({
+            "path": "src/lib.rs",
+            "target": "pub fn alpha() -> i64 { 999 }",
+            "replacement": "x"
+        }),
+        None,
+    );
+    assert!(ed_miss.get("error").is_some());
+    assert!(
+        ed_miss.get("nearest_lines").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()),
+        "expected nearest_lines suggestion on miss: {ed_miss}"
+    );
+
+    // 5. move_project_file & delete_project_file
+    let mv = execute_native_tool(
+        &pol,
+        &proj,
+        "move_project_file",
+        &json!({ "from": "src/app.js", "to": "src/web/app_moved.js" }),
+        None,
+    );
+    assert_eq!(mv["ok"].as_bool(), Some(true), "mv={mv}");
+    assert!(proj.join("src/web/app_moved.js").is_file());
+    assert!(!proj.join("src/app.js").exists());
+
+    let del = execute_native_tool(
+        &pol,
+        &proj,
+        "delete_project_file",
+        &json!({ "path": "src/web/app_moved.js" }),
+        None,
+    );
+    assert_eq!(del["ok"].as_bool(), Some(true), "del={del}");
+    assert!(!proj.join("src/web/app_moved.js").exists());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn multi_language_get_and_replace_symbol_work_for_rs_and_js() {
+    let base = std::env::temp_dir().join(format!("ifm_sym_multilang_{}", now_millis()));
+    let proj = base.join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let pol = test_policy_with_root(proj.clone());
+
+    fs::write(
+        proj.join("demo.rs"),
+        "pub struct Counter {\n    pub v: i32,\n}\n\npub fn compute(x: i32) -> i32 {\n    x * 2\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        proj.join("worker.js"),
+        "export async function handleRequest(req) {\n  return new Response('ok');\n}\n\nconst VERSION = 1;\n",
+    )
+    .unwrap();
+
+    // Rust get_symbol + replace_symbol
+    let rs_sym = execute_native_tool(
+        &pol,
+        &proj,
+        "get_symbol",
+        &json!({ "path": "demo.rs", "name": "compute" }),
+        None,
+    );
+    assert_eq!(rs_sym["ok"].as_bool(), Some(true), "rs_sym={rs_sym}");
+    assert!(rs_sym["source"].as_str().unwrap_or("").contains("x * 2"));
+
+    let rs_rep = execute_native_tool(
+        &pol,
+        &proj,
+        "replace_symbol",
+        &json!({
+            "path": "demo.rs",
+            "name": "compute",
+            "new_source": "pub fn compute(x: i32) -> i32 {\n    x * 3\n}"
+        }),
+        None,
+    );
+    assert_eq!(rs_rep["ok"].as_bool(), Some(true), "rs_rep={rs_rep}");
+    assert!(fs::read_to_string(proj.join("demo.rs")).unwrap().contains("x * 3"));
+
+    // JS get_symbol + replace_symbol
+    let js_sym = execute_native_tool(
+        &pol,
+        &proj,
+        "get_symbol",
+        &json!({ "path": "worker.js", "name": "handleRequest" }),
+        None,
+    );
+    assert_eq!(js_sym["ok"].as_bool(), Some(true), "js_sym={js_sym}");
+    assert!(js_sym["source"].as_str().unwrap_or("").contains("Response('ok')"));
+
+    let js_rep = execute_native_tool(
+        &pol,
+        &proj,
+        "replace_symbol",
+        &json!({
+            "path": "worker.js",
+            "name": "handleRequest",
+            "new_source": "export async function handleRequest(req) {\n  return new Response('updated');\n}"
+        }),
+        None,
+    );
+    assert_eq!(js_rep["ok"].as_bool(), Some(true), "js_rep={js_rep}");
+    assert!(fs::read_to_string(proj.join("worker.js")).unwrap().contains("updated"));
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn fallback_command_filter_and_dev_mode_guards_work() {
+    // Token-based safety filter: `which ... curl` is safe, `curl ...` is blocked.
+    assert!(!is_unsafe_fallback_command("which rg git z3 curl"));
+    assert!(!is_unsafe_fallback_command("echo curl_version"));
+    assert!(is_unsafe_fallback_command("curl https://example.com"));
+    assert!(is_unsafe_fallback_command("echo ok && wget https://example.com/a.sh"));
+    assert!(is_unsafe_fallback_command("rm -rf /"));
+    assert!(is_unsafe_fallback_command("sudo ls"));
+
+    let base = std::env::temp_dir().join(format!("ifm_dev_guards_{}", now_millis()));
+    let proj = base.join("proj");
+    fs::create_dir_all(&proj).unwrap();
+
+    // Safe mode (dev_mode = false): dev-only tools are blocked
+    let safe_pol = test_policy_with_root(proj.clone());
+    for tool in ["gh_cli", "wrangler_cli", "web_fetch", "web_search"] {
+        let res = execute_native_tool(&safe_pol, &proj, tool, &json!({}), None);
+        let err = res["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("Developer Mode"),
+            "tool {tool} must require Developer Mode when disabled: {res}"
+        );
+    }
+
+    // git_tool: push requires Developer Mode, force push is always blocked
+    let push_safe = execute_native_tool(
+        &safe_pol,
+        &proj,
+        "git_tool",
+        &json!({ "subcommand": "push" }),
+        None,
+    );
+    assert!(
+        push_safe["error"].as_str().unwrap_or("").contains("Developer Mode"),
+        "git push must require Developer Mode: {push_safe}"
+    );
+
+    let mut dev_pol = test_policy_with_root(proj.clone());
+    dev_pol.dev_mode = true;
+    let push_force = execute_native_tool(
+        &dev_pol,
+        &proj,
+        "git_tool",
+        &json!({ "subcommand": "push", "args": ["--force"] }),
+        None,
+    );
+    assert!(
+        push_force["error"].as_str().unwrap_or("").to_lowercase().contains("force"),
+        "git push --force must be blocked even in dev mode: {push_force}"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn web_fetch_ssrf_html_cleaner_and_gemini_grounding_parser_work() {
+    // SSRF URL validation
+    assert!(validate_web_url("http://127.0.0.1:8080/secret").is_err());
+    assert!(validate_web_url("http://localhost/admin").is_err());
+    assert!(validate_web_url("http://169.254.169.254/latest/meta-data").is_err());
+    assert!(validate_web_url("http://10.0.0.1/internal").is_err());
+    assert!(validate_web_url("file:///etc/passwd").is_err());
+    assert!(validate_web_url("ftp://example.com/a").is_err());
+
+    // HTML to compact text strips script/style/nav and keeps readable content
+    let html = r#"
+    <html><head><title>Doc</title><style>body{color:red}</style></head>
+    <body>
+      <nav>Home | Pricing | Login</nav>
+      <script>console.log("ignore me")</script>
+      <h1>Infimum Guide</h1>
+      <p>Hello &amp; welcome to <b>Infimum</b>.</p>
+    </body></html>
+    "#;
+    let txt = html_to_compact_text(html);
+    assert!(txt.contains("Infimum Guide"), "txt={txt}");
+    assert!(txt.contains("Hello & welcome to Infimum"), "txt={txt}");
+    assert!(!txt.contains("ignore me"), "script must be stripped: {txt}");
+    assert!(!txt.contains("color:red"), "style must be stripped: {txt}");
+    assert!(!txt.contains("Pricing"), "nav must be stripped: {txt}");
+
+    // Gemini Search grounding parser extracts summary, deduplicated sources, and queries
+    let sample_resp = r#"{
+      "candidates": [{
+        "content": { "parts": [{ "text": "Cloudflare Workers support D1 and KV." }] },
+        "groundingMetadata": {
+          "webSearchQueries": ["cloudflare workers d1 kv"],
+          "groundingChunks": [
+            { "web": { "uri": "https://developers.cloudflare.com/d1/", "title": "Cloudflare D1" } },
+            { "web": { "uri": "https://developers.cloudflare.com/d1/", "title": "Duplicate D1" } },
+            { "web": { "uri": "https://developers.cloudflare.com/kv/", "title": "Cloudflare KV" } }
+          ]
+        }
+      }]
+    }"#;
+    let parsed = parse_gemini_grounding_response(sample_resp, 5).unwrap();
+    assert_eq!(parsed["ok"].as_bool(), Some(true));
+    assert!(parsed["summary"].as_str().unwrap_or("").contains("D1 and KV"));
+    let srcs = parsed["sources"].as_array().unwrap();
+    assert_eq!(srcs.len(), 2, "duplicate URLs must be deduplicated: {parsed}");
+    assert_eq!(srcs[0]["title"].as_str(), Some("Cloudflare D1"));
+    assert_eq!(parsed["queries_used"][0].as_str(), Some("cloudflare workers d1 kv"));
+}
+
+#[test]
+fn tool_specs_filter_by_dev_mode_and_monorepo_context() {
+    let safe_opts = ToolSpecOptions {
+        dev_mode: false,
+        include_repo_snapshot: true,
+        include_pbr_tools: true,
+    };
+    let dev_opts = ToolSpecOptions {
+        dev_mode: true,
+        include_repo_snapshot: false,
+        include_pbr_tools: false,
+    };
+
+    let safe_names: Vec<String> = openai_tool_declarations(safe_opts)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str().map(|s| s.to_string()))
+        .collect();
+    assert!(safe_names.contains(&"git_tool".to_string()));
+    assert!(safe_names.contains(&"get_symbol".to_string()));
+    assert!(safe_names.contains(&"delete_project_file".to_string()));
+    assert!(safe_names.contains(&"list_infimum_repo".to_string()));
+    assert!(!safe_names.contains(&"gh_cli".to_string()));
+    assert!(!safe_names.contains(&"wrangler_cli".to_string()));
+    assert!(!safe_names.contains(&"web_fetch".to_string()));
+    assert!(!safe_names.contains(&"web_search".to_string()));
+
+    let dev_names: Vec<String> = gemini_tool_declarations(dev_opts)["functionDeclarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+        .collect();
+    assert!(dev_names.contains(&"gh_cli".to_string()));
+    assert!(dev_names.contains(&"wrangler_cli".to_string()));
+    assert!(dev_names.contains(&"web_fetch".to_string()));
+    assert!(dev_names.contains(&"web_search".to_string()));
+    assert!(!dev_names.contains(&"list_infimum_repo".to_string()));
+    assert!(!dev_names.contains(&"search_pbr_textures".to_string()));
 }

@@ -145,6 +145,7 @@ export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu, Net]-> i64 {
   StudioMem.settings_open = 0;
   StudioMem.font_scale_pct = DEFAULT_FONT_SCALE_PCT;
   StudioMem.currency_id = Currency::Ils;
+  StudioMem.dev_mode = 0;
   StudioMem.total_milli_ils = 0;
   StudioMem.ai_running = 0;
   StudioMem.copy_override_ptr = 0;
@@ -183,6 +184,7 @@ export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu, Net]-> i64 {
     StudioMem.font_scale_pct = clamp_i64(StudioMem.settings_scale, MIN_FONT_SCALE_PCT, MAX_FONT_SCALE_PCT);
     StudioMem.currency_id = clamp_i64(StudioMem.settings_currency, 0, 2);
     StudioMem.model_idx = clamp_i64(StudioMem.settings_model, 0, 21);
+    StudioMem.dev_mode = clamp_i64(StudioMem.settings_dev_mode, 0, 1);
   }
 
   daemon::list_projects();

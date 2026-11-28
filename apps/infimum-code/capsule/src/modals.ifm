@@ -29,6 +29,7 @@ pub enum SetAct {
   ImportBackup = 331,
   ExportConvMd = 332,
   CompactConv = 333,
+  DevMode = 334,
 }
 
 pub enum CtxAct {
@@ -205,9 +206,12 @@ forma SettingsModal(
   theme_lbl: str,
   is_dark: bool,
   key_ph: str,
-  is_online: bool
+  is_online: bool,
+  is_dev_mode: bool,
+  dev_lbl: str,
+  dev_col: i64
 )
-  req vw >= 680 && vh >= 460 && mw >= 460 && mh >= 440 && row_h >= 42 && row_h <= 58 && s_bh >= 28 && s_bh <= 42 && row_h >= s_bh && tbtn_w >= 110 && tbtn_w <= 170 && seg_w >= 120 && seg_w <= 210 && cur_w >= 86 && cur_w <= 130 && rst_w >= 76 && rst_w <= 110 && cdd_w >= 118 && cdd_rh >= 28 && cdd_rh <= 44 && s_h >= 12 && s_h <= 24 && s_l >= 10 && s_l <= 20 && s_s >= 10 && s_s <= 18 && mh >= 3 * row_h + 2 * s_s + 240 && (!is_online || mh >= 4 * row_h + 2 * s_s + 240)
+  req vw >= 680 && vh >= 460 && mw >= 460 && mh >= 480 && row_h >= 42 && row_h <= 58 && s_bh >= 28 && s_bh <= 42 && row_h >= s_bh && tbtn_w >= 110 && tbtn_w <= 170 && seg_w >= 120 && seg_w <= 210 && cur_w >= 86 && cur_w <= 130 && rst_w >= 76 && rst_w <= 110 && cdd_w >= 118 && cdd_rh >= 28 && cdd_rh <= 44 && s_h >= 12 && s_h <= 24 && s_l >= 10 && s_l <= 20 && s_s >= 10 && s_s <= 18 && mh >= 4 * row_h + s_bh + s_s + 240
   -[Mem]-> i64
 {
   Box(x: 0, y: 0, w: vw, h: vh, bg: col_scrim) {
@@ -304,6 +308,17 @@ forma SettingsModal(
               Text("Сжать", size: s_s, style: 1, color: col_txt, align: center, shrink: 1, overflow: ellipsis)
             }
           }
+        } else {
+          Row(h: row_h, gap: 8, align: center) {
+            Col(grow: 1, gap: 2) {
+              Text("Режим разработчика (Dev)", size: s_l, style: 1, color: col_txt, shrink: 1, overflow: ellipsis)
+              Text("Доступ к gh, wrangler, git push, web_fetch и web_search", size: s_s, style: 0, color: col_mut, shrink: 1, overflow: ellipsis)
+            }
+            Row(w: tbtn_w, h: s_bh, gap: 8, align: center, justify: end) {
+              Text(dev_lbl, size: s_s, style: 1, color: dev_col, shrink: 1, overflow: ellipsis)
+              Toggle(id: 334, w: 46, h: 24, checked: is_dev_mode, bg: bg_bg, border_col: col_brd, accent: col_ok, on_change: SetAct::DevMode)
+            }
+          }
         }
       }
     }
@@ -324,12 +339,9 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
     let s_bh = 34;
     let row_h = 48;
     let is_online = StudioMem.online_mode == 1;
-    let min_mh = if is_online {
-      max_i64(480, 4 * row_h + 2 * s_s + 240)
-    } else {
-      max_i64(440, 3 * row_h + 2 * s_s + 240)
-    };
-    let target_mh = if is_online { 565 } else { 515 };
+    let is_dev_mode = StudioMem.dev_mode == 1;
+    let min_mh = max_i64(480, 4 * row_h + s_bh + s_s + 240);
+    let target_mh = 565;
     let mw = clamp_i64(640, 460, safe_w - 40);
     let mh = clamp_i64(target_mh, min_mh, max_i64(min_mh, safe_h - 32));
     let mx0 = (safe_w - mw) / 2;
@@ -346,6 +358,8 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
     let cdd_y = my0 + 18 + 32 + 10 + row_h * 3 + 20 + 4;
     let cur_dd_open = StudioMem.cur_dd_open == 1;
     let theme_lbl = if th == 0 { "Тёмная" } else { "Светлая" };
+    let dev_lbl = if is_dev_mode { "Вкл" } else { "Выкл" };
+    let dev_col = if is_dev_mode { col_emerald() } else { col_muted(th) };
     let sel_p = clamp_i64(StudioMem.keys_sel_prov, 0, 6);
     let cur_has = ((StudioMem.keys_status_mask >> sel_p) & 1) == 1;
     let key_ph = if cur_has { "Ключ задан (вставьте новый Ctrl+V)" } else { "Вставьте API-ключ (Ctrl+V)..." };
@@ -356,7 +370,7 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
       safe_w, safe_h, mx0, my0, mw, mh, row_h, s_bh, tbtn_w, seg_w, cur_w, rst_w,
       cdd_x, cdd_y, cdd_w, cdd_rh, cur_dd_open,
       pack_rgba(0, 0, 0, 150), col_surf(th), col_surf2(th), col_bg(th), col_border(th),
-      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph, is_online
+      col_text(th), col_muted(th), col_accent(), col_emerald(), StudioMem.currency_id, s_h, s_l, s_s, theme_lbl, th == 0, key_ph, is_online, is_dev_mode, dev_lbl, dev_col
     );
     let fc = forma_cursor();
     if fc != 0 {
@@ -413,6 +427,10 @@ pub fn render_settings_modal(w: i64, h: i64) -[Mem, Net]-> unit {
       },
       SetAct::CompactConv => {
         StudioMem.host_action = HostAction::CompactConv;
+      },
+      SetAct::DevMode => {
+        StudioMem.dev_mode = if StudioMem.dev_mode == 0 { 1 } else { 0 };
+        save_settings();
       },
       _ => {},
     }

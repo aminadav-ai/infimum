@@ -169,6 +169,7 @@ pub struct NativeSettings {
     pub font_scale_pct: i32,
     pub currency_id: i32,
     pub model_idx: i32,
+    pub dev_mode: bool,
 }
 
 impl Default for NativeSettings {
@@ -178,6 +179,7 @@ impl Default for NativeSettings {
             font_scale_pct: 120,
             currency_id: 0,
             model_idx: 0,
+            dev_mode: false,
         }
     }
 }
@@ -208,6 +210,10 @@ pub fn load_native_settings() -> Option<NativeSettings> {
             .and_then(|x| x.as_i64())
             .map(|x| x.clamp(0, 21) as i32)
             .unwrap_or(d.model_idx),
+        dev_mode: v
+            .get("dev_mode")
+            .and_then(|x| x.as_bool().or_else(|| x.as_i64().map(|n| n != 0)))
+            .unwrap_or(d.dev_mode),
     })
 }
 
@@ -220,6 +226,7 @@ pub fn save_native_settings(s: NativeSettings) -> bool {
         "font_scale_pct": s.font_scale_pct.clamp(80, 200),
         "currency_id": s.currency_id.clamp(0, 2),
         "model_idx": s.model_idx.clamp(0, 21),
+        "dev_mode": s.dev_mode,
     });
     let Ok(bytes) = serde_json::to_string_pretty(&doc) else {
         return false;

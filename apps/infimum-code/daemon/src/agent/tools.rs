@@ -18,6 +18,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::conversations::{active_conv_cell, conversations_dir, ActiveConversation};
+use super::dev_tools::{
+    build_clean_path, run_subprocess_managed, tool_gh_cli, tool_git, tool_web_fetch,
+    tool_web_search, tool_wrangler_cli, truncate_head_tail,
+};
 use super::timeline::{
     signal_process_group, timeline_update_step_tail, ASYNC_CANCELLED, ASYNC_CMD_KILL_REQUESTED,
     ASYNC_CMD_PID, SIGKILL_NUM, SIGTERM_NUM,
@@ -281,8 +285,95 @@ pub fn resolve_whitelisted_project(policy: &CapabilityPolicy, name: &str) -> Opt
     None
 }
 
-pub(super) fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>, depth: usize) {
-    if depth > 4 || out.len() >= 220 {
+pub(super) fn resolve_sandboxed_subdir(
+    default_proj: &Path,
+    sub: Option<&str>,
+) -> Result<PathBuf, String> {
+    let base = fs::canonicalize(default_proj).unwrap_or_else(|_| default_proj.to_path_buf());
+    let Some(s) = sub.map(|x| x.trim()).filter(|x| !x.is_empty() && *x != ".") else {
+        return Ok(base);
+    };
+    let p = Path::new(s);
+    if p.is_absolute() {
+        let c = fs::canonicalize(p).map_err(|e| format!("Invalid directory '{}': {e}", s))?;
+        if !c.starts_with(&base) {
+            return Err(format!("Path '{}' escapes active project directory", s));
+        }
+        return Ok(c);
+    }
+    let joined = base.join(p);
+    let c = fs::canonicalize(&joined).map_err(|e| format!("Invalid directory '{}': {e}", s))?;
+    if !c.starts_with(&base) {
+        return Err(format!("Path '{}' escapes active project directory", s));
+    }
+    if !c.is_dir() {
+        return Err(format!("'{}' is not a directory", s));
+    }
+    Ok(c)
+}
+
+pub(super) fn glob_matches(pattern: &str, text: &str) -> bool {
+    let pat = pattern.trim();
+    if pat.is_empty() || pat == "*" || pat == "**" || pat == "**/*" {
+        return true;
+    }
+    // If pattern has no '/', also match against basename
+    if !pat.contains('/') {
+        let base = text.rsplit('/').next().unwrap_or(text);
+        if glob_match_inner(pat.as_bytes(), base.as_bytes()) {
+            return true;
+        }
+    }
+    glob_match_inner(pat.as_bytes(), text.as_bytes())
+}
+
+fn glob_match_inner(p: &[u8], s: &[u8]) -> bool {
+    let (mut pi, mut si) = (0usize, 0usize);
+    let mut star_pi: Option<usize> = None;
+    let mut star_si = 0usize;
+    while si < s.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            // Collapse consecutive '*' (handles '**')
+            while pi < p.len() && p[pi] == b'*' {
+                pi += 1;
+            }
+            if pi < p.len() && p[pi] == b'/' && pi >= 2 {
+                // Allow '**/' to match zero directories
+                if glob_match_inner(&p[pi + 1..], &s[si..]) {
+                    return true;
+                }
+            }
+            star_pi = Some(pi);
+            star_si = si;
+        } else if pi < p.len() && (p[pi] == b'?' || p[pi] == s[si]) {
+            pi += 1;
+            si += 1;
+        } else if let Some(sp) = star_pi {
+            pi = sp;
+            star_si += 1;
+            si = star_si;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn collect_files_filtered(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<String>,
+    total_found: &mut usize,
+    depth: usize,
+    max_depth: usize,
+    limit: usize,
+    pattern: Option<&str>,
+) {
+    if depth > max_depth {
         return;
     }
     let Ok(rd) = fs::read_dir(dir) else {
@@ -291,13 +382,11 @@ pub(super) fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>, dept
     let mut ents: Vec<_> = rd.flatten().collect();
     ents.sort_by_key(|e| e.file_name());
     for ent in ents {
-        if out.len() >= 220 {
-            break;
-        }
         let name = ent.file_name().to_string_lossy().to_string();
         if matches!(
             name.as_str(),
-            ".git" | "target" | "node_modules" | ".infimum" | "logs" | "dist"
+            ".git" | "target" | "node_modules" | ".infimum" | "logs" | "dist" | ".wrangler"
+                | "__pycache__" | ".cache"
         ) {
             continue;
         }
@@ -306,11 +395,365 @@ pub(super) fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>, dept
             continue;
         }
         if p.is_dir() {
-            collect_files(root, &p, out, depth + 1);
+            collect_files_filtered(
+                root,
+                &p,
+                out,
+                total_found,
+                depth + 1,
+                max_depth,
+                limit,
+                pattern,
+            );
         } else if let Ok(rel) = p.strip_prefix(root) {
-            out.push(rel.display().to_string());
+            let rel_str = rel.display().to_string();
+            let matches_pat = pattern.map(|pat| glob_matches(pat, &rel_str)).unwrap_or(true);
+            if matches_pat {
+                *total_found += 1;
+                if out.len() < limit {
+                    out.push(rel_str);
+                }
+            }
         }
     }
+}
+
+/// Find up to `max_hits` nearest lines in `content` to help recover when `edit_project_file` misses.
+pub(super) fn find_nearest_lines(content: &str, target: &str, max_hits: usize) -> Vec<String> {
+    let anchor = target
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| l.len() >= 4)
+        .unwrap_or(target.trim());
+    if anchor.is_empty() {
+        return Vec::new();
+    }
+    let tokens: Vec<String> = anchor
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|t| t.len() >= 3)
+        .map(|t| t.to_ascii_lowercase())
+        .collect();
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    let mut scored: Vec<(usize, usize, String)> = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let l_low = line.to_ascii_lowercase();
+        let mut score = 0usize;
+        for tok in &tokens {
+            if l_low.contains(tok) {
+                score += tok.len();
+            }
+        }
+        if score > 0 {
+            let snippet: String = line.chars().take(120).collect();
+            scored.push((score, idx + 1, snippet));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored
+        .into_iter()
+        .take(max_hits)
+        .map(|(_, ln, s)| format!("L{ln}: {s}"))
+        .collect()
+}
+
+/// Extract compact outline for JavaScript / TypeScript files.
+pub(super) fn extract_js_outline(src: &str) -> (Vec<String>, bool) {
+    let spans = parse_js_symbol_spans(src);
+    let mut out = Vec::new();
+    let mut truncated = false;
+    for sp in spans {
+        if out.len() >= OUTLINE_MAX_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let first_line = src
+            .lines()
+            .nth(sp.start_line.saturating_sub(1))
+            .unwrap_or("")
+            .trim();
+        let sig: String = first_line.chars().take(140).collect();
+        out.push(format!("L{}-{}: {}", sp.start_line, sp.end_line, sig));
+    }
+    (out, truncated)
+}
+
+/// Find top-level Rust symbol spans (`fn`, `struct`, `enum`, `trait`, `const`, `static`, `type`, `mod`).
+pub(super) fn parse_rs_symbol_spans(src: &str) -> Vec<IfmSymbolSpan> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut spans = Vec::new();
+    let mut depth: i32 = 0;
+    let mut i = 0usize;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if depth == 0 && !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('#') {
+            if let Some((kind, name)) = match_rs_decl(trimmed) {
+                // Include preceding #[...] attributes and /// doc comments
+                let mut start_idx = i;
+                while start_idx > 0 {
+                    let prev = lines[start_idx - 1].trim();
+                    if prev.starts_with("#[") || prev.starts_with("///") || prev.starts_with("//!") {
+                        start_idx -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                let mut local_depth: i32 = 0;
+                let mut saw_brace = false;
+                let mut end_idx = i;
+                for (j, l) in lines.iter().enumerate().skip(i) {
+                    let (d, ob) = count_code_braces(l);
+                    if ob {
+                        saw_brace = true;
+                    }
+                    local_depth += d;
+                    end_idx = j;
+                    if saw_brace && local_depth <= 0 {
+                        break;
+                    }
+                    if !saw_brace && l.trim_end().ends_with(';') {
+                        break;
+                    }
+                }
+                spans.push(IfmSymbolSpan {
+                    kind,
+                    name,
+                    start_line: start_idx + 1,
+                    end_line: end_idx + 1,
+                });
+                i = end_idx + 1;
+                depth = 0;
+                continue;
+            }
+        }
+        let (d, _) = count_code_braces(lines[i]);
+        depth = (depth + d).max(0);
+        i += 1;
+    }
+    spans
+}
+
+fn match_rs_decl(trimmed: &str) -> Option<(&'static str, String)> {
+    let mut s = trimmed;
+    if let Some(rest) = s.strip_prefix("pub") {
+        let r = rest.trim_start();
+        if r.starts_with('(') {
+            if let Some(close) = r.find(')') {
+                s = r[close + 1..].trim_start();
+            }
+        } else if rest.starts_with(char::is_whitespace) {
+            s = r;
+        }
+    }
+    for prefix in ["default ", "async ", "unsafe ", "const ", "extern \"C\" "] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            // Keep `const NAME:` as const declaration rather than stripping `const ` before NAME
+            if prefix == "const " && !rest.trim_start().starts_with("fn ") && !rest.trim_start().starts_with("unsafe ") {
+                break;
+            }
+            s = rest.trim_start();
+        }
+    }
+    for kw in ["fn ", "struct ", "enum ", "trait ", "const ", "static ", "type ", "mod "] {
+        if let Some(rest) = s.strip_prefix(kw) {
+            let name: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                return Some((kw.trim(), name));
+            }
+        }
+    }
+    None
+}
+
+/// Find top-level JS/TS declarations (`function`, `async function`, `class`, `const/let/var name =`).
+pub(super) fn parse_js_symbol_spans(src: &str) -> Vec<IfmSymbolSpan> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut spans = Vec::new();
+    let mut depth: i32 = 0;
+    let mut i = 0usize;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if depth == 0 && !trimmed.is_empty() && !trimmed.starts_with("//") {
+            if let Some((kind, name)) = match_js_decl(trimmed) {
+                let mut local_depth: i32 = 0;
+                let mut saw_brace = false;
+                let mut end_idx = i;
+                for (j, l) in lines.iter().enumerate().skip(i) {
+                    let (d, ob) = count_code_braces(l);
+                    if ob {
+                        saw_brace = true;
+                    }
+                    local_depth += d;
+                    end_idx = j;
+                    if saw_brace && local_depth <= 0 {
+                        break;
+                    }
+                    if !saw_brace && l.trim_end().ends_with(';') {
+                        break;
+                    }
+                }
+                spans.push(IfmSymbolSpan {
+                    kind,
+                    name,
+                    start_line: i + 1,
+                    end_line: end_idx + 1,
+                });
+                i = end_idx + 1;
+                depth = 0;
+                continue;
+            }
+        }
+        let (d, _) = count_code_braces(lines[i]);
+        depth = (depth + d).max(0);
+        i += 1;
+    }
+    spans
+}
+
+fn match_js_decl(trimmed: &str) -> Option<(&'static str, String)> {
+    let mut s = trimmed;
+    for prefix in ["export default ", "export ", "async "] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.trim_start();
+        }
+    }
+    for kw in ["function ", "class ", "interface ", "type ", "const ", "let ", "var "] {
+        if let Some(rest) = s.strip_prefix(kw) {
+            let name: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect();
+            if !name.is_empty() {
+                return Some((kw.trim(), name));
+            }
+        }
+    }
+    None
+}
+
+fn count_code_braces(line: &str) -> (i32, bool) {
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    let mut delta = 0i32;
+    let mut saw_open = false;
+    let mut in_str: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_str {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_str = None;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            break;
+        }
+        if b == b'"' || b == b'`' {
+            in_str = Some(b);
+            i += 1;
+            continue;
+        }
+        if b == b'\'' {
+            // Avoid Rust lifetimes like `'a` triggering string mode
+            if i + 2 < bytes.len() && bytes[i + 2] == b'\'' {
+                i += 3;
+                continue;
+            }
+            if i + 3 < bytes.len() && bytes[i + 1] == b'\\' && bytes[i + 3] == b'\'' {
+                i += 4;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'{' {
+            delta += 1;
+            saw_open = true;
+        } else if b == b'}' {
+            delta -= 1;
+        }
+        i += 1;
+    }
+    (delta, saw_open)
+}
+
+pub(super) fn parse_code_symbol_spans(src: &str, ext: &str) -> Vec<IfmSymbolSpan> {
+    match ext {
+        "ifm" => parse_ifm_symbol_spans(src),
+        "rs" => parse_rs_symbol_spans(src),
+        "js" | "mjs" | "cjs" | "ts" | "tsx" => parse_js_symbol_spans(src),
+        _ => parse_ifm_symbol_spans(src),
+    }
+}
+
+/// Smarter fallback-mode command guard: inspects command tokens rather than naive substrings,
+/// so `which rg curl` or `rg "curl"` is allowed while invoking `curl`, `wget`, `ssh`, `nc`
+/// directly or escaping the workspace via `../` or `/etc/` is blocked.
+pub(super) fn is_unsafe_fallback_command(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    if lower.contains("/etc/") || lower.contains("find /") {
+        return true;
+    }
+    // Check path traversal `../` or `/..` or standalone `..` token (allow `git diff A..B` and Rust `0..10`)
+    for tok in lower.split_whitespace() {
+        let t = tok.trim_matches(|c| c == '"' || c == '\'' || c == ';');
+        if t == ".." || t.starts_with("../") || t.contains("/../") || t.ends_with("/..") {
+            return true;
+        }
+    }
+    // Split into shell command segments and check the executable token of each segment
+    let normalized = lower
+        .replace("&&", "\n")
+        .replace("||", "\n")
+        .replace(';', "\n")
+        .replace('|', "\n")
+        .replace("$(", "\n")
+        .replace('`', "\n");
+    for seg in normalized.lines() {
+        let mut iter = seg.split_whitespace().peekable();
+        // Skip env assignments like FOO=bar and harmless wrapper keywords
+        while let Some(&w) = iter.peek() {
+            if w.contains('=') && !w.starts_with('-') {
+                iter.next();
+            } else if matches!(w, "env" | "time" | "command" | "nohup" | "nice") {
+                iter.next();
+            } else {
+                break;
+            }
+        }
+        if let Some(bin) = iter.next() {
+            let base = bin.rsplit('/').next().unwrap_or(bin);
+            if matches!(
+                base,
+                "sudo" | "su" | "doas" | "curl" | "wget" | "ssh" | "scp" | "sftp" | "nc" | "ncat"
+                    | "netcat" | "socat" | "telnet"
+            ) {
+                return true;
+            }
+            if base == "rm" {
+                let args: Vec<&str> = iter.collect();
+                let destructive_target = args.iter().any(|a| {
+                    let t = a.trim_matches(|c| c == '"' || c == '\'');
+                    matches!(t, "/" | "/*" | "~" | "~/" | "$home" | "${home}")
+                });
+                if destructive_target {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 pub(super) const OUTLINE_MAX_ENTRIES: usize = 400;
@@ -916,6 +1359,51 @@ pub(super) fn editor_core_module() -> &'static (wasmi::Engine, wasmi::Module) {
     CELL.get_or_init(|| crate::core_loader::load_core_axw("editor_core.ifw", EDITOR_CORE_AXW))
 }
 
+fn apply_batch_edits_large_fallback(
+    existing: &str,
+    edits: &[(String, String)],
+) -> Result<String, (usize, String)> {
+    let mut matches: Vec<(usize, usize, usize, &str)> = Vec::with_capacity(edits.len());
+    for (idx, (target, replacement)) in edits.iter().enumerate() {
+        if target.is_empty() {
+            return Err((idx, "target must not be empty".to_string()));
+        }
+        let mut iter = existing.match_indices(target);
+        let Some((start, _)) = iter.next() else {
+            return Err((idx, "Exact target string not found in file".to_string()));
+        };
+        let extra = iter.count();
+        if extra > 0 {
+            return Err((
+                idx,
+                format!(
+                    "Target matched {} places; include more surrounding lines to make it unique",
+                    extra + 1
+                ),
+            ));
+        }
+        matches.push((start, start + target.len(), idx, replacement.as_str()));
+    }
+    matches.sort_by_key(|m| m.0);
+    for w in matches.windows(2) {
+        if w[0].1 > w[1].0 {
+            return Err((
+                w[1].2,
+                format!("Edit #{} overlaps/conflicts with edit #{}", w[1].2, w[0].2),
+            ));
+        }
+    }
+    let mut out = String::with_capacity(existing.len());
+    let mut cursor = 0usize;
+    for (start, end, _, repl) in matches {
+        out.push_str(&existing[cursor..start]);
+        out.push_str(repl);
+        cursor = end;
+    }
+    out.push_str(&existing[cursor..]);
+    Ok(out)
+}
+
 pub(super) fn apply_batch_edits(
     existing: &str,
     edits: &[(String, String)],
@@ -928,8 +1416,13 @@ pub(super) fn apply_batch_edits(
         .iter()
         .map(|(t, r)| t.chars().count() + r.chars().count())
         .sum();
-    if edits.len() > 64 || src_chars.len() > 131_072 || pool_needed > 65_536 {
-        return Err((0, "Batch edit exceeds editor_core.ifw buffer limits".to_string()));
+    let est_out: isize = src_chars.len() as isize
+        + edits
+            .iter()
+            .map(|(t, r)| r.chars().count() as isize - t.chars().count() as isize)
+            .sum::<isize>();
+    if edits.len() > 64 || src_chars.len() > 125_000 || est_out > 125_000 || pool_needed > 60_000 {
+        return apply_batch_edits_large_fallback(existing, edits);
     }
 
     let (engine, module) = editor_core_module();
@@ -1046,7 +1539,11 @@ pub(super) fn describe_tool_ru(name: &str, args: &Value) -> String {
             .unwrap_or_default()
     };
     match name {
-        "list_project_files" => format!("Смотрю файлы {}…", short_path("project_dir")),
+        "list_project_files" => {
+            let s = short_path("subdir");
+            let lbl = if s.is_empty() { short_path("project_dir") } else { s };
+            format!("Смотрю файлы {lbl}…")
+        }
         "search_project" => format!(
             "Ищу «{}»…",
             args.get("query").and_then(|v| v.as_str()).unwrap_or("")
@@ -1056,6 +1553,8 @@ pub(super) fn describe_tool_ru(name: &str, args: &Value) -> String {
         "edit_project_file" => format!("Редактирую {}…", short_path("path")),
         "batch_edit_project_file" => format!("Пакетно редактирую {}…", short_path("path")),
         "write_project_file" => format!("Записываю {}…", short_path("path")),
+        "delete_project_file" => format!("Удаляю {}…", short_path("path")),
+        "move_project_file" => format!("Перемещаю {} → {}…", short_path("from"), short_path("to")),
         "verify_infimum_file" => format!("Проверяю Z3/Strata {}…", short_path("path")),
         "compile_infimum_wasm" => format!("Компилирую .ifw {}…", short_path("path")),
         "run_infimum_capsule" => format!("Запускаю капсулу {}…", short_path("path")),
@@ -1064,11 +1563,11 @@ pub(super) fn describe_tool_ru(name: &str, args: &Value) -> String {
             let f = args.get("file").and_then(|v| v.as_str()).unwrap_or("list");
             format!("Читаю std/{f}…")
         }
-        "get_ifm_symbol" => {
+        "get_symbol" | "get_ifm_symbol" => {
             let sym = args.get("name").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Читаю символ {sym}…")
         }
-        "replace_ifm_symbol" => {
+        "replace_symbol" | "replace_ifm_symbol" => {
             let sym = args.get("name").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Обновляю символ {sym}…")
         }
@@ -1076,6 +1575,20 @@ pub(super) fn describe_tool_ru(name: &str, args: &Value) -> String {
             let sym = args.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Ищу вызовы {sym}…")
         }
+        "git_tool" => {
+            let sub = args.get("subcommand").and_then(|v| v.as_str()).unwrap_or("");
+            format!("git {sub}…")
+        }
+        "gh_cli" => "Выполняю GitHub CLI (gh)…".to_string(),
+        "wrangler_cli" => "Выполняю Cloudflare Wrangler…".to_string(),
+        "web_fetch" => format!(
+            "Загружаю URL {}…",
+            args.get("url").and_then(|v| v.as_str()).unwrap_or("")
+        ),
+        "web_search" => format!(
+            "Ищу в сети «{}»…",
+            args.get("query").and_then(|v| v.as_str()).unwrap_or("")
+        ),
         "read_infimum_template" => {
             let k = args.get("kind").and_then(|v| v.as_str()).unwrap_or("list");
             format!("Читаю шаблон {k}…")
@@ -1263,6 +1776,52 @@ pub(super) fn describe_tool_step(name: &str, args: &Value) -> (i64, String, Stri
                 format!("slot {slot} -> {id}"),
             )
         }
+        "delete_project_file" => {
+            let p = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            (STEP_KIND_TOOL, "Удалить файл".to_string(), short_path_label(p))
+        }
+        "move_project_file" => {
+            let from = args.get("from").and_then(|v| v.as_str()).unwrap_or("");
+            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("");
+            (
+                STEP_KIND_TOOL,
+                "Переместить файл".to_string(),
+                format!("{} -> {}", short_path_label(from), short_path_label(to)),
+            )
+        }
+        "get_symbol" => {
+            let sym = args.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let p = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            (STEP_KIND_TOOL, format!("Символ {sym}"), short_path_label(p))
+        }
+        "replace_symbol" => {
+            let sym = args.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let p = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            (STEP_KIND_TOOL, format!("Замена {sym}"), short_path_label(p))
+        }
+        "git_tool" => {
+            let sub = args.get("subcommand").and_then(|v| v.as_str()).unwrap_or("");
+            let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            (STEP_KIND_CMD, format!("git {sub}"), short_path_label(cwd))
+        }
+        "gh_cli" => {
+            let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            (STEP_KIND_CMD, "GitHub CLI".to_string(), short_path_label(cwd))
+        }
+        "wrangler_cli" => {
+            let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            (STEP_KIND_CMD, "Wrangler CLI".to_string(), short_path_label(cwd))
+        }
+        "web_fetch" => (
+            STEP_KIND_TOOL,
+            "Web Fetch".to_string(),
+            args.get("url").and_then(|v| v.as_str()).unwrap_or("").chars().take(80).collect(),
+        ),
+        "web_search" => (
+            STEP_KIND_TOOL,
+            "Web Search".to_string(),
+            args.get("query").and_then(|v| v.as_str()).unwrap_or("").chars().take(80).collect(),
+        ),
         "run_project_command" => {
             let cmd = args.get("command").and_then(|s| s.as_str()).unwrap_or("");
             (
@@ -1530,52 +2089,206 @@ pub(super) fn execute_native_tool(
 
     match name {
         "list_project_files" => {
-            let dir = args
-                .get("project_dir")
+            let sub = args
+                .get("subdir")
                 .and_then(|s| s.as_str())
-                .filter(|s| !s.is_empty())
-                .map(resolve)
-                .unwrap_or_else(|| default_proj.to_path_buf());
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    args.get("project_dir")
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                });
+            let dir = sub.map(resolve).unwrap_or_else(|| default_proj.to_path_buf());
             if !is_jailed(&dir) {
                 return json!({ "error": "Access denied: path is outside the active project sandbox" });
             }
+            let pattern = args
+                .get("pattern")
+                .and_then(|s| s.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let max_depth = args
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(6)
+                .clamp(1, 12) as usize;
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200)
+                .clamp(1, 500) as usize;
             let mut files = Vec::new();
-            collect_files(&dir, &dir, &mut files, 0);
-            json!({ "project_dir": dir.display().to_string(), "files": files })
+            let mut total_found = 0usize;
+            collect_files_filtered(&dir, &dir, &mut files, &mut total_found, 0, max_depth, limit, pattern);
+            let truncated = total_found > files.len();
+            json!({
+                "project_dir": dir.display().to_string(),
+                "count": files.len(),
+                "total_found": total_found,
+                "truncated": truncated,
+                "files": files
+            })
         }
         "search_project" => {
             let query = args.get("query").and_then(|s| s.as_str()).unwrap_or("");
-            let dir = args
-                .get("project_dir")
+            let sub = args
+                .get("path")
                 .and_then(|s| s.as_str())
-                .filter(|s| !s.is_empty())
-                .map(resolve)
-                .unwrap_or_else(|| default_proj.to_path_buf());
-            if query.is_empty() || !is_jailed(&dir) {
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    args.get("project_dir")
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                });
+            let target_path = sub.map(resolve).unwrap_or_else(|| default_proj.to_path_buf());
+            if query.is_empty() || !is_jailed(&target_path) {
                 return json!({ "error": "Invalid search parameters or path outside active project sandbox" });
             }
-            match Command::new("grep")
-                .args([
-                    "-rnI",
+            let glob_filter = args
+                .get("glob")
+                .and_then(|s| s.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let is_regex = args.get("is_regex").and_then(|v| v.as_bool()).unwrap_or(false);
+            let case_sensitive = args.get("case_sensitive").and_then(|v| v.as_bool()).unwrap_or(false);
+            let context_lines = args
+                .get("context_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .min(5);
+            let mode = args.get("mode").and_then(|s| s.as_str()).unwrap_or("matches").trim();
+            let max_matches = args
+                .get("max_matches")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50)
+                .clamp(1, 200) as usize;
+
+            let (search_cwd, search_arg) = if target_path.is_file() {
+                let parent = target_path.parent().unwrap_or(default_proj).to_path_buf();
+                let fname = target_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ".".to_string());
+                (parent, fname)
+            } else {
+                (target_path.clone(), ".".to_string())
+            };
+
+            let rg_bin = ["/usr/bin/rg", "/usr/local/bin/rg"]
+                .iter()
+                .map(Path::new)
+                .find(|p| p.is_file())
+                .map(|p| p.to_path_buf());
+
+            let output_res = if let Some(rg) = rg_bin {
+                let mut cmd = Command::new(rg);
+                cmd.current_dir(&search_cwd)
+                    .arg("--no-heading")
+                    .arg("--color=never")
+                    .arg("--glob=!.git/**")
+                    .arg("--glob=!target/**")
+                    .arg("--glob=!node_modules/**")
+                    .arg("--glob=!.infimum/**")
+                    .arg("--glob=!dist/**")
+                    .arg("--glob=!Cargo.lock")
+                    .arg("--glob=!package-lock.json")
+                    .arg("--glob=!.env")
+                    .arg("--glob=!.env.*")
+                    .arg("--glob=!*.pem")
+                    .arg("--glob=!*.key");
+                if !is_regex {
+                    cmd.arg("-F");
+                }
+                if !case_sensitive {
+                    cmd.arg("-i");
+                }
+                if let Some(g) = glob_filter {
+                    cmd.arg("--glob").arg(g);
+                }
+                match mode {
+                    "files" => {
+                        cmd.arg("-l");
+                    }
+                    "count" => {
+                        cmd.arg("-c");
+                    }
+                    _ => {
+                        cmd.arg("-n");
+                        if context_lines > 0 {
+                            cmd.arg("-C").arg(context_lines.to_string());
+                        }
+                    }
+                }
+                cmd.arg("--").arg(query).arg(&search_arg);
+                cmd.output()
+            } else {
+                let mut cmd = Command::new("grep");
+                cmd.current_dir(&search_cwd).args([
+                    "-rI",
                     "--exclude-dir=.git",
                     "--exclude-dir=target",
                     "--exclude-dir=node_modules",
                     "--exclude-dir=.infimum",
+                    "--exclude-dir=dist",
+                    "--exclude=Cargo.lock",
+                    "--exclude=package-lock.json",
                     "--exclude=.env",
                     "--exclude=.env.*",
                     "--exclude=*.pem",
                     "--exclude=*.key",
-                    "-m",
-                    "40",
-                    query,
-                    ".",
-                ])
-                .current_dir(&dir)
-                .output()
-            {
+                ]);
+                if !is_regex {
+                    cmd.arg("-F");
+                }
+                if !case_sensitive {
+                    cmd.arg("-i");
+                }
+                if let Some(g) = glob_filter {
+                    cmd.arg(format!("--include={g}"));
+                }
+                match mode {
+                    "files" => {
+                        cmd.arg("-l");
+                    }
+                    "count" => {
+                        cmd.arg("-c");
+                    }
+                    _ => {
+                        cmd.arg("-n");
+                        if context_lines > 0 {
+                            cmd.arg("-C").arg(context_lines.to_string());
+                        }
+                    }
+                }
+                cmd.arg("--").arg(query).arg(&search_arg);
+                cmd.output()
+            };
+
+            match output_res {
                 Ok(o) => {
-                    let s: String = String::from_utf8_lossy(&o.stdout).chars().take(3500).collect();
-                    json!({ "ok": true, "matches": s })
+                    let raw = String::from_utf8_lossy(&o.stdout);
+                    let mut kept: Vec<&str> = Vec::new();
+                    let mut bytes_used = 0usize;
+                    let mut total_lines = 0usize;
+                    let mut truncated = false;
+                    const MAX_BYTES: usize = 6500;
+                    for line in raw.lines() {
+                        total_lines += 1;
+                        if kept.len() >= max_matches || bytes_used + line.len() + 1 > MAX_BYTES {
+                            truncated = true;
+                            continue;
+                        }
+                        bytes_used += line.len() + 1;
+                        kept.push(line);
+                    }
+                    json!({
+                        "ok": true,
+                        "mode": mode,
+                        "matches_shown": kept.len(),
+                        "total_lines": total_lines,
+                        "truncated": truncated,
+                        "matches": kept.join("\n"),
+                    })
                 }
                 Err(e) => json!({ "error": e.to_string() }),
             }
@@ -1591,19 +2304,19 @@ pub(super) fn execute_native_tool(
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            if ext != "ifm" && ext != "rs" {
+            if !matches!(ext.as_str(), "ifm" | "rs" | "js" | "mjs" | "cjs" | "ts" | "tsx") {
                 return json!({
                     "ok": false,
-                    "error": format!("get_file_outline supports .ifm and .rs files (got '.{ext}')")
+                    "error": format!("get_file_outline supports .ifm, .rs, .js, .mjs, .ts, .tsx files (got '.{ext}')")
                 });
             }
             match fs::read_to_string(&p) {
                 Ok(txt) => {
                     let total_lines = txt.lines().count();
-                    let (mut entries, truncated) = if ext == "ifm" {
-                        extract_ifm_outline(&txt)
-                    } else {
-                        extract_rs_outline(&txt)
+                    let (mut entries, truncated) = match ext.as_str() {
+                        "ifm" => extract_ifm_outline(&txt),
+                        "rs" => extract_rs_outline(&txt),
+                        _ => extract_js_outline(&txt),
                     };
                     let entries_count = entries.len();
                     if truncated {
@@ -1637,15 +2350,29 @@ pub(super) fn execute_native_tool(
                         .get("end_line")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(lines.len() as u64) as usize;
+                    let with_nums = args
+                        .get("with_line_numbers")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
                     let s_idx = s.saturating_sub(1).min(lines.len());
                     let e_idx = e.min(lines.len()).max(s_idx);
                     let capped_end = e_idx.min(s_idx + 500);
-                    let slice = lines[s_idx..capped_end].join("\n");
+                    let slice = if with_nums {
+                        lines[s_idx..capped_end]
+                            .iter()
+                            .enumerate()
+                            .map(|(i, l)| format!("{}| {l}", s_idx + i + 1))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        lines[s_idx..capped_end].join("\n")
+                    };
                     json!({
                         "path": p.display().to_string(),
                         "start_line": s_idx + 1,
                         "end_line": capped_end,
                         "total_lines": lines.len(),
+                        "has_more": capped_end < lines.len(),
                         "content": slice
                     })
                 }
@@ -1656,6 +2383,7 @@ pub(super) fn execute_native_tool(
             let raw = args.get("path").and_then(|s| s.as_str()).unwrap_or("");
             let target = args.get("target").and_then(|s| s.as_str()).unwrap_or("");
             let replacement = args.get("replacement").and_then(|s| s.as_str()).unwrap_or("");
+            let replace_all = args.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
             let p = resolve(raw);
             if !is_jailed(&p) {
                 return json!({ "error": "Edit denied: path is outside active project sandbox or sensitive" });
@@ -1667,20 +2395,75 @@ pub(super) fn execute_native_tool(
                 Ok(existing) => {
                     let count = existing.matches(target).count();
                     if count == 0 {
-                        json!({ "ok": false, "error": "Exact target string not found in file" })
-                    } else if count > 1 {
+                        let nearest = find_nearest_lines(&existing, target, 3);
                         json!({
                             "ok": false,
-                            "error": format!("Target matched {count} places; include more surrounding lines to make it unique")
+                            "error": "Exact target string not found in file",
+                            "nearest_lines": nearest,
+                        })
+                    } else if count > 1 && !replace_all {
+                        json!({
+                            "ok": false,
+                            "error": format!("Target matched {count} places; include more surrounding lines or pass replace_all=true")
                         })
                     } else {
-                        let updated = existing.replacen(target, replacement, 1);
+                        let updated = if replace_all {
+                            existing.replace(target, replacement)
+                        } else {
+                            existing.replacen(target, replacement, 1)
+                        };
                         match fs::write(&p, &updated) {
-                            Ok(_) => json!({ "ok": true, "replacements": 1, "path": p.display().to_string() }),
+                            Ok(_) => json!({
+                                "ok": true,
+                                "replacements": if replace_all { count } else { 1 },
+                                "path": p.display().to_string()
+                            }),
                             Err(e) => json!({ "error": e.to_string() }),
                         }
                     }
                 }
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "delete_project_file" => {
+            let raw = args.get("path").and_then(|s| s.as_str()).unwrap_or("");
+            let p = resolve(raw);
+            if raw.trim().is_empty() || !is_jailed(&p) {
+                return json!({ "error": "Delete denied: path is outside active project sandbox or sensitive" });
+            }
+            if !p.exists() {
+                return json!({ "error": format!("File not found: {}", p.display()) });
+            }
+            if p.is_dir() {
+                return json!({ "error": "Refusing to delete a directory; only regular files are allowed" });
+            }
+            match fs::remove_file(&p) {
+                Ok(_) => json!({ "ok": true, "deleted": p.display().to_string() }),
+                Err(e) => json!({ "error": e.to_string() }),
+            }
+        }
+        "move_project_file" => {
+            let raw_from = args.get("from").and_then(|s| s.as_str()).unwrap_or("");
+            let raw_to = args.get("to").and_then(|s| s.as_str()).unwrap_or("");
+            let from_p = resolve(raw_from);
+            let to_p = resolve(raw_to);
+            if raw_from.trim().is_empty() || raw_to.trim().is_empty() || !is_jailed(&from_p) || !is_jailed(&to_p) {
+                return json!({ "error": "Move denied: source or destination is outside active project sandbox or sensitive" });
+            }
+            if !from_p.is_file() {
+                return json!({ "error": format!("Source file not found: {}", from_p.display()) });
+            }
+            if let Some(parent) = to_p.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    return json!({ "error": format!("Failed to create destination parent dir: {e}") });
+                }
+            }
+            match fs::rename(&from_p, &to_p) {
+                Ok(_) => json!({
+                    "ok": true,
+                    "from": from_p.display().to_string(),
+                    "to": to_p.display().to_string(),
+                }),
                 Err(e) => json!({ "error": e.to_string() }),
             }
         }
@@ -1817,7 +2600,7 @@ pub(super) fn execute_native_tool(
                 Err(e) => json!({ "error": format!("Failed to read std/{file_name}: {e}") }),
             }
         }
-        "get_ifm_symbol" => {
+        "get_symbol" | "get_ifm_symbol" => {
             let raw = args.get("path").and_then(|s| s.as_str()).unwrap_or("");
             let sym = args.get("name").and_then(|s| s.as_str()).unwrap_or("").trim();
             let p = resolve(raw);
@@ -1827,9 +2610,14 @@ pub(super) fn execute_native_tool(
             if sym.is_empty() {
                 return json!({ "error": "Missing required 'name' parameter" });
             }
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
             match fs::read_to_string(&p) {
                 Ok(src) => {
-                    let spans = parse_ifm_symbol_spans(&src);
+                    let spans = parse_code_symbol_spans(&src, &ext);
                     if let Some(hit) = spans.iter().find(|s| s.name == sym) {
                         let lines: Vec<&str> = src.lines().collect();
                         let s_idx = hit.start_line.saturating_sub(1);
@@ -1859,7 +2647,7 @@ pub(super) fn execute_native_tool(
                 Err(e) => json!({ "error": e.to_string() }),
             }
         }
-        "replace_ifm_symbol" => {
+        "replace_symbol" | "replace_ifm_symbol" => {
             let raw = args.get("path").and_then(|s| s.as_str()).unwrap_or("");
             let sym = args.get("name").and_then(|s| s.as_str()).unwrap_or("").trim();
             let new_src = args.get("new_source").and_then(|s| s.as_str()).unwrap_or("");
@@ -1870,9 +2658,14 @@ pub(super) fn execute_native_tool(
             if sym.is_empty() || new_src.trim().is_empty() {
                 return json!({ "error": "Both 'name' and non-empty 'new_source' are required" });
             }
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
             match fs::read_to_string(&p) {
                 Ok(src) => {
-                    let spans = parse_ifm_symbol_spans(&src);
+                    let spans = parse_code_symbol_spans(&src, &ext);
                     if let Some(hit) = spans.iter().find(|s| s.name == sym) {
                         let lines: Vec<&str> = src.lines().collect();
                         let s_idx = hit.start_line.saturating_sub(1);
@@ -1966,7 +2759,12 @@ pub(super) fn execute_native_tool(
                     .strip_prefix(default_proj)
                     .map(|r| r.display().to_string())
                     .unwrap_or_else(|_| fp.display().to_string());
-                let spans = parse_ifm_symbol_spans(&src);
+                let ext = fp
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("ifm")
+                    .to_ascii_lowercase();
+                let spans = parse_code_symbol_spans(&src, &ext);
                 for (idx, line) in src.lines().enumerate() {
                     if hits.len() >= MAX_HITS {
                         break;
@@ -2154,7 +2952,7 @@ pub(super) fn execute_native_tool(
             }
             let out_p = match args.get("output").and_then(|s| s.as_str()).filter(|s| !s.trim().is_empty()) {
                 Some(o) => resolve(o),
-                None => p.with_extension("axw"),
+                None => p.with_extension("ifw"),
             };
             if !is_jailed(&out_p) {
                 return json!({ "error": "Output path denied outside active project sandbox" });
@@ -2233,11 +3031,21 @@ pub(super) fn execute_native_tool(
                 }
             }
         }
+        "git_tool" => tool_git(args, default_proj, policy.is_dev_mode()),
+        "gh_cli" => tool_gh_cli(args, default_proj, policy.is_dev_mode()),
+        "wrangler_cli" => tool_wrangler_cli(args, default_proj, policy.is_dev_mode()),
+        "web_fetch" => tool_web_fetch(args, policy.is_dev_mode()),
+        "web_search" => tool_web_search(args, policy.is_dev_mode()),
         "run_project_command" => {
             if !policy.allow_proc {
                 return json!({ "error": "Proc capability denied (launch with --allow-proc)" });
             }
             let cmd = args.get("command").and_then(|s| s.as_str()).unwrap_or("");
+            let timeout_secs = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(60)
+                .clamp(5, 300);
             let cwd = args
                 .get("cwd")
                 .and_then(|s| s.as_str())
@@ -2449,7 +3257,7 @@ pub(super) fn execute_native_tool(
                                     exit_code = -9;
                                     break;
                                 }
-                                if cmd_start.elapsed() > Duration::from_secs(180) {
+                                if cmd_start.elapsed() > Duration::from_secs(timeout_secs) {
                                     timed_out = true;
                                     #[cfg(unix)]
                                     {
@@ -2492,28 +3300,16 @@ pub(super) fn execute_native_tool(
                             || bwrap_err.contains("Operation not permitted")
                             || bwrap_err.contains("bwrap:"));
                     if is_userns_blocked && !killed_by_user && !timed_out {
-                        let lower_cmd = cmd.to_ascii_lowercase();
-                        let forbidden = lower_cmd.contains("..")
-                            || lower_cmd.contains("/etc/")
-                            || lower_cmd.contains("curl ")
-                            || lower_cmd.contains("wget ")
-                            || lower_cmd.contains("ssh ")
-                            || lower_cmd.contains("scp ")
-                            || lower_cmd.contains("nc ")
-                            || lower_cmd.contains("find /");
-                        if forbidden {
+                        if is_unsafe_fallback_command(cmd) {
                             all_output = format!("Sandbox denied potentially unsafe command in fallback mode: {cmd}");
                             exit_code = 1;
                         } else {
-                            let mut fb_path = String::from("/usr/local/bin:/usr/bin:/bin");
+                            let mut fb_path = build_clean_path();
                             if let Some(p) = infimum_bin.parent() {
                                 fb_path = format!("{}:{fb_path}", p.display());
                             }
                             if let Some(p) = z3_bin.as_ref().and_then(|z| z.parent()) {
                                 fb_path = format!("{}:{fb_path}", p.display());
-                            }
-                            if cargo_dir.is_dir() {
-                                fb_path = format!("{}/bin:{fb_path}", cargo_dir.display());
                             }
                             let mut fb = Command::new("bash");
                             fb.arg("-c")
@@ -2532,15 +3328,18 @@ pub(super) fn execute_native_tool(
                             if rustup_dir.is_dir() {
                                 fb.env("RUSTUP_HOME", &rustup_dir);
                             }
-                            if let Ok(out) = fb.output() {
-                                exit_code = out.status.code().unwrap_or(-1);
-                                all_output = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
-                                let se = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                                if !se.is_empty() {
-                                    if !all_output.is_empty() {
-                                        all_output.push('\n');
+                            match run_subprocess_managed(fb, timeout_secs, &format!("$ {cmd}")) {
+                                Ok((code, out_txt, fb_to)) => {
+                                    exit_code = code;
+                                    timed_out = fb_to;
+                                    if code == -9 && out_txt.contains("[terminated by user]") {
+                                        killed_by_user = true;
                                     }
-                                    all_output.push_str(&se);
+                                    all_output = out_txt.trim_end().to_string();
+                                }
+                                Err(e) => {
+                                    exit_code = -1;
+                                    all_output = e;
                                 }
                             }
                         }
@@ -2551,11 +3350,12 @@ pub(super) fn execute_native_tool(
                         all_output.push_str(&bwrap_err);
                     }
                     let full = format!("$ {cmd}\n{all_output}");
-                    let trunc: String = full.chars().take(5000).collect();
+                    let (trunc, was_truncated) = truncate_head_tail(&full, 6000);
                     if killed_by_user {
                         json!({
                             "exit_code": exit_code,
                             "killed_by_user": true,
+                            "truncated": was_truncated,
                             "output": trunc,
                             "note": "Команда принудительно прервана пользователем через кнопку прерывания."
                         })
@@ -2563,12 +3363,14 @@ pub(super) fn execute_native_tool(
                         json!({
                             "exit_code": exit_code,
                             "timed_out": true,
+                            "truncated": was_truncated,
                             "output": trunc,
-                            "note": "Команда превысила лимит времени (180 с) и была остановлена."
+                            "note": format!("Команда превысила лимит времени ({timeout_secs} с) и была остановлена.")
                         })
                     } else {
                         json!({
                             "exit_code": exit_code,
+                            "truncated": was_truncated,
                             "output": trunc,
                         })
                     }

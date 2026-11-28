@@ -164,6 +164,14 @@ pub(super) fn timeline_update_step_tail(step_idx: usize, tail: String) {
     }
 }
 
+pub(super) fn timeline_update_last_step_tail(tail: String) {
+    if let Ok(mut g) = live_timeline_cell().lock() {
+        if let Some(st) = g.snap.steps.last_mut() {
+            st.output_tail = tail;
+        }
+    }
+}
+
 pub(super) fn timeline_finish_step(step_idx: usize, status: i64, tail_opt: Option<String>) {
     if let Ok(mut g) = live_timeline_cell().lock() {
         if let Some(st) = g.snap.steps.get_mut(step_idx) {

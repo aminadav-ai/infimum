@@ -85,7 +85,7 @@ const PROVIDER_ENV_KEYS: [&str; 7] = [
     "MISTRAL_API_KEY",
 ];
 
-fn load_env_key_host_only(key_name: &str) -> Option<String> {
+pub(crate) fn load_env_key_host_only(key_name: &str) -> Option<String> {
     if let Ok(g) = runtime_env_overrides().lock() {
         if let Some(v) = g.get(key_name) {
             if !v.trim().is_empty() {
@@ -642,12 +642,18 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
         }
         ("GET", "/settings") => {
             if v.get("found").and_then(|b| b.as_bool()).unwrap_or(false) {
+                let dm = if v.get("dev_mode").and_then(|x| x.as_bool()).unwrap_or(false) {
+                    1
+                } else {
+                    0
+                };
                 format!(
-                    "1 {} {} {} {}",
+                    "1 {} {} {} {} {}",
                     v.get("theme").and_then(|x| x.as_i64()).unwrap_or(0),
                     v.get("font_scale_pct").and_then(|x| x.as_i64()).unwrap_or(120),
                     v.get("currency_id").and_then(|x| x.as_i64()).unwrap_or(0),
                     v.get("model_idx").and_then(|x| x.as_i64()).unwrap_or(0),
+                    dm,
                 )
             } else {
                 "0".to_string()
@@ -815,12 +821,16 @@ pub fn handle_request(
                     .split_whitespace()
                     .filter_map(|s| s.parse::<i64>().ok())
                     .collect();
-                json!({
+                let mut obj = json!({
                     "theme": nums.first().copied().unwrap_or(0),
                     "font_scale_pct": nums.get(1).copied().unwrap_or(120),
                     "currency_id": nums.get(2).copied().unwrap_or(0),
                     "model_idx": nums.get(3).copied().unwrap_or(0),
-                })
+                });
+                if let Some(dm) = nums.get(4).copied() {
+                    obj["dev_mode"] = json!(dm != 0);
+                }
+                obj
             }
             _ => Value::Null,
         }
@@ -1151,6 +1161,7 @@ pub fn handle_request(
                 return (403, "Forbidden", json!({ "ok": false, "error": "fs_denied" }));
             }
             if let Some(s) = agent::load_native_settings() {
+                let effective_dev = s.dev_mode || ctx.policy.dev_mode;
                 (
                     200,
                     "OK",
@@ -1161,6 +1172,22 @@ pub fn handle_request(
                         "font_scale_pct": s.font_scale_pct,
                         "currency_id": s.currency_id,
                         "model_idx": s.model_idx,
+                        "dev_mode": effective_dev,
+                    }),
+                )
+            } else if ctx.policy.dev_mode {
+                let d = agent::NativeSettings::default();
+                (
+                    200,
+                    "OK",
+                    json!({
+                        "ok": true,
+                        "found": true,
+                        "theme": d.theme,
+                        "font_scale_pct": d.font_scale_pct,
+                        "currency_id": d.currency_id,
+                        "model_idx": d.model_idx,
+                        "dev_mode": true,
                     }),
                 )
             } else {
@@ -1171,6 +1198,11 @@ pub fn handle_request(
             if !ctx.policy.fs_enabled() {
                 return (403, "Forbidden", json!({ "ok": false, "error": "fs_denied" }));
             }
+            let prev = agent::load_native_settings().unwrap_or_default();
+            let dev_mode = body_json
+                .get("dev_mode")
+                .and_then(|v| v.as_bool().or_else(|| v.as_i64().map(|n| n != 0)))
+                .unwrap_or(prev.dev_mode);
             let s = agent::NativeSettings {
                 theme: body_json.get("theme").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
                 font_scale_pct: body_json
@@ -1185,9 +1217,10 @@ pub fn handle_request(
                     .get("model_idx")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0) as i32,
+                dev_mode,
             };
             if agent::save_native_settings(s) {
-                (200, "OK", json!({ "ok": true }))
+                (200, "OK", json!({ "ok": true, "dev_mode": s.dev_mode }))
             } else {
                 (500, "Internal Server Error", json!({ "ok": false, "error": "io_failed" }))
             }

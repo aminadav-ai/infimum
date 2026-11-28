@@ -25,6 +25,7 @@ use super::timeline::{
     timeline_push_thought, timeline_set_round, timeline_set_thought, TimelineSnapshot,
     ASYNC_CANCELLED, ASYNC_GEMINI_PID,
 };
+use super::tool_specs::{detect_tool_options, gemini_tool_declarations, openai_tool_declarations};
 use super::tools::{
     append_play_tag_if_axw_present, describe_tool_ru, describe_tool_step, execute_native_tool,
     resolve_whitelisted_project, studio_root_candidates,
@@ -41,7 +42,12 @@ pub(super) const EMBEDDED_STUDIO_SYSTEM_PROMPT: &str = include_str!("../../../ca
 
 /// Load the live `capsule/system_prompt.md` on every request (with embedded fallback)
 /// so prompt tweaks take effect immediately without recompiling Rust or restarting Infimum Code.
-pub(super) fn render_studio_system_prompt(proj_dir: &Path, imported_plan: &str, imported_task: &str) -> String {
+pub(super) fn render_studio_system_prompt(
+    proj_dir: &Path,
+    imported_plan: &str,
+    imported_task: &str,
+    dev_mode: bool,
+) -> String {
     let mut tpl = None;
     for root in studio_root_candidates() {
         if let Ok(s) = fs::read_to_string(root.join("capsule/system_prompt.md")) {
@@ -55,9 +61,16 @@ pub(super) fn render_studio_system_prompt(proj_dir: &Path, imported_plan: &str, 
     let proj_s = proj_dir.display().to_string();
     let plan_s = if imported_plan.trim().is_empty() { "(нет)" } else { imported_plan.trim() };
     let task_s = if imported_task.trim().is_empty() { "(нет)" } else { imported_task.trim() };
-    raw.replace("{proj}", &proj_s)
+    let mut rendered = raw
+        .replace("{proj}", &proj_s)
         .replace("{plan}", plan_s)
-        .replace("{task}", task_s)
+        .replace("{task}", task_s);
+    if dev_mode {
+        rendered.push_str(
+            "\nРЕЖИМ РАЗРАБОТЧИКА (Developer Mode): ВКЛЮЧЁН. Доступны сетевые операции `git_tool` (`fetch`/`pull`/`push`), GitHub CLI (`gh_cli`), Cloudflare Wrangler (`wrangler_cli`), загрузка веб-страниц (`web_fetch`) и веб-поиск через Gemini Search grounding (`web_search`).\n",
+        );
+    }
+    rendered
 }
 
 pub(super) fn write_ifm_u32_buf(mem: &mut [u8], base_word: usize, s: &str, max_chars: usize) -> usize {
@@ -228,327 +241,10 @@ where
         };
     };
 
-    let sys_prompt = render_studio_system_prompt(&proj_dir, &imported_plan, &imported_task);
-
-    let tools_decl = json!([
-        {
-            "type": "function",
-            "function": {
-                "name": "list_project_files",
-                "description": "List files inside a project directory under ~/Projects.",
-                "parameters": { "type": "object", "properties": { "project_dir": { "type": "string" } } }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_project",
-                "description": "Fast grep search across files in a project directory.",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "query": { "type": "string" }, "project_dir": { "type": "string" } },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_file_outline",
-                "description": "Return a compact structural outline of an .ifm or .rs file without reading its full body.",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "path": { "type": "string" } },
-                    "required": ["path"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_project_file",
-                "description": "Read a specific line range from a file inside ~/Projects.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "start_line": { "type": "integer" },
-                        "end_line": { "type": "integer" }
-                    },
-                    "required": ["path"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "edit_project_file",
-                "description": "Surgically replace an exact target snippet in an existing file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "target": { "type": "string" },
-                        "replacement": { "type": "string" }
-                    },
-                    "required": ["path", "target", "replacement"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "batch_edit_project_file",
-                "description": "Atomically apply multiple independent exact target->replacement edits to a single file in one turn.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "edits": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "target": { "type": "string" },
-                                    "replacement": { "type": "string" }
-                                },
-                                "required": ["target", "replacement"]
-                            }
-                        }
-                    },
-                    "required": ["path", "edits"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "write_project_file",
-                "description": "Create or overwrite a small file inside ~/Projects.",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "path": { "type": "string" }, "content": { "type": "string" } },
-                    "required": ["path", "content"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_infimum_guide",
-                "description": "Read the canonical Infimum Lang & infimum-web reference guide (syntax, Telos/Flux/Forma/Strata, GPU protocol, compiler CLI, and capsule launch workflow). Call this first in a new conversation before writing or compiling Infimum code.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {}
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_infimum_std",
-                "description": "Read the exact source code of any built-in Infimum Lang standard library module (`std/<name>.ifm`, e.g. `mesh3d.ifm`, `gfx.ifm`, `input.ifm`, `math.ifm`, `audio.ifm`, `text.ifm`, `prelude.ifm`). Pass empty string or `list` to list all available std modules.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file": {
-                            "type": "string",
-                            "description": "Module name such as 'gfx.ifm', 'input.ifm', 'math.ifm', or 'list'."
-                        }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_ifm_symbol",
-                "description": "Fetch the exact source code and line range of a single top-level Infimum declaration (fn, forma, struct, enum, layout, const) by name. Much faster and cheaper in tokens than reading a large .ifm file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "Relative path to the .ifm file." },
-                        "name": { "type": "string", "description": "Exact symbol name (e.g. 'step_ui', 'Sheep', 'AppMem')." }
-                    },
-                    "required": ["path", "name"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "replace_ifm_symbol",
-                "description": "Atomically replace an entire top-level Infimum declaration (fn, forma, struct, enum, layout, const) by symbol name, avoiding brittle whitespace matching.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "Relative path to the .ifm file." },
-                        "name": { "type": "string", "description": "Exact symbol name to replace." },
-                        "new_source": { "type": "string", "description": "Complete replacement declaration source code." }
-                    },
-                    "required": ["path", "name", "new_source"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "find_ifm_callers",
-                "description": "Find all references/callers of a symbol across .ifm files in the project (or a single file), returning enclosing function names and line numbers.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "symbol": { "type": "string", "description": "Symbol name to search for." },
-                        "path": { "type": "string", "description": "Optional relative path to restrict search to one .ifm file." }
-                    },
-                    "required": ["symbol"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_infimum_template",
-                "description": "Read a compact, Z3-verified starter capsule template ('ui', 'game2d', 'game3d', or 'list').",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "kind": { "type": "string", "description": "'ui', 'game2d', 'game3d', or 'list'." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_infimum_repo",
-                "description": "List directories and files in the live Infimum monorepo + website snapshot (crates/infimum-lang/, crates/infimum-web/, apps/infimum-code/, site/, LICENSE, docs, examples, tests, CI workflows).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "prefix": { "type": "string", "description": "Optional directory prefix, e.g. 'crates/infimum-lang/src', 'apps/infimum-code', or 'site'." }
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_infimum_repo",
-                "description": "Read a file from the live Infimum monorepo + website snapshot with 1-based line numbers (up to 400 lines per call; use start_line/end_line for larger files).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "Repository-relative path, e.g. 'crates/infimum-lang/src/verify.rs', 'LICENSE', or 'site/src/worker.js'." },
-                        "start_line": { "type": "integer", "description": "Optional 1-based start line." },
-                        "end_line": { "type": "integer", "description": "Optional 1-based end line (inclusive)." }
-                    },
-                    "required": ["path"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_infimum_repo",
-                "description": "Search text across all files in the live Infimum monorepo + website snapshot.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Substring to search for." },
-                        "prefix": { "type": "string", "description": "Optional directory prefix to restrict search, e.g. 'crates/infimum-lang'." },
-                        "case_sensitive": { "type": "boolean", "description": "Case-sensitive search (default false)." },
-                        "max_results": { "type": "integer", "description": "Maximum matches to return (default 40, max 100)." }
-                    },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "verify_infimum_file",
-                "description": "Verify an Infimum (.ifm) file with Z3 Telos/Flux/Forma contracts (`infimum verify`).",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "path": { "type": "string" } },
-                    "required": ["path"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_pbr_textures",
-                "description": "Search 800+ free CC0 1K PBR textures (Poly Haven catalog via infimum-lang.org) by keywords such as 'sci-fi metal', 'brick', 'concrete', 'wood', 'rock'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Search keywords, e.g. 'rusty metal' or 'stone brick'" },
-                        "limit": { "type": "integer", "description": "Max results (1..20, default 10)" }
-                    },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "set_pbr_texture",
-                "description": "Bind a CC0 1K PBR texture ID (from search_pbr_textures) to a 3D texture layer slot (0..11). Downloads once to ~/.cache/infimum-web/textures/ and links into project textures/ + textures.json.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "slot": { "type": "integer", "description": "Texture layer slot 0..11" },
-                        "texture_id": { "type": "string", "description": "Exact texture id from search_pbr_textures" }
-                    },
-                    "required": ["slot", "texture_id"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "compile_infimum_wasm",
-                "description": "Compile an Infimum (.ifm) file into a WebAssembly capsule (.ifw) using `infimum compile-wasm` inside the active project.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "output": { "type": "string", "description": "Optional output .ifw path inside the project (defaults to <path>.ifw)." }
-                    },
-                    "required": ["path"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "run_infimum_capsule",
-                "description": "Run a compiled .ifw capsule in native infimum-web (sandboxed Gpu+Mem only). Use headless=true for smoke-check verification, or headless=false to open the GUI window for the user.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "headless": { "type": "boolean", "description": "If true (default), run --headless-check and return primitive/fuel stats. If false, launch the native GUI window." }
-                    },
-                    "required": ["path"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "run_project_command",
-                "description": "Run a shell command in the workspace.",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "cwd": { "type": "string" }, "command": { "type": "string" } },
-                    "required": ["command"]
-                }
-            }
-        }
-    ]);
+    let dev_mode = policy.is_dev_mode();
+    let sys_prompt = render_studio_system_prompt(&proj_dir, &imported_plan, &imported_task, dev_mode);
+    let tool_opts = detect_tool_options(&proj_dir, dev_mode);
+    let tools_decl = openai_tool_declarations(tool_opts);
 
     let mut messages: Vec<Value> = vec![json!({
         "role": "system",
@@ -618,20 +314,23 @@ where
         timeline_set_round((step + 1) as i64);
         set_status(format!("Шаг {}/{MAX_OPENAI_AGENT_STEPS}: думаю ({display_model})…", step + 1));
 
+        let mut req_messages = messages.clone();
+        compact_old_openai_tool_messages(&mut req_messages, 4);
+
         let body = if is_last_step {
-            messages.push(json!({
+            req_messages.push(json!({
                 "role": "user",
                 "content": "Подведи краткий итог выполненных изменений и ответь пользователю на русском языке."
             }));
             json!({
                 "model": model_id,
-                "messages": messages,
+                "messages": req_messages,
                 "stream": false,
             })
         } else {
             json!({
                 "model": model_id,
-                "messages": messages,
+                "messages": req_messages,
                 "tools": tools_decl,
                 "tool_choice": "auto",
                 "stream": false,
@@ -1029,265 +728,10 @@ where
         };
     };
 
-    let sys_prompt = render_studio_system_prompt(&proj_dir, &imported_plan, &imported_task);
-
-    let tools_decl = json!([{
-        "functionDeclarations": [
-            {
-                "name": "list_project_files",
-                "description": "List files inside a project directory under ~/Projects.",
-                "parameters": { "type": "OBJECT", "properties": { "project_dir": { "type": "STRING" } } }
-            },
-            {
-                "name": "search_project",
-                "description": "Fast grep search across files in a project directory.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": { "query": { "type": "STRING" }, "project_dir": { "type": "STRING" } },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "get_file_outline",
-                "description": "Return a compact structural outline (declarations, signatures, effects, req/ens presence, and line ranges) of an .ifm or .rs file without reading its full body.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING" }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "read_project_file",
-                "description": "Read a specific line range from a file inside ~/Projects.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING" },
-                        "start_line": { "type": "INTEGER" },
-                        "end_line": { "type": "INTEGER" }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "edit_project_file",
-                "description": "Surgically replace an exact target snippet in an existing file.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING" },
-                        "target": { "type": "STRING" },
-                        "replacement": { "type": "STRING" }
-                    },
-                    "required": ["path", "target", "replacement"]
-                }
-            },
-            {
-                "name": "batch_edit_project_file",
-                "description": "Atomically apply multiple independent exact target->replacement edits to a single file in one turn. Validates all edits first; rolls back completely if any target is missing, ambiguous, or overlapping.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING" },
-                        "edits": {
-                            "type": "ARRAY",
-                            "items": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "target": { "type": "STRING" },
-                                    "replacement": { "type": "STRING" }
-                                },
-                                "required": ["target", "replacement"]
-                            }
-                        }
-                    },
-                    "required": ["path", "edits"]
-                }
-            },
-            {
-                "name": "write_project_file",
-                "description": "Create or overwrite a small file inside ~/Projects.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": { "path": { "type": "STRING" }, "content": { "type": "STRING" } },
-                    "required": ["path", "content"]
-                }
-            },
-            {
-                "name": "read_infimum_guide",
-                "description": "Read the canonical Infimum Lang & infimum-web reference guide (syntax, Telos/Flux/Forma/Strata, GPU protocol, compiler CLI, and capsule launch workflow). Call this first in a new conversation before writing or compiling Infimum code.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {}
-                }
-            },
-            {
-                "name": "read_infimum_std",
-                "description": "Read the exact source code of any built-in Infimum Lang standard library module (`std/<name>.ifm`, e.g. `mesh3d.ifm`, `gfx.ifm`, `input.ifm`, `math.ifm`, `audio.ifm`, `text.ifm`, `prelude.ifm`). Pass empty string or `list` to list all available std modules.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "file": {
-                            "type": "STRING",
-                            "description": "Module name such as 'gfx.ifm', 'input.ifm', 'math.ifm', or 'list'."
-                        }
-                    }
-                }
-            },
-            {
-                "name": "get_ifm_symbol",
-                "description": "Fetch the exact source code and line range of a single top-level Infimum declaration (fn, forma, struct, enum, layout, const) by name. Much faster and cheaper in tokens than reading a large .ifm file.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING", "description": "Relative path to the .ifm file." },
-                        "name": { "type": "STRING", "description": "Exact symbol name (e.g. 'step_ui', 'Sheep', 'AppMem')." }
-                    },
-                    "required": ["path", "name"]
-                }
-            },
-            {
-                "name": "replace_ifm_symbol",
-                "description": "Atomically replace an entire top-level Infimum declaration (fn, forma, struct, enum, layout, const) by symbol name, avoiding brittle whitespace matching.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING", "description": "Relative path to the .ifm file." },
-                        "name": { "type": "STRING", "description": "Exact symbol name to replace." },
-                        "new_source": { "type": "STRING", "description": "Complete replacement declaration source code." }
-                    },
-                    "required": ["path", "name", "new_source"]
-                }
-            },
-            {
-                "name": "find_ifm_callers",
-                "description": "Find all references/callers of a symbol across .ifm files in the project (or a single file), returning enclosing function names and line numbers.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "symbol": { "type": "STRING", "description": "Symbol name to search for." },
-                        "path": { "type": "STRING", "description": "Optional relative path to restrict search to one .ifm file." }
-                    },
-                    "required": ["symbol"]
-                }
-            },
-            {
-                "name": "read_infimum_template",
-                "description": "Read a compact, Z3-verified starter capsule template ('ui', 'game2d', 'game3d', or 'list').",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "kind": { "type": "STRING", "description": "'ui', 'game2d', 'game3d', or 'list'." }
-                    }
-                }
-            },
-            {
-                "name": "list_infimum_repo",
-                "description": "List directories and files in the live Infimum monorepo + website snapshot (crates/infimum-lang/, crates/infimum-web/, apps/infimum-code/, site/, LICENSE, docs, examples, tests, CI workflows).",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "prefix": { "type": "STRING", "description": "Optional directory prefix, e.g. 'crates/infimum-lang/src', 'apps/infimum-code', or 'site'." }
-                    }
-                }
-            },
-            {
-                "name": "read_infimum_repo",
-                "description": "Read a file from the live Infimum monorepo + website snapshot with 1-based line numbers (up to 400 lines per call; use start_line/end_line for larger files).",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING", "description": "Repository-relative path, e.g. 'crates/infimum-lang/src/verify.rs', 'LICENSE', or 'site/src/worker.js'." },
-                        "start_line": { "type": "INTEGER", "description": "Optional 1-based start line." },
-                        "end_line": { "type": "INTEGER", "description": "Optional 1-based end line (inclusive)." }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "search_infimum_repo",
-                "description": "Search text across all files in the live Infimum monorepo + website snapshot.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "query": { "type": "STRING", "description": "Substring to search for." },
-                        "prefix": { "type": "STRING", "description": "Optional directory prefix to restrict search, e.g. 'crates/infimum-lang'." },
-                        "case_sensitive": { "type": "BOOLEAN", "description": "Case-sensitive search (default false)." },
-                        "max_results": { "type": "INTEGER", "description": "Maximum matches to return (default 40, max 100)." }
-                    },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "verify_infimum_file",
-                "description": "Verify an Infimum (.ifm) file with Z3 Telos/Flux/Forma contracts (`infimum verify`).",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": { "path": { "type": "STRING" } },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "search_pbr_textures",
-                "description": "Search 800+ free CC0 1K PBR textures (Poly Haven catalog via infimum-lang.org) by keywords such as 'sci-fi metal', 'brick', 'concrete', 'wood', 'rock'.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "query": { "type": "STRING", "description": "Search keywords, e.g. 'rusty metal' or 'stone brick'" },
-                        "limit": { "type": "INTEGER", "description": "Max results (1..20, default 10)" }
-                    },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "set_pbr_texture",
-                "description": "Bind a CC0 1K PBR texture ID (from search_pbr_textures) to a 3D texture layer slot (0..11). Downloads once to ~/.cache/infimum-web/textures/ and links into project textures/ + textures.json.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "slot": { "type": "INTEGER", "description": "Texture layer slot 0..11" },
-                        "texture_id": { "type": "STRING", "description": "Exact texture id from search_pbr_textures" }
-                    },
-                    "required": ["slot", "texture_id"]
-                }
-            },
-            {
-                "name": "compile_infimum_wasm",
-                "description": "Compile an Infimum (.ifm) file into a WebAssembly capsule (.ifw) using `infimum compile-wasm` inside the active project.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING" },
-                        "output": { "type": "STRING", "description": "Optional output .ifw path inside the project (defaults to <path>.ifw)." }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "run_infimum_capsule",
-                "description": "Run a compiled .ifw capsule in native infimum-web (sandboxed Gpu+Mem only). Use headless=true for smoke-check verification, or headless=false to open the GUI window for the user.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "path": { "type": "STRING" },
-                        "headless": { "type": "BOOLEAN", "description": "If true (default), run --headless-check and return primitive/fuel stats. If false, launch the native GUI window." }
-                    },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "run_project_command",
-                "description": "Run a shell command in the workspace.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": { "cwd": { "type": "STRING" }, "command": { "type": "STRING" } },
-                    "required": ["command"]
-                }
-            }
-        ]
-    }]);
+    let dev_mode = policy.is_dev_mode();
+    let sys_prompt = render_studio_system_prompt(&proj_dir, &imported_plan, &imported_task, dev_mode);
+    let tool_opts = detect_tool_options(&proj_dir, dev_mode);
+    let tools_decl = json!([gemini_tool_declarations(tool_opts)]);
 
     // Build Gemini `contents` from full shared conversation history (last 16 messages, images in last 4) + current prompt
     let mut contents: Vec<Value> = Vec::new();
@@ -1683,16 +1127,38 @@ pub(super) fn compact_old_tool_responses(contents: &mut [Value], keep_recent_too
                 .to_string();
             if !matches!(
                 tool_name.as_str(),
-                "read_project_file" | "search_project" | "list_project_files" | "get_file_outline"
+                "read_project_file"
+                    | "search_project"
+                    | "list_project_files"
+                    | "get_file_outline"
+                    | "get_symbol"
+                    | "get_ifm_symbol"
+                    | "read_infimum_repo"
+                    | "search_infimum_repo"
+                    | "list_infimum_repo"
+                    | "read_infimum_std"
+                    | "read_infimum_guide"
+                    | "read_infimum_template"
+                    | "web_fetch"
+                    | "web_search"
+                    | "git_tool"
+                    | "gh_cli"
+                    | "wrangler_cli"
+                    | "run_project_command"
             ) {
                 continue;
             }
             let Some(resp) = fr.get_mut("response").and_then(|r| r.as_object_mut()) else {
                 continue;
             };
-            // Never compact error responses
+            // Never compact error or non-zero exit responses
             if resp.contains_key("error")
                 || resp.get("ok").and_then(|v| v.as_bool()) == Some(false)
+                || resp
+                    .get("exit_code")
+                    .and_then(|v| v.as_i64())
+                    .map(|c| c != 0)
+                    .unwrap_or(false)
             {
                 continue;
             }
@@ -1765,9 +1231,125 @@ pub(super) fn compact_old_tool_responses(contents: &mut [Value], keep_recent_too
                         );
                     }
                 }
+                "get_symbol" | "get_ifm_symbol" => {
+                    if let Some(src_str) = resp.get("source").and_then(|v| v.as_str()) {
+                        let orig_chars = src_str.chars().count();
+                        let sym = resp.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let path = resp.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+                        resp.insert(
+                            "source".to_string(),
+                            json!(format!(
+                                "[compacted older tool output: {tool_name} {sym} in {path}, original {orig_chars} chars]"
+                            )),
+                        );
+                    }
+                }
+                "run_project_command" | "git_tool" | "gh_cli" | "wrangler_cli" => {
+                    if let Some(out_str) = resp.get("output").and_then(|v| v.as_str()) {
+                        let orig_chars = out_str.chars().count();
+                        let first_line = out_str.lines().next().unwrap_or("");
+                        let snippet: String = first_line.chars().take(120).collect();
+                        resp.insert(
+                            "output".to_string(),
+                            json!(format!(
+                                "[compacted older ok output: {tool_name} ({snippet}), original {orig_chars} chars]"
+                            )),
+                        );
+                    }
+                }
+                "web_fetch" | "read_infimum_repo" | "read_infimum_std" | "read_infimum_guide"
+                | "read_infimum_template" => {
+                    for key in ["content", "guide", "source", "template"] {
+                        if let Some(val_str) = resp.get(key).and_then(|v| v.as_str()) {
+                            let orig_chars = val_str.chars().count();
+                            if orig_chars > 400 {
+                                resp.insert(
+                                    key.to_string(),
+                                    json!(format!(
+                                        "[compacted older tool output: {tool_name}, original {orig_chars} chars; call again if exact text is needed]"
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
+                "web_search" => {
+                    if let Some(sum_str) = resp.get("summary").and_then(|v| v.as_str()) {
+                        let orig_chars = sum_str.chars().count();
+                        if orig_chars > 400 {
+                            resp.insert(
+                                "summary".to_string(),
+                                json!(format!(
+                                    "[compacted older web_search summary, original {orig_chars} chars]"
+                                )),
+                            );
+                        }
+                    }
+                }
+                "search_infimum_repo" | "list_infimum_repo" => {
+                    for key in ["matches", "files"] {
+                        if let Some(v) = resp.get(key) {
+                            let orig_chars = serde_json::to_string(v).map(|s| s.chars().count()).unwrap_or(0);
+                            if orig_chars > 400 {
+                                resp.insert(
+                                    key.to_string(),
+                                    json!(format!(
+                                        "[compacted older tool output: {tool_name}, original {orig_chars} chars]"
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
+    }
+}
+
+/// Compact older large `role: "tool"` messages in OpenAI-compatible conversations,
+/// keeping the latest `keep_recent_tool_msgs` tool results and all error responses intact.
+pub(super) fn compact_old_openai_tool_messages(messages: &mut [Value], keep_recent_tool_msgs: usize) {
+    let tool_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, m)| {
+            if m.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if tool_indices.len() <= keep_recent_tool_msgs {
+        return;
+    }
+    let compact_count = tool_indices.len() - keep_recent_tool_msgs;
+    for &idx in &tool_indices[..compact_count] {
+        let Some(content) = messages[idx].get("content").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let orig_chars = content.chars().count();
+        if orig_chars <= COMPACT_RESPONSE_THRESHOLD_CHARS {
+            continue;
+        }
+        // Preserve error responses in full
+        if let Ok(parsed) = serde_json::from_str::<Value>(content) {
+            if parsed.get("error").is_some()
+                || parsed.get("ok").and_then(|v| v.as_bool()) == Some(false)
+                || parsed
+                    .get("exit_code")
+                    .and_then(|v| v.as_i64())
+                    .map(|c| c != 0)
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+        }
+        let preview: String = content.chars().take(160).collect();
+        messages[idx]["content"] = json!(format!(
+            "[compacted older tool result, original {orig_chars} chars; preview: {preview}...]"
+        ));
     }
 }
 

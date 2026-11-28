@@ -63,6 +63,8 @@ fn main() {
             policy.allow_user_workspaces = true;
         } else if a == "--allow-proc" {
             policy.allow_proc = true;
+        } else if a == "--dev-mode" {
+            policy.dev_mode = true;
         } else if let Some(v) = a.strip_prefix("--allow-net=") {
             for d in v.split(',') {
                 let d = d.trim();
