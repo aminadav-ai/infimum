@@ -203,11 +203,15 @@ Add `infimum` to your Claude Desktop or Cursor configuration:
 
 ## Live Demonstrations
 
-Explore interactive `.ifw` capsules compiled directly from Infimum Lang running inside the WebGL2 browser runtime:
+Explore real interactive `.ifw` capsules compiled directly from Infimum Lang running inside the WebGL2 browser runtime:
 
-- 🎮 **Color Lines Showcase:** [infimum-lang.org/showcase/color-lines](https://infimum-lang.org/showcase/color-lines)
-- 🏜️ **Abelian Sandpile Simulation:** [infimum-lang.org/showcase/sandpile](https://infimum-lang.org/showcase/sandpile)
-- 🌌 **Ceres Drift Procedural Demo:** [infimum-lang.org/showcase/ceres-drift](https://infimum-lang.org/showcase/ceres-drift)
+- 🎮 **Color Lines Showcase:** [infimum-lang.org/player/?app=color-lines](https://infimum-lang.org/player/?app=color-lines)
+- 🌌 **Ceres Drift Procedural Demo:** [infimum-lang.org/player/?app=ceres-drift](https://infimum-lang.org/player/?app=ceres-drift)
+- 🌀 **Slipgate Retro FPS Showcase:** [infimum-lang.org/player/?app=slipgate](https://infimum-lang.org/player/?app=slipgate)
+- 🦁 **Lion Herd Ecosystem Simulation:** [infimum-lang.org/player/?app=lion-herd](https://infimum-lang.org/player/?app=lion-herd)
+- ⚫ **Gomoku Five-in-a-Row:** [infimum-lang.org/player/?app=gomoku](https://infimum-lang.org/player/?app=gomoku)
+
+Or try the full in-browser IDE: **[infimum-lang.org/code/](https://infimum-lang.org/code/)**
 
 ---
 
