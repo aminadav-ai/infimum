@@ -8,6 +8,7 @@
 // operations are authenticated via Bearer token to `127.0.0.1:<port>`.
 
 use "abi.ifm";
+use "bridge_gen.ifm";
 use "primitives.ifm";
 use "std/sys_mem.ifm";
 use "std/mem.ifm";
@@ -178,32 +179,12 @@ pub mod daemon {
     if code != 200 {
       0
     } else {
-      StudioMem.http_key_tmp[0] = 0;
-      let found = parse_i64(StudioMem::http_resp_buf);
-      if found == 1 {
-        StudioMem.settings_theme = parse_i64(StudioMem::http_resp_buf);
-        StudioMem.settings_scale = parse_i64(StudioMem::http_resp_buf);
-        StudioMem.settings_currency = parse_i64(StudioMem::http_resp_buf);
-        StudioMem.settings_model = parse_i64(StudioMem::http_resp_buf);
-        StudioMem.settings_dev_mode = parse_i64(StudioMem::http_resp_buf);
-        1
-      } else {
-        0
-      }
+      bridge_settings_decode(StudioMem::http_resp_buf)
     }
   }
 
   pub fn settings_save() -[Mem, Net]-> i64 {
-    buf_clear(StudioMem::http_body_tmp);
-    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_theme);
-    buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
-    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_scale);
-    buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
-    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_currency);
-    buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
-    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_model);
-    buf_push_cp(StudioMem::http_body_tmp, 128, ' ');
-    buf_push_int(StudioMem::http_body_tmp, 128, StudioMem.settings_dev_mode);
+    bridge_settings_encode(StudioMem::http_body_tmp);
     let code = http("PUT", "/settings?format=ifm", StudioMem::http_body_tmp);
     if code == 200 { 1 } else { 0 }
   }
@@ -287,7 +268,11 @@ pub mod daemon {
       buf_push_int(StudioMem::http_body_tmp, 1024, max_i64(0, start_line));
       buf_push_cp(StudioMem::http_body_tmp, 1024, ' ');
       buf_push_int(StudioMem::http_body_tmp, 1024, clamp_i64(max_lines, 50, 400));
-      let code = http("POST", "/files/open?format=ifm", StudioMem::http_body_tmp);
+      let code = if StudioMem.file_view_is_diff == 1 {
+        http("POST", "/git/diff?format=ifm", StudioMem::http_body_tmp)
+      } else {
+        http("POST", "/files/open?format=ifm", StudioMem::http_body_tmp)
+      };
       if code == 200 {
         StudioMem.http_key_tmp[0] = 0;
         let total_l = clamp_i64(parse_i64(StudioMem::http_resp_buf), 1, 2000000);
@@ -325,6 +310,7 @@ pub mod daemon {
       buf_push_cp(StudioMem::file_view_req_buf, 250, ch);
       buf_push_cp(StudioMem::file_view_path_buf, 250, ch);
     }
+    StudioMem.file_view_is_diff = 0;
     let ok = fetch_file_window(0, 250);
     if ok == 1 {
       StudioMem.file_view_scroll_y = 0;
@@ -333,6 +319,135 @@ pub mod daemon {
     } else {
       0
     }
+  }
+
+  // Open git diff for a specific workspace-relative file (or full project diff if flen == 0).
+  pub fn open_diff(proj_buf: i64, pstart: i64, plen: i64, fbuf: i64, fstart: i64, flen: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::file_view_req_buf);
+    buf_clear(StudioMem::file_view_path_buf);
+    let p_vis = clamp_i64(plen, 0, 120);
+    for i in 0..p_vis max 120 {
+      let ch = buf_get_cp(proj_buf, pstart + i);
+      buf_push_cp(StudioMem::file_view_req_buf, 250, ch);
+    }
+    buf_push_cp(StudioMem::file_view_req_buf, 250, '\n');
+    buf_append_lit(StudioMem::file_view_path_buf, 250, "DIFF: ");
+    if flen > 0 {
+      let f_vis = clamp_i64(flen, 0, 180);
+      for i in 0..f_vis max 180 {
+        let ch = buf_get_cp(fbuf, fstart + i);
+        buf_push_cp(StudioMem::file_view_req_buf, 250, ch);
+        buf_push_cp(StudioMem::file_view_path_buf, 250, ch);
+      }
+    } else {
+      buf_append_lit(StudioMem::file_view_path_buf, 250, "Все изменения проекта");
+    }
+    StudioMem.file_view_is_diff = 1;
+    let ok = fetch_file_window(0, 250);
+    if ok == 1 {
+      StudioMem.file_view_scroll_y = 0;
+      StudioMem.file_view_open = 1;
+      1
+    } else {
+      0
+    }
+  }
+
+  // Fetch git status entries for active project into StudioMem.diff_* arrays.
+  pub fn git_status_load(proj_buf: i64) -[Mem, Net]-> i64 {
+    let code = http("POST", "/git/status?format=ifm", proj_buf);
+    StudioMem.diff_loaded = 1;
+    if code == 200 {
+      StudioMem.http_key_tmp[0] = 0;
+      let cnt = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, 64);
+      parse_skip_to_next_line(StudioMem::http_resp_buf);
+      let mut idx = 0;
+      let resp_n = buf_len(StudioMem::http_resp_buf, 65500);
+      while idx < cnt max 64 {
+        let p0 = StudioMem.http_key_tmp[0];
+        if p0 >= resp_n {
+          break;
+        }
+        let st_ch = buf_get_cp(StudioMem::http_resp_buf, p0);
+        StudioMem.diff_status_arr[idx] = st_ch;
+        let mut p = p0 + 1;
+        while p < resp_n max 16 {
+          let c = buf_get_cp(StudioMem::http_resp_buf, p);
+          p += 1;
+          if c == '\t' || c == '\n' {
+            break;
+          }
+        }
+        StudioMem.http_key_tmp[0] = p;
+        let add_n = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, 999999);
+        StudioMem.diff_added_arr[idx] = add_n;
+        let mut p2 = StudioMem.http_key_tmp[0];
+        if p2 < resp_n && buf_get_cp(StudioMem::http_resp_buf, p2) == '\t' {
+          p2 += 1;
+        }
+        StudioMem.http_key_tmp[0] = p2;
+        let del_n = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, 999999);
+        StudioMem.diff_deleted_arr[idx] = del_n;
+        let mut p3 = StudioMem.http_key_tmp[0];
+        if p3 < resp_n && buf_get_cp(StudioMem::http_resp_buf, p3) == '\t' {
+          p3 += 1;
+        }
+        let dst_ptr = StudioMem::diff_path_pool + idx * 256;
+        buf_clear(dst_ptr);
+        while p3 < resp_n max 250 {
+          let c = buf_get_cp(StudioMem::http_resp_buf, p3);
+          if c == '\n' || c == '\r' || c == 0 {
+            break;
+          }
+          buf_push_cp(dst_ptr, 250, c);
+          p3 += 1;
+        }
+        StudioMem.http_key_tmp[0] = p3;
+        parse_skip_to_next_line(StudioMem::http_resp_buf);
+        idx += 1;
+      }
+      StudioMem.diff_count = clamp_i64(idx, 0, 64);
+      StudioMem.diff_count
+    } else {
+      StudioMem.diff_count = 0;
+      0
+    }
+  }
+
+  // Fetch details of pending external-mutation approval prompt into StudioMem.approval_*_buf.
+  pub fn approval_fetch() -[Mem, Net]-> i64 {
+    let code = http("GET", "/agent/approval?format=ifm", 0);
+    if code == 200 {
+      StudioMem.http_key_tmp[0] = 0;
+      let id = parse_i64(StudioMem::http_resp_buf);
+      if id > 0 {
+        parse_skip_to_next_line(StudioMem::http_resp_buf);
+        parse_line_into(StudioMem::http_resp_buf, StudioMem::approval_title_buf, 250);
+        parse_line_into(StudioMem::http_resp_buf, StudioMem::approval_cmd_buf, 500);
+        parse_line_into(StudioMem::http_resp_buf, StudioMem::approval_risk_buf, 250);
+        StudioMem.approval_id = id;
+        StudioMem.approval_loaded_id = id;
+        1
+      } else {
+        StudioMem.approval_id = 0;
+        StudioMem.approval_loaded_id = 0;
+        0
+      }
+    } else {
+      0
+    }
+  }
+
+  // Send user Approve (allow=1) or Deny (allow=0) decision for pending external mutation.
+  pub fn approval_decide(id: i64, allow: i64) -[Mem, Net]-> i64 {
+    buf_clear(StudioMem::http_body_tmp);
+    buf_push_int(StudioMem::http_body_tmp, 64, id);
+    buf_push_cp(StudioMem::http_body_tmp, 64, ' ');
+    buf_push_int(StudioMem::http_body_tmp, 64, allow);
+    let code = http("POST", "/agent/approval?format=ifm", StudioMem::http_body_tmp);
+    StudioMem.approval_id = 0;
+    StudioMem.approval_loaded_id = 0;
+    if code == 200 { 1 } else { 0 }
   }
 
   pub fn play_project(proj_buf: i64, pstart: i64, plen: i64) -[Mem, Net]-> i64 {
@@ -441,11 +556,18 @@ pub mod daemon {
         StudioMem.async_elapsed_tenths = parse_i64(StudioMem::http_resp_buf);
         StudioMem.live_cmd_killing = parse_i64(StudioMem::http_resp_buf);
         let tl_n = parse_i64(StudioMem::http_resp_buf);
+        let appr_id = parse_i64(StudioMem::http_resp_buf);
+        StudioMem.approval_id = max_i64(0, appr_id);
+        if appr_id <= 0 {
+          StudioMem.approval_loaded_id = 0;
+        }
         parse_skip_to_next_line(StudioMem::http_resp_buf);
         parse_line_into(StudioMem::http_resp_buf, status_ptr, 240);
         parse_timeline_words(StudioMem::http_resp_buf, tl_n);
         1
       } else if st == 2 {
+        StudioMem.approval_id = 0;
+        StudioMem.approval_loaded_id = 0;
         StudioMem.async_elapsed_tenths = parse_i64(StudioMem::http_resp_buf);
         StudioMem.async_cost_milli_ils = parse_i64(StudioMem::http_resp_buf);
         StudioMem.async_total_tokens = parse_i64(StudioMem::http_resp_buf);

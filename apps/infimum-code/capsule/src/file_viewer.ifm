@@ -240,6 +240,7 @@ pub fn render_file_viewer(main_x: i64, main_w: i64, h: i64, top_h: i64, key_spec
 
   if modal_none && key_special == KeySpecial::Escape {
     StudioMem.file_view_open = 0;
+    StudioMem.file_view_is_diff = 0;
     StudioMem.active_file_idx = -1;
   } else {
   let ui_sz = sf(14);
@@ -267,6 +268,7 @@ pub fn render_file_viewer(main_x: i64, main_w: i64, h: i64, top_h: i64, key_spec
     if m_clicked == 1 {
       if close_hov {
         StudioMem.file_view_open = 0;
+        StudioMem.file_view_is_diff = 0;
         StudioMem.active_file_idx = -1;
       } else {
         let flen = buf_len(StudioMem::file_view_buf, 32900);
@@ -281,11 +283,19 @@ pub fn render_file_viewer(main_x: i64, main_w: i64, h: i64, top_h: i64, key_spec
     }
   }
 
-  // Draw file path title
+  // Draw file path title (with DIFF badge when viewing unified diff)
   let path_len = buf_len(StudioMem::file_view_path_buf, 200);
   let max_px = copy_x - 100;
   let mut px = main_x + 18;
   let py_txt = (top_h - ui_sz) / 2;
+  if StudioMem.file_view_is_diff == 1 {
+    let bw = clamp_i64(sf(44), 38, 64);
+    let bh = sm_sz + 8;
+    let by = (top_h - bh) / 2;
+    ui_rect(px, by, bw, bh, 5, 1, 0, pack_rgba(245, 158, 11, 32), pack_rgba(245, 158, 11, 200), ClipId::Root);
+    ui_text(px + 8, by + (bh - sm_sz) / 2, "DIFF", sm_sz, 1, pack_rgba(245, 158, 11, 255), ClipId::Root);
+    px += bw + 10;
+  }
   for i in 0..path_len max 200 {
     if px >= max_px { break; }
     let ch = buf_get_cp(StudioMem::file_view_path_buf, i);
@@ -391,8 +401,54 @@ pub fn render_file_viewer(main_x: i64, main_w: i64, h: i64, top_h: i64, key_spec
     let ly = view_y + 4 + line_no * lh - scr;
     if ly > view_y + view_h { break; }
     if ly + lh >= view_y {
-      ui_int(main_x + 12, ly, line_no + 1, sm_sz, 2, col_muted(th), ClipId::Feed);
-      render_highlighted_line(lstart, llen, code_x, ly, code_max_x, code_sz, th, ClipId::Feed);
+      if StudioMem.file_view_is_diff == 1 {
+        let c0 = if llen > 0 { buf_get_cp(StudioMem::file_view_buf, lstart) } else { 0 };
+        let c1 = if llen > 1 { buf_get_cp(StudioMem::file_view_buf, lstart + 1) } else { 0 };
+        let c2 = if llen > 2 { buf_get_cp(StudioMem::file_view_buf, lstart + 2) } else { 0 };
+        let is_hdr = (c0 == '+' && c1 == '+' && c2 == '+') || (c0 == '-' && c1 == '-' && c2 == '-') || (c0 == 'd' && c1 == 'i' && c2 == 'f');
+        let is_hunk = c0 == '@' && c1 == '@';
+        let is_add = c0 == '+' && !is_hdr;
+        let is_del = c0 == '-' && !is_hdr;
+        if is_add {
+          ui_rect(main_x + 2, ly - 2, main_w - 20, lh, 0, 0, 0, pack_rgba(34, 197, 94, 34), 0, ClipId::Feed);
+        } else if is_del {
+          ui_rect(main_x + 2, ly - 2, main_w - 20, lh, 0, 0, 0, pack_rgba(239, 68, 68, 34), 0, ClipId::Feed);
+        } else if is_hunk {
+          ui_rect(main_x + 2, ly - 2, main_w - 20, lh, 0, 0, 0, pack_rgba(59, 130, 246, 28), 0, ClipId::Feed);
+        } else if is_hdr {
+          ui_rect(main_x + 2, ly - 2, main_w - 20, lh, 0, 0, 0, col_surf(th), 0, ClipId::Feed);
+        }
+        ui_int(main_x + 12, ly, line_no + 1, sm_sz, 2, col_muted(th), ClipId::Feed);
+        let dcol = if is_add {
+          col_emerald()
+        } else if is_del {
+          col_red()
+        } else if is_hunk {
+          col_accent()
+        } else if is_hdr {
+          col_heading(th)
+        } else {
+          col_text(th)
+        };
+        let dsty = if is_hdr { 1 } else { 2 };
+        let mut dcx = code_x;
+        for di in 0..llen max 512 {
+          if dcx >= code_max_x { break; }
+          let ch = buf_get_cp(StudioMem::file_view_buf, lstart + di);
+          if ch == '\t' {
+            dcx += glyph_px(' ', code_sz, dsty) * 2;
+          } else if ch >= 32 {
+            let adv = glyph_px(ch, code_sz, dsty);
+            if dcx + adv <= code_max_x {
+              ui_glyph(dcx, ly, ch, code_sz, dsty, dcol, ClipId::Feed);
+            }
+            dcx += adv;
+          }
+        }
+      } else {
+        ui_int(main_x + 12, ly, line_no + 1, sm_sz, 2, col_muted(th), ClipId::Feed);
+        render_highlighted_line(lstart, llen, code_x, ly, code_max_x, code_sz, th, ClipId::Feed);
+      }
     }
     line_no += 1;
     drawn += 1;

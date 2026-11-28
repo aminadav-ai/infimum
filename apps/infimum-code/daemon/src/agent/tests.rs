@@ -761,6 +761,7 @@ fn semantic_ifm_tools_and_templates_work_and_verify() {
         allow_proc: false,
         allow_user_workspaces: false,
         dev_mode: false,
+        confirm_external_mutations_override: None,
     };
 
     let sample = r#"struct Vec2 {
@@ -1223,4 +1224,205 @@ fn tool_specs_filter_by_dev_mode_and_monorepo_context() {
     assert!(dev_names.contains(&"web_search".to_string()));
     assert!(!dev_names.contains(&"list_infimum_repo".to_string()));
     assert!(!dev_names.contains(&"search_pbr_textures".to_string()));
+}
+
+#[test]
+fn bridge_settings_wire_and_json_roundtrip() {
+    use crate::bridge_gen::NativeSettings;
+
+    let mut s = NativeSettings::default();
+    assert!(s.confirm_external_mutations);
+    assert!(!s.dev_mode);
+
+    s.theme = 1;
+    s.font_scale_pct = 125;
+    s.currency_id = 2;
+    s.model_idx = 5;
+    s.dev_mode = true;
+    s.confirm_external_mutations = false;
+
+    let wire_get = s.to_ifm_wire(true, s.dev_mode);
+    assert_eq!(wire_get, "1 1 125 2 5 1 0\n");
+    assert_eq!(s.to_ifm_wire(false, false), "0\n");
+
+    let wire_put = wire_get.strip_prefix("1 ").unwrap();
+    let decoded = NativeSettings::from_ifm_wire(wire_put, NativeSettings::default());
+    assert_eq!(decoded.theme, 1);
+    assert_eq!(decoded.font_scale_pct, 125);
+    assert_eq!(decoded.currency_id, 2);
+    assert_eq!(decoded.model_idx, 5);
+    assert!(decoded.dev_mode);
+    assert!(!decoded.confirm_external_mutations);
+
+    let j = decoded.to_json();
+    let merged = NativeSettings::from_json_merge(&j, NativeSettings::default());
+    assert_eq!(merged.theme, 1);
+    assert_eq!(merged.font_scale_pct, 125);
+    assert!(merged.dev_mode);
+    assert!(!merged.confirm_external_mutations);
+}
+
+#[test]
+fn approval_classifier_and_gate_allow_deny_cancel() {
+    use crate::agent::approval::{
+        cancel_pending_approval, classify_external_mutation, pending_approval_id,
+        pending_approval_snapshot, request_external_approval_with_timeout,
+        resolve_pending_approval,
+    };
+    use std::time::Duration;
+
+    // Read-only commands must not require confirmation
+    assert!(classify_external_mutation("git_tool", "status", &[], ".").is_none());
+    assert!(classify_external_mutation("git_tool", "diff", &[], ".").is_none());
+    assert!(classify_external_mutation("gh_cli", "", &["pr".into(), "list".into()], ".").is_none());
+    assert!(classify_external_mutation("wrangler_cli", "", &["whoami".into()], ".").is_none());
+
+    // External mutating commands must be classified
+    let push_info = classify_external_mutation(
+        "git_tool",
+        "push",
+        &["origin".into(), "main".into()],
+        "infimum",
+    )
+    .expect("git push must require approval");
+    assert!(push_info.command.contains("git push"));
+
+    let deploy_info = classify_external_mutation(
+        "wrangler_cli",
+        "",
+        &["deploy".into()],
+        "infimum-site",
+    )
+    .expect("wrangler deploy must require approval");
+    assert!(deploy_info.command.contains("wrangler deploy"));
+
+    let pr_merge = classify_external_mutation(
+        "gh_cli",
+        "",
+        &["pr".into(), "merge".into(), "42".into()],
+        "infimum",
+    )
+    .expect("gh pr merge must require approval");
+    assert!(pr_merge.command.contains("gh pr merge"));
+
+    // 1) Allow flow
+    let h_allow = std::thread::spawn(move || {
+        request_external_approval_with_timeout(push_info, Duration::from_secs(5))
+    });
+    let mut seen_id = 0u64;
+    for _ in 0..80 {
+        let id = pending_approval_id();
+        if id > 0 {
+            seen_id = id;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(seen_id > 0, "pending approval id should become active");
+    let snap = pending_approval_snapshot().expect("snapshot present");
+    assert_eq!(snap.id, seen_id);
+    assert!(resolve_pending_approval(seen_id, true));
+    assert!(h_allow.join().unwrap().is_ok());
+
+    // 2) Deny flow
+    let h_deny = std::thread::spawn(move || {
+        request_external_approval_with_timeout(deploy_info, Duration::from_secs(5))
+    });
+    let mut deny_id = 0u64;
+    for _ in 0..80 {
+        let id = pending_approval_id();
+        if id > 0 {
+            deny_id = id;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(deny_id > 0);
+    assert!(resolve_pending_approval(deny_id, false));
+    let deny_res = h_deny.join().unwrap();
+    assert!(deny_res.is_err());
+
+    // 3) Cancel flow
+    let h_cancel = std::thread::spawn(move || {
+        request_external_approval_with_timeout(pr_merge, Duration::from_secs(5))
+    });
+    for _ in 0..80 {
+        if pending_approval_id() > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    cancel_pending_approval();
+    assert!(h_cancel.join().unwrap().is_err());
+    assert_eq!(pending_approval_id(), 0);
+}
+
+#[test]
+fn diff_view_collects_status_and_paginates_unified_diff() {
+    use crate::agent::diff_view::{collect_git_diff_page, collect_git_status_entries};
+    use std::process::Command;
+
+    let base = std::env::temp_dir().join(format!("ifm_diff_view_{}", now_millis()));
+    let repo = base.join("sample_repo");
+    fs::create_dir_all(&repo).unwrap();
+
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git must run");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    run_git(&["init", "-q"]);
+    fs::write(repo.join("hello.txt"), "line1\nline2\nline3\n").unwrap();
+    run_git(&["add", "hello.txt"]);
+    run_git(&["commit", "-q", "-m", "init"]);
+
+    // Modify tracked file and add untracked file
+    fs::write(repo.join("hello.txt"), "line1\nline2_changed\nline3\nline4\n").unwrap();
+    fs::write(repo.join("new_file.txt"), "alpha\nbeta\n").unwrap();
+
+    // Test both direct repo root and parent meta-workspace discovery
+    let entries = collect_git_status_entries(&base);
+    assert_eq!(entries.len(), 2, "Expected 2 changed entries: {entries:?}");
+    let hello = entries.iter().find(|e| e.path == "sample_repo/hello.txt").unwrap();
+    assert_eq!(hello.status, 'M');
+    assert_eq!(hello.added, 2);
+    assert_eq!(hello.deleted, 1);
+
+    let untracked = entries.iter().find(|e| e.path == "sample_repo/new_file.txt").unwrap();
+    assert_eq!(untracked.status, '?');
+    assert_eq!(untracked.added, 2);
+
+    // Unified diff for modified file
+    let page = collect_git_diff_page(&base, Some("sample_repo/hello.txt"), 0, 50);
+    let page_txt = page.lines.join("\n");
+    assert!(page.total_lines > 0);
+    assert!(page_txt.contains("-line2"), "Missing deleted line: {page_txt}");
+    assert!(page_txt.contains("+line2_changed"), "Missing added line: {page_txt}");
+    assert!(page_txt.contains("@@"), "Missing hunk header: {page_txt}");
+
+    // Synthetic diff for untracked file
+    let new_page = collect_git_diff_page(&base, Some("sample_repo/new_file.txt"), 0, 50);
+    let new_txt = new_page.lines.join("\n");
+    assert!(new_txt.contains("+alpha"));
+    assert!(new_txt.contains("+beta"));
+
+    // Pagination check
+    let p1 = collect_git_diff_page(&base, None, 0, 3);
+    assert_eq!(p1.lines.len(), 3);
+    assert!(p1.total_lines > 3);
+
+    let _ = fs::remove_dir_all(&base);
 }

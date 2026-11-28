@@ -85,6 +85,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
           StudioMem.active_proj_idx = StudioMem.proj_count - 1;
           StudioMem.proj_expanded[StudioMem.active_proj_idx] = 1;
           extract_active_project_to(StudioMem::active_proj_buf);
+          daemon::git_status_load(StudioMem::active_proj_buf);
           if StudioMem.active_conv_idx < 0 && StudioMem.msg_count <= 1 {
             daemon::new_conv();
           }
@@ -95,35 +96,50 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
   ui_rect(hdr_plus_x, add_btn_y, plus_w, add_btn_h, 5, 1, 0, if add_hov { col_accent() } else { col_surf(th) }, col_border(th), ClipId::Root);
   ui_text(hdr_plus_x + (plus_w - sm_sz) / 2, add_btn_y + (add_btn_h - ui_sz) / 2, "+", ui_sz, 1, if add_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) }, ClipId::Root);
 
-  // Sticky Segmented Switcher: Диалоги | Файлы
+  // Sticky Segmented Switcher: Чаты | Файлы | Diff
   let seg_y = logo_y + logo_sz + 8;
-  let seg_w = clamp_i64(side_w - 28, 80, 560);
+  let seg_w = clamp_i64(side_w - 28, 90, 560);
   let seg_h = clamp_i64(sm_sz + 10, 22, 34);
-  let half_w = seg_w / 2;
+  let tab_w = seg_w / 3;
+  let tab2_w = seg_w - tab_w * 2;
   let seg_x = rx + 12;
-  let tab0_hov = modal_none && point_in_rect(mx, my, seg_x, seg_y, half_w, seg_h);
-  let tab1_hov = modal_none && point_in_rect(mx, my, seg_x + half_w, seg_y, seg_w - half_w, seg_h);
-  if tab0_hov || tab1_hov {
+  let tab0_hov = modal_none && point_in_rect(mx, my, seg_x, seg_y, tab_w, seg_h);
+  let tab1_hov = modal_none && point_in_rect(mx, my, seg_x + tab_w, seg_y, tab_w, seg_h);
+  let tab2_hov = modal_none && point_in_rect(mx, my, seg_x + tab_w * 2, seg_y, tab2_w, seg_h);
+  if tab0_hov || tab1_hov || tab2_hov {
     gfx_set_cursor(CursorKind::Pointer);
     if m_clicked == 1 {
       if tab0_hov {
         StudioMem.side_tab = 0;
+        StudioMem.side_scroll_y = 0;
         daemon::list_convs();
-      } else {
+      } else if tab1_hov {
         StudioMem.side_tab = 1;
+        StudioMem.side_scroll_y = 0;
         daemon::list_files();
+      } else {
+        StudioMem.side_tab = 2;
+        StudioMem.side_scroll_y = 0;
+        daemon::git_status_load(StudioMem::active_proj_buf);
       }
     }
   }
   ui_rect(seg_x, seg_y, seg_w, seg_h, 6, 1, 0, col_bg(th), col_border(th), ClipId::Root);
   if StudioMem.side_tab == 0 {
-    ui_rect(seg_x + 2, seg_y + 2, half_w - 3, seg_h - 4, 5, 0, 0, col_surf2(th), 0, ClipId::Root);
+    ui_rect(seg_x + 2, seg_y + 2, tab_w - 3, seg_h - 4, 5, 0, 0, col_surf2(th), 0, ClipId::Root);
+  } else if StudioMem.side_tab == 1 {
+    ui_rect(seg_x + tab_w + 1, seg_y + 2, tab_w - 2, seg_h - 4, 5, 0, 0, col_surf2(th), 0, ClipId::Root);
   } else {
-    ui_rect(seg_x + half_w + 1, seg_y + 2, seg_w - half_w - 3, seg_h - 4, 5, 0, 0, col_surf2(th), 0, ClipId::Root);
+    ui_rect(seg_x + tab_w * 2 + 1, seg_y + 2, tab2_w - 3, seg_h - 4, 5, 0, 0, col_surf2(th), 0, ClipId::Root);
   }
   let lbl_y = seg_y + (seg_h - sm_sz) / 2;
-  ui_text(seg_x + 12, lbl_y, "Диалоги", sm_sz, if StudioMem.side_tab == 0 { 1 } else { 0 }, if StudioMem.side_tab == 0 { col_text(th) } else { col_muted(th) }, ClipId::Root);
-  ui_text(seg_x + half_w + 14, lbl_y, "Файлы", sm_sz, if StudioMem.side_tab == 1 { 1 } else { 0 }, if StudioMem.side_tab == 1 { col_text(th) } else { col_muted(th) }, ClipId::Root);
+  ui_text(seg_x + 10, lbl_y, "Чаты", sm_sz, if StudioMem.side_tab == 0 { 1 } else { 0 }, if StudioMem.side_tab == 0 { col_text(th) } else { col_muted(th) }, ClipId::Root);
+  ui_text(seg_x + tab_w + 10, lbl_y, "Файлы", sm_sz, if StudioMem.side_tab == 1 { 1 } else { 0 }, if StudioMem.side_tab == 1 { col_text(th) } else { col_muted(th) }, ClipId::Root);
+  let diff_lbl_x = seg_x + tab_w * 2 + 8;
+  ui_text(diff_lbl_x, lbl_y, "Diff", sm_sz, if StudioMem.side_tab == 2 { 1 } else { 0 }, if StudioMem.side_tab == 2 { col_text(th) } else if StudioMem.diff_count > 0 { col_emerald() } else { col_muted(th) }, ClipId::Root);
+  if StudioMem.diff_count > 0 {
+    ui_int(diff_lbl_x + sf(26), lbl_y, StudioMem.diff_count, sm_sz, 1, pack_rgba(245, 158, 11, 255), ClipId::Root);
+  }
 
   let div_y = seg_y + seg_h + 7;
   ui_rect(rx + 1, div_y, side_w - 2, 1, 0, 0, 0, col_border(th), 0, ClipId::Root);
@@ -161,6 +177,107 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
   let sub_h = clamp_i64((26 * scale) / 100, 24, 44);
   let mut py = p_top + 2 - side_scr;
 
+  if StudioMem.side_tab == 2 {
+    // --- Git Diff Changed Files View ---
+    let ap_len = buf_len(StudioMem::active_proj_buf, 250);
+    let act_h = clamp_i64(sm_sz + 10, 24, 34);
+    let ref_w = clamp_i64(sf(30), 26, 40);
+    let all_w = clamp_i64(side_w - 32 - ref_w - 6, 60, 420);
+    let in_y0 = my >= p_top && my <= p_bot;
+    let all_hov = modal_none && in_y0 && point_in_rect(mx, my, rx + 12, py, all_w, act_h);
+    let ref_hov = modal_none && in_y0 && point_in_rect(mx, my, rx + 12 + all_w + 6, py, ref_w, act_h);
+    if all_hov || ref_hov {
+      gfx_set_cursor(CursorKind::Pointer);
+      if m_clicked == 1 {
+        if ref_hov {
+          daemon::git_status_load(StudioMem::active_proj_buf);
+        } else {
+          daemon::open_diff(StudioMem::active_proj_buf, 0, ap_len, 0, 0, 0);
+        }
+      }
+    }
+    ui_rect(rx + 12, py, all_w, act_h, 6, 1, 0, if all_hov { col_accent() } else { col_surf(th) }, col_border(th), clip_id);
+    ui_text(rx + 22, py + (act_h - sm_sz) / 2, "Открыть весь diff", sm_sz, 1, if all_hov { pack_rgba(255, 255, 255, 255) } else { col_text(th) }, clip_id);
+    ui_rect(rx + 12 + all_w + 6, py, ref_w, act_h, 6, 1, 0, if ref_hov { col_surf2(th) } else { col_surf(th) }, col_border(th), clip_id);
+    ui_text(rx + 12 + all_w + 6 + (ref_w - sm_sz) / 2, py + (act_h - sm_sz) / 2, "R", sm_sz, 1, col_text(th), clip_id);
+    py += act_h + 8;
+
+    if StudioMem.diff_count <= 0 {
+      ui_text(rx + 16, py + 4, "Нет изменённых файлов", sm_sz, 0, col_muted(th), clip_id);
+      py += sm_sz + 14;
+    } else {
+      let dcnt = clamp_i64(StudioMem.diff_count, 0, 64);
+      let mut di = 0;
+      while di < dcnt max 64 {
+        if py + sub_h >= p_top && py <= p_bot {
+          let in_dy = my >= p_top && my <= p_bot;
+          let d_hov = modal_none && in_dy && point_in_rect(mx, my, rx + 10, py, side_w - 26, sub_h);
+          let p_ptr = StudioMem::diff_path_pool + di * 256;
+          let p_len = buf_len(p_ptr, 250);
+          if d_hov {
+            gfx_set_cursor(CursorKind::Pointer);
+            if m_clicked == 1 {
+              daemon::open_diff(StudioMem::active_proj_buf, 0, ap_len, p_ptr, 0, p_len);
+            }
+          }
+          if d_hov {
+            ui_rect(rx + 10, py, side_w - 26, sub_h, 6, 0, 0, col_surf2(th), 0, clip_id);
+          }
+          let st_cp = StudioMem.diff_status_arr[di];
+          let st_col = if st_cp == 'A' || st_cp == '?' {
+            col_emerald()
+          } else if st_cp == 'D' {
+            col_red()
+          } else if st_cp == 'R' {
+            col_accent()
+          } else {
+            pack_rgba(245, 158, 11, 255)
+          };
+          ui_glyph(rx + 16, py + (sub_h - sm_sz) / 2, if st_cp >= 33 { st_cp } else { 'M' }, sm_sz, 1, st_col, clip_id);
+
+          let add_n = StudioMem.diff_added_arr[di];
+          let del_n = StudioMem.diff_deleted_arr[di];
+          let stat_reserve = if add_n > 0 || del_n > 0 { sf(56) } else { 8 };
+          let max_px = rx + side_w - 22 - stat_reserve;
+          // Show tail of path if long so the filename stays visible
+          let max_chars = 24;
+          let p_start = if p_len > max_chars { p_len - max_chars } else { 0 };
+          let mut dcx = rx + 32;
+          if p_start > 0 {
+            ui_glyph(dcx, py + (sub_h - sm_sz) / 2, '.', sm_sz, 0, col_muted(th), clip_id);
+            dcx += glyph_px('.', sm_sz, 0);
+            ui_glyph(dcx, py + (sub_h - sm_sz) / 2, '.', sm_sz, 0, col_muted(th), clip_id);
+            dcx += glyph_px('.', sm_sz, 0);
+          }
+          let mut pi2 = p_start;
+          while pi2 < p_len && dcx < max_px max 256 {
+            let ch = buf_get_cp(p_ptr, pi2);
+            let adv = glyph_px(ch, sm_sz, 0);
+            if dcx + adv <= max_px {
+              ui_glyph(dcx, py + (sub_h - sm_sz) / 2, ch, sm_sz, 0, col_text(th), clip_id);
+            }
+            dcx += adv;
+            pi2 += 1;
+          }
+          if add_n > 0 || del_n > 0 {
+            let mut sx = rx + side_w - 22 - sf(52);
+            if add_n > 0 {
+              ui_glyph(sx, py + (sub_h - sm_sz) / 2, '+', sm_sz, 1, col_emerald(), clip_id);
+              sx += glyph_px('+', sm_sz, 1);
+              sx = ui_int(sx, py + (sub_h - sm_sz) / 2, add_n, sm_sz, 1, col_emerald(), clip_id) + 3;
+            }
+            if del_n > 0 {
+              ui_glyph(sx, py + (sub_h - sm_sz) / 2, '-', sm_sz, 1, col_red(), clip_id);
+              sx += glyph_px('-', sm_sz, 1);
+              ui_int(sx, py + (sub_h - sm_sz) / 2, del_n, sm_sz, 1, col_red(), clip_id);
+            }
+          }
+        }
+        py += sub_h + 2;
+        di += 1;
+      }
+    }
+  } else {
   let plen = buf_len(StudioMem::projects_buf, 3500);
   let clen = buf_len(StudioMem::convs_buf, CONVS_BUF_MAX_CHARS);
   let flen = buf_len(StudioMem::files_buf, 3500);
@@ -221,6 +338,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
               StudioMem.active_proj_idx = p_idx;
               StudioMem.proj_expanded[p_idx] = 1;
               extract_active_project_to(StudioMem::active_proj_buf);
+              daemon::git_status_load(StudioMem::active_proj_buf);
               if StudioMem.active_conv_idx < 0 && StudioMem.msg_count <= 1 {
                 daemon::new_conv();
               }
@@ -402,6 +520,7 @@ fn draw_sidebar_tree(rx: i64, ry: i64, rw: i64, rh: i64, clip_id: i64) -[Mem, Ne
       }
       p_idx += 1;
     }
+  }
   }
 
   let total_proj_h = (py + side_scr) - p_top + 12;

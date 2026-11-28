@@ -163,71 +163,20 @@ pub(super) fn native_settings_path() -> Option<PathBuf> {
     Some(dir.join("native_settings.json"))
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct NativeSettings {
-    pub theme: i32,
-    pub font_scale_pct: i32,
-    pub currency_id: i32,
-    pub model_idx: i32,
-    pub dev_mode: bool,
-}
-
-impl Default for NativeSettings {
-    fn default() -> Self {
-        Self {
-            theme: 0,
-            font_scale_pct: 120,
-            currency_id: 0,
-            model_idx: 0,
-            dev_mode: false,
-        }
-    }
-}
+pub use crate::bridge_gen::NativeSettings;
 
 pub fn load_native_settings() -> Option<NativeSettings> {
     let p = native_settings_path()?;
     let raw = fs::read_to_string(&p).ok()?;
     let v = serde_json::from_str::<Value>(&raw).ok()?;
-    let d = NativeSettings::default();
-    Some(NativeSettings {
-        theme: v
-            .get("theme")
-            .and_then(|x| x.as_i64())
-            .map(|x| x.clamp(0, 1) as i32)
-            .unwrap_or(d.theme),
-        font_scale_pct: v
-            .get("font_scale_pct")
-            .and_then(|x| x.as_i64())
-            .map(|x| x.clamp(80, 200) as i32)
-            .unwrap_or(d.font_scale_pct),
-        currency_id: v
-            .get("currency_id")
-            .and_then(|x| x.as_i64())
-            .map(|x| x.clamp(0, 2) as i32)
-            .unwrap_or(d.currency_id),
-        model_idx: v
-            .get("model_idx")
-            .and_then(|x| x.as_i64())
-            .map(|x| x.clamp(0, 21) as i32)
-            .unwrap_or(d.model_idx),
-        dev_mode: v
-            .get("dev_mode")
-            .and_then(|x| x.as_bool().or_else(|| x.as_i64().map(|n| n != 0)))
-            .unwrap_or(d.dev_mode),
-    })
+    Some(NativeSettings::from_json(&v))
 }
 
 pub fn save_native_settings(s: NativeSettings) -> bool {
     let Some(p) = native_settings_path() else {
         return false;
     };
-    let doc = json!({
-        "theme": s.theme.clamp(0, 1),
-        "font_scale_pct": s.font_scale_pct.clamp(80, 200),
-        "currency_id": s.currency_id.clamp(0, 2),
-        "model_idx": s.model_idx.clamp(0, 21),
-        "dev_mode": s.dev_mode,
-    });
+    let doc = s.clamp_all().to_json();
     let Ok(bytes) = serde_json::to_string_pretty(&doc) else {
         return false;
     };

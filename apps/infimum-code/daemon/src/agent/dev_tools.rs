@@ -17,11 +17,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use super::approval;
 use super::timeline::{
     signal_process_group, timeline_update_last_step_tail, ASYNC_CANCELLED,
     ASYNC_CMD_KILL_REQUESTED, ASYNC_CMD_PID, SIGKILL_NUM, SIGTERM_NUM,
 };
 use super::tools::resolve_sandboxed_subdir;
+use crate::policy::CapabilityPolicy;
 
 /// Build a clean, reliable PATH that always includes `~/.cargo/bin` and `~/.local/bin`
 /// plus standard Unix bins, preserving any extra user tool directories (e.g. nvm/node).
@@ -275,7 +277,8 @@ fn find_executable(candidates: &[&str]) -> Option<PathBuf> {
 // 1. Structured `git_tool`
 // =============================================================================
 
-pub(super) fn tool_git(args: &Value, default_proj: &Path, dev_mode: bool) -> Value {
+pub(super) fn tool_git(args: &Value, default_proj: &Path, policy: &CapabilityPolicy) -> Value {
+    let dev_mode = policy.is_dev_mode();
     let sub = args
         .get("subcommand")
         .and_then(|v| v.as_str())
@@ -338,6 +341,18 @@ pub(super) fn tool_git(args: &Value, default_proj: &Path, dev_mode: bool) -> Val
         Err(e) => return json!({ "error": e }),
     };
 
+    if let Some(mut_info) =
+        approval::classify_external_mutation("git_tool", sub, &extra_args, &workdir.to_string_lossy())
+    {
+        if let Err(err) = approval::request_external_approval(mut_info, policy) {
+            return json!({
+                "ok": false,
+                "denied_by_user": true,
+                "error": err,
+            });
+        }
+    }
+
     let Some(git_bin) = find_executable(&["git", "/usr/bin/git"]) else {
         return json!({ "error": "git binary not found on host" });
     };
@@ -372,8 +387,8 @@ pub(super) fn tool_git(args: &Value, default_proj: &Path, dev_mode: bool) -> Val
 // 2. GitHub CLI (`gh_cli`) — Developer Mode
 // =============================================================================
 
-pub(super) fn tool_gh_cli(args: &Value, default_proj: &Path, dev_mode: bool) -> Value {
-    if !dev_mode {
+pub(super) fn tool_gh_cli(args: &Value, default_proj: &Path, policy: &CapabilityPolicy) -> Value {
+    if !policy.is_dev_mode() {
         return json!({
             "error": "gh_cli requires Developer Mode (enable Developer Mode in Settings or launch with --dev-mode)"
         });
@@ -386,6 +401,18 @@ pub(super) fn tool_gh_cli(args: &Value, default_proj: &Path, dev_mode: bool) -> 
         Ok(p) => p,
         Err(e) => return json!({ "error": e }),
     };
+    if let Some(mut_info) =
+        approval::classify_external_mutation("gh_cli", "", &gh_args, &workdir.to_string_lossy())
+    {
+        if let Err(err) = approval::request_external_approval(mut_info, policy) {
+            return json!({
+                "ok": false,
+                "denied_by_user": true,
+                "error": err,
+            });
+        }
+    }
+
     let Some(gh_bin) = find_executable(&["gh"]) else {
         return json!({ "error": "gh CLI not found in PATH or ~/.local/bin" });
     };
@@ -418,8 +445,8 @@ pub(super) fn tool_gh_cli(args: &Value, default_proj: &Path, dev_mode: bool) -> 
 // 3. Cloudflare Wrangler CLI (`wrangler_cli`) — Developer Mode
 // =============================================================================
 
-pub(super) fn tool_wrangler_cli(args: &Value, default_proj: &Path, dev_mode: bool) -> Value {
-    if !dev_mode {
+pub(super) fn tool_wrangler_cli(args: &Value, default_proj: &Path, policy: &CapabilityPolicy) -> Value {
+    if !policy.is_dev_mode() {
         return json!({
             "error": "wrangler_cli requires Developer Mode (enable Developer Mode in Settings or launch with --dev-mode)"
         });
@@ -432,6 +459,21 @@ pub(super) fn tool_wrangler_cli(args: &Value, default_proj: &Path, dev_mode: boo
         Ok(p) => p,
         Err(e) => return json!({ "error": e }),
     };
+
+    if let Some(mut_info) = approval::classify_external_mutation(
+        "wrangler_cli",
+        "",
+        &w_args,
+        &workdir.to_string_lossy(),
+    ) {
+        if let Err(err) = approval::request_external_approval(mut_info, policy) {
+            return json!({
+                "ok": false,
+                "denied_by_user": true,
+                "error": err,
+            });
+        }
+    }
 
     let local_bin = workdir.join("node_modules/.bin/wrangler");
     let mut cmd = if local_bin.is_file() {

@@ -4,8 +4,10 @@
 //! 100% compatible with the browser Infimum Code conversation JSON schema so users can
 //! seamlessly switch between browser Infimum Code and Infimum Code Native (.ifw).
 
+pub mod approval;
 mod conversations;
 mod dev_tools;
+pub mod diff_view;
 mod providers;
 mod repo_index;
 mod timeline;

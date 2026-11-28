@@ -246,11 +246,6 @@ pub fn input_move_line_edge(to_end: bool, max_w: i64, size: i64, keep_sel: bool)
 // --- Settings, Packed Message Pool & Project Tree Helpers ---
 
 pub fn save_settings() -[Mem, Net]-> unit {
-  StudioMem.settings_theme = StudioMem.theme;
-  StudioMem.settings_scale = StudioMem.font_scale_pct;
-  StudioMem.settings_currency = StudioMem.currency_id;
-  StudioMem.settings_model = StudioMem.model_idx;
-  StudioMem.settings_dev_mode = StudioMem.dev_mode;
   daemon::settings_save();
 }
 

@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "description": "Single source of truth for the Infimum Code daemon <-> capsule typed bridge.",
+  "settings": [
+    {
+      "name": "theme",
+      "type": "i32",
+      "default": 0,
+      "min": 0,
+      "max": 1,
+      "capsule_field": "theme",
+      "json_key": "theme"
+    },
+    {
+      "name": "font_scale_pct",
+      "type": "i32",
+      "default": 120,
+      "min": 80,
+      "max": 200,
+      "capsule_field": "font_scale_pct",
+      "json_key": "font_scale_pct"
+    },
+    {
+      "name": "currency_id",
+      "type": "i32",
+      "default": 0,
+      "min": 0,
+      "max": 2,
+      "capsule_field": "currency_id",
+      "json_key": "currency_id"
+    },
+    {
+      "name": "model_idx",
+      "type": "i32",
+      "default": 0,
+      "min": 0,
+      "max": 21,
+      "capsule_field": "model_idx",
+      "json_key": "model_idx"
+    },
+    {
+      "name": "dev_mode",
+      "type": "bool",
+      "default": false,
+      "min": 0,
+      "max": 1,
+      "capsule_field": "dev_mode",
+      "json_key": "dev_mode"
+    },
+    {
+      "name": "confirm_external_mutations",
+      "type": "bool",
+      "default": true,
+      "min": 0,
+      "max": 1,
+      "capsule_field": "confirm_external_mutations",
+      "json_key": "confirm_external_mutations"
+    }
+  ],
+  "endpoints": {
+    "SETTINGS": "/settings",
+    "AGENT_POLL": "/agent/poll",
+    "AGENT_APPROVAL": "/agent/approval",
+    "GIT_STATUS": "/git/status",
+    "GIT_DIFF": "/git/diff"
+  },
+  "constants": {
+    "APPROVAL_DECISION_DENY": 0,
+    "APPROVAL_DECISION_ALLOW": 1,
+    "SIDE_TAB_CONVS": 0,
+    "SIDE_TAB_FILES": 1,
+    "SIDE_TAB_DIFF": 2
+  }
+}

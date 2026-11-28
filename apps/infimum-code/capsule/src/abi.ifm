@@ -164,6 +164,7 @@ pub layout StudioMem {
   font_scale_pct: word inv 80..=200,
   currency_id: word inv 0..=2,
   dev_mode: word inv 0..=1,
+  confirm_external_mutations: word inv 0..=1,
   total_milli_ils: word,
   ai_running: word,
   copy_override_ptr: word,
@@ -196,12 +197,15 @@ pub layout StudioMem {
   async_cost_milli_ils: word,
   async_total_tokens: word,
 
-  // Settings Persistence Mailbox
-  settings_theme: word,
-  settings_scale: word,
-  settings_currency: word,
-  settings_model: word,
-  settings_dev_mode: word,
+  // External Mutation Approval Gate State
+  approval_id: word,
+  approval_loaded_id: word,
+
+  // Compact Git Diff Viewer State
+  file_view_is_diff: word inv 0..=1,
+  diff_count: word inv 0..=64,
+  diff_loaded: word inv 0..=1,
+  diff_scroll_y: word,
 
   // Per-Frame Forma Slot Context
   frame_vw: word,
@@ -313,4 +317,15 @@ pub layout StudioMem {
 
   // Project Files List UTF-32: proj\tfilename\n
   files_buf: words[3600],
+
+  // External Mutation Approval Prompt Buffers
+  approval_title_buf: words[256],
+  approval_cmd_buf: words[512],
+  approval_risk_buf: words[256],
+
+  // Compact Git Diff Status Lists (up to 64 changed files)
+  diff_status_arr: words[64],
+  diff_added_arr: words[64],
+  diff_deleted_arr: words[64],
+  diff_path_pool: words[16384],
 }

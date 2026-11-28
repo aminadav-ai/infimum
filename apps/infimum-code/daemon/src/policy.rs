@@ -16,6 +16,10 @@ pub struct CapabilityPolicy {
     /// `web_fetch`, and `web_search` (Gemini Search grounding). Disabled by
     /// default for regular users.
     pub dev_mode: bool,
+    /// Optional explicit override for external-mutation confirmation prompts
+    /// (used in tests or headless automation). `None` delegates to persisted
+    /// `NativeSettings::confirm_external_mutations` (default `true`).
+    pub confirm_external_mutations_override: Option<bool>,
 }
 
 impl CapabilityPolicy {
@@ -39,6 +43,27 @@ impl CapabilityPolicy {
                 || crate::agent::load_native_settings()
                     .map(|s| s.dev_mode)
                     .unwrap_or(false)
+        }
+    }
+
+    /// Whether external mutations (`git push`, `wrangler deploy`, mutating `gh`
+    /// commands) require interactive Approve/Deny confirmation in the Studio UI.
+    pub fn confirm_external_mutations(&self) -> bool {
+        if let Some(v) = self.confirm_external_mutations_override {
+            return v;
+        }
+        #[cfg(test)]
+        {
+            false
+        }
+        #[cfg(not(test))]
+        {
+            if let Ok(v) = std::env::var("INFIMUM_CONFIRM_MUTATIONS") {
+                return matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on");
+            }
+            crate::agent::load_native_settings()
+                .map(|s| s.confirm_external_mutations)
+                .unwrap_or(true)
         }
     }
 }

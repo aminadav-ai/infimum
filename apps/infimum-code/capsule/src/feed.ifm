@@ -75,7 +75,7 @@ pub fn extract_play_name(text_ptr: i64, tag_pos: i64, dst: i64) -[Mem]-> i64 {
   w
 }
 
-pub fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem]-> unit {
+pub fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem, Net]-> unit {
   let th = StudioMem.theme;
   let scale = StudioMem.font_scale_pct;
   let hdr_sz = sf(15);
@@ -91,7 +91,7 @@ pub fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem]->
     ui_text(main_x + 20, (top_h - hdr_sz) / 2, "infimum-code.ifw / Автономный диалог Gemini 4", hdr_sz, 1, col_text(th), ClipId::Root);
   }
 
-  // Emerald toast pill in top-right header when selection is copied
+  // Emerald toast pill in top-right header when selection is copied; otherwise compact Diff button
   if StudioMem.copy_toast_ticks > 0 && StudioMem.copy_toast_ptr == 0 {
     let tw_p = clamp_i64((178 * scale) / 100, 166, 260);
     let th_p = sm_sz + 12;
@@ -99,6 +99,33 @@ pub fn render_main_header(main_x: i64, main_w: i64, w: i64, top_h: i64) -[Mem]->
     let ty_p = (top_h - th_p) / 2;
     ui_rect(tx_p, ty_p, tw_p, th_p, 8, 1, 0, col_surf(th), col_emerald(), ClipId::Root);
     ui_text(tx_p + 12, ty_p + 5, "✓ Скопировано в буфер", sm_sz, 1, col_emerald(), ClipId::Root);
+  } else if vm != ViewMode::Web {
+    let dcnt = StudioMem.diff_count;
+    let dw_p = clamp_i64(((if dcnt > 0 { 96 } else { 66 }) * scale) / 100, 58, 150);
+    let dh_p = sm_sz + 10;
+    let dx_p = w - dw_p - 16;
+    let dy_p = (top_h - dh_p) / 2;
+    let modal_none = StudioMem.frame_modal_blocked == 0 && StudioMem.model_dd_open == 0;
+    let d_hov = modal_none && point_in_rect(StudioMem.frame_mx, StudioMem.frame_my, dx_p, dy_p, dw_p, dh_p);
+    if d_hov {
+      gfx_set_cursor(CursorKind::Pointer);
+      if StudioMem.frame_m_clicked == 1 {
+        StudioMem.side_tab = 2;
+        StudioMem.side_scroll_y = 0;
+        daemon::git_status_load(StudioMem::active_proj_buf);
+        if StudioMem.diff_count > 0 {
+          let plen = buf_len(StudioMem::active_proj_buf, 250);
+          daemon::open_diff(StudioMem::active_proj_buf, 0, plen, 0, 0, 0);
+        }
+      }
+    }
+    let brd_c = if dcnt > 0 { pack_rgba(245, 158, 11, 200) } else { col_border(th) };
+    let bg_c = if d_hov { col_surf2(th) } else { col_surf(th) };
+    ui_rect(dx_p, dy_p, dw_p, dh_p, 8, 1, 0, bg_c, brd_c, ClipId::Root);
+    let tx_after = ui_text(dx_p + 12, dy_p + (dh_p - sm_sz) / 2, "Diff", sm_sz, 1, if dcnt > 0 { col_text(th) } else { col_muted(th) }, ClipId::Root);
+    if dcnt > 0 {
+      ui_int(tx_after + 6, dy_p + (dh_p - sm_sz) / 2, dcnt, sm_sz, 1, pack_rgba(245, 158, 11, 255), ClipId::Root);
+    }
   }
 }
 

@@ -20,9 +20,14 @@ use "file_viewer.ifm" as viewer;
 // --- Keyboard Dispatcher ---
 
 fn handle_keyboard(key_char: i64, key_special: i64) -[Mem, Net]-> unit {
-  if StudioMem.file_view_open == 1 {
+  if StudioMem.approval_id > 0 {
+    if key_special == KeySpecial::Escape {
+      daemon::approval_decide(StudioMem.approval_id, 0);
+    }
+  } else if StudioMem.file_view_open == 1 {
     if key_special == KeySpecial::Escape {
       StudioMem.file_view_open = 0;
+      StudioMem.file_view_is_diff = 0;
       StudioMem.active_file_idx = -1;
     }
   } else if StudioMem.confirm_del_kind != 0 {
@@ -168,8 +173,15 @@ export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu, Net]-> i64 {
   StudioMem.img_preview_count = 0;
   StudioMem.active_file_idx = -1;
   StudioMem.file_view_open = 0;
+  StudioMem.file_view_is_diff = 0;
   StudioMem.file_view_scroll_y = 0;
   StudioMem.file_view_lines = 0;
+  StudioMem.diff_count = 0;
+  StudioMem.diff_loaded = 0;
+  StudioMem.diff_scroll_y = 0;
+  StudioMem.approval_id = 0;
+  StudioMem.approval_loaded_id = 0;
+  StudioMem.confirm_external_mutations = 1;
   buf_clear(StudioMem::agent_status_buf);
   buf_clear(StudioMem::active_hdr_buf);
   reset_messages();
@@ -177,20 +189,14 @@ export fn init_app(_seed: i64, _vw: i64, _vh: i64) -[Mem, Gpu, Net]-> i64 {
   // Connect to local `infimum-agentd` over CAP_NET (127.0.0.1:<port> + Bearer token)
   daemon::init();
 
-  // Restore saved native settings
-  let has_settings = daemon::settings_load();
-  if has_settings == 1 {
-    StudioMem.theme = clamp_i64(StudioMem.settings_theme, 0, 1);
-    StudioMem.font_scale_pct = clamp_i64(StudioMem.settings_scale, MIN_FONT_SCALE_PCT, MAX_FONT_SCALE_PCT);
-    StudioMem.currency_id = clamp_i64(StudioMem.settings_currency, 0, 2);
-    StudioMem.model_idx = clamp_i64(StudioMem.settings_model, 0, 21);
-    StudioMem.dev_mode = clamp_i64(StudioMem.settings_dev_mode, 0, 1);
-  }
+  // Restore saved native settings (decoded directly into StudioMem via generated bridge)
+  let _has_settings = daemon::settings_load();
 
   daemon::list_projects();
   daemon::list_convs();
   count_and_init_project_tree();
   extract_active_project_to(StudioMem::active_proj_buf);
+  daemon::git_status_load(StudioMem::active_proj_buf);
   daemon::new_conv();
 
   scratch_reset();
@@ -227,7 +233,7 @@ export fn step_ui(
   StudioMem.frame_wheel_dy = wheel_dy;
   StudioMem.frame_settings_just_opened = 0;
   StudioMem.frame_confirm_just_opened = 0;
-  StudioMem.frame_modal_blocked = if StudioMem.settings_open == 1 || StudioMem.img_preview_idx >= 0 || StudioMem.confirm_del_kind != 0 { 1 } else { 0 };
+  StudioMem.frame_modal_blocked = if StudioMem.settings_open == 1 || StudioMem.img_preview_idx >= 0 || StudioMem.confirm_del_kind != 0 || StudioMem.approval_id > 0 { 1 } else { 0 };
   if m_down == 0 { StudioMem.drag_sb = DragScrollbar::None; }
 
   // Refresh live RAM every ~60 frames
@@ -241,6 +247,8 @@ export fn step_ui(
     let poll_st = daemon::agent_poll(StudioMem::reply_buf, StudioMem::agent_status_buf);
     if poll_st == 2 {
       StudioMem.ai_running = 0;
+      StudioMem.approval_id = 0;
+      StudioMem.approval_loaded_id = 0;
       let el = StudioMem.async_elapsed_tenths;
       let cm = StudioMem.async_cost_milli_ils;
       let tok = StudioMem.async_total_tokens;
@@ -248,7 +256,10 @@ export fn step_ui(
       append_message(1, StudioMem::reply_buf, el, cm, tok);
       attach_live_timeline_to_last_msg();
       daemon::list_convs();
+      daemon::git_status_load(StudioMem::active_proj_buf);
       StudioMem.auto_scroll_bottom = 1;
+    } else if StudioMem.approval_id > 0 && StudioMem.approval_loaded_id != StudioMem.approval_id {
+      daemon::approval_fetch();
     }
   }
 
@@ -335,6 +346,7 @@ export fn step_ui(
   modals::render_confirm_delete_modal(w, h);
   modals::render_image_preview_modal(w, h, key_special);
   modals::render_context_menu(w, h, key_special);
+  modals::render_approval_modal(w, h);
 
   gfx_end_frame()
 }

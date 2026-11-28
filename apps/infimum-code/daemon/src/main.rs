@@ -4,6 +4,7 @@
 //! on `127.0.0.1:<port>`, and authenticates every request with a session Bearer token.
 
 mod agent;
+mod bridge_gen;
 mod core_loader;
 mod http_server;
 mod policy;

@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# Incremental builder and fast restarter for Infimum Code Studio.
+# Rebuilds only components whose sources are newer than their build artifacts:
+#   1. infimum CLI (crates/infimum-lang + crates/infimum-rt)
+#   2. infimum-web runtime (crates/infimum-web + crates/infimum-rt)
+#   3. daemon <-> capsule typed bridge (bridge_schema.json -> bridge_gen.{rs,ifm})
+#      and studio_abi.rs (capsule/src/abi.ifm -> daemon/src/studio_abi.rs)
+#   4. infimum-agentd daemon (apps/infimum-code/daemon)
+#   5. infimum_code.ifw capsule (Z3 verify + compile-wasm)
+#
+# Usage:
+#   apps/infimum-code/bin/studio-dev [options] [-- <infimum-code args...>]
+#
+# Options:
+#   --force        Rebuild all components regardless of timestamps
+#   --no-verify    Skip Z3 `infimum verify` step (faster UI iteration)
+#   --no-restart   Build only; do not restart running Infimum Code
+#   --test         Run `cargo test -p infimum-agentd` and bridge check after build
+#   --fg           Run restarted Infimum Code in foreground instead of background
+#   --no-dev-mode  Launch without --dev-mode (Developer Mode is ON by default here)
+#   -h, --help     Show this help message
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
+TARGET_REL="$REPO_ROOT/target/release"
+
+FORCE=0
+VERIFY=1
+RESTART=1
+RUN_TESTS=0
+FOREGROUND=0
+DEV_MODE=1
+PASSTHROUGH_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force) FORCE=1; shift ;;
+    --no-verify) VERIFY=0; shift ;;
+    --no-restart) RESTART=0; shift ;;
+    --test) RUN_TESTS=1; shift ;;
+    --fg) FOREGROUND=1; shift ;;
+    --no-dev-mode) DEV_MODE=0; shift ;;
+    -h|--help)
+      sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    --)
+      shift
+      PASSTHROUGH_ARGS+=("$@")
+      break
+      ;;
+    *)
+      PASSTHROUGH_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+now_ms() {
+  date +%s%3N
+}
+
+fmt_dur() {
+  local start_ms="$1"
+  local end_ms
+  end_ms="$(now_ms)"
+  local diff_ms=$((end_ms - start_ms))
+  printf "%d.%01ds" $((diff_ms / 1000)) $(((diff_ms % 1000) / 100))
+}
+
+# Returns 0 if artifact needs rebuild (missing, --force, or any source file is newer).
+needs_rebuild() {
+  local artifact="$1"
+  shift
+  if [[ "$FORCE" -eq 1 ]] || [[ ! -f "$artifact" ]]; then
+    return 0
+  fi
+  local src
+  for src in "$@"; do
+    if [[ -d "$src" ]]; then
+      if [[ -n "$(find "$src" -type f -newer "$artifact" -print -quit 2>/dev/null)" ]]; then
+        return 0
+      fi
+    elif [[ -f "$src" ]] && [[ "$src" -nt "$artifact" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+TOTAL_START="$(now_ms)"
+cd "$REPO_ROOT"
+
+# 1. infimum CLI
+INFIMUM_BIN="$TARGET_REL/infimum"
+if needs_rebuild "$INFIMUM_BIN" \
+    "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" \
+    "$REPO_ROOT/crates/infimum-lang" "$REPO_ROOT/crates/infimum-rt"; then
+  t0="$(now_ms)"
+  echo "[studio-dev] building infimum CLI..."
+  cargo build --release -p infimum-lang --quiet
+  echo "[studio-dev] infimum:        built ($(fmt_dur "$t0"))"
+else
+  echo "[studio-dev] infimum:        up-to-date"
+fi
+
+# 2. infimum-web runtime
+WEB_BIN="$TARGET_REL/infimum-web"
+if needs_rebuild "$WEB_BIN" \
+    "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" \
+    "$REPO_ROOT/crates/infimum-web" "$REPO_ROOT/crates/infimum-rt"; then
+  t0="$(now_ms)"
+  echo "[studio-dev] building infimum-web..."
+  cargo build --release -p infimum-web --quiet
+  echo "[studio-dev] infimum-web:    built ($(fmt_dur "$t0"))"
+else
+  echo "[studio-dev] infimum-web:    up-to-date"
+fi
+
+# 3. Typed daemon <-> capsule bridge + studio_abi.rs
+BRIDGE_RS="$APP_DIR/daemon/src/bridge_gen.rs"
+BRIDGE_IFM="$APP_DIR/capsule/src/bridge_gen.ifm"
+BRIDGE_SCHEMA="$APP_DIR/bridge_schema.json"
+BRIDGE_GEN="$APP_DIR/scripts/gen_bridge.py"
+if [[ -f "$BRIDGE_SCHEMA" && -f "$BRIDGE_GEN" ]]; then
+  if needs_rebuild "$BRIDGE_RS" "$BRIDGE_SCHEMA" "$BRIDGE_GEN" \
+      || needs_rebuild "$BRIDGE_IFM" "$BRIDGE_SCHEMA" "$BRIDGE_GEN"; then
+    t0="$(now_ms)"
+    python3 "$BRIDGE_GEN"
+    echo "[studio-dev] bridge_gen:     generated ($(fmt_dur "$t0"))"
+  else
+    echo "[studio-dev] bridge_gen:     up-to-date"
+  fi
+fi
+
+STUDIO_ABI_RS="$APP_DIR/daemon/src/studio_abi.rs"
+ABI_IFM="$APP_DIR/capsule/src/abi.ifm"
+if needs_rebuild "$STUDIO_ABI_RS" "$ABI_IFM" "$INFIMUM_BIN"; then
+  t0="$(now_ms)"
+  "$INFIMUM_BIN" export-abi "$ABI_IFM" --rust -o "$STUDIO_ABI_RS"
+  echo "[studio-dev] studio_abi.rs:  exported ($(fmt_dur "$t0"))"
+else
+  echo "[studio-dev] studio_abi.rs:  up-to-date"
+fi
+
+# 4. infimum-agentd daemon
+AGENTD_BIN="$TARGET_REL/infimum-agentd"
+if needs_rebuild "$AGENTD_BIN" \
+    "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" \
+    "$APP_DIR/daemon/Cargo.toml" "$APP_DIR/daemon/src"; then
+  t0="$(now_ms)"
+  echo "[studio-dev] building infimum-agentd..."
+  cargo build --release -p infimum-agentd --quiet
+  echo "[studio-dev] infimum-agentd: built ($(fmt_dur "$t0"))"
+else
+  echo "[studio-dev] infimum-agentd: up-to-date"
+fi
+
+# 5. Capsule infimum_code.ifw
+CAPSULE_ENTRY="$APP_DIR/capsule/src/infimum_code.ifm"
+CAPSULE_IFW="$APP_DIR/capsule/infimum_code.ifw"
+if needs_rebuild "$CAPSULE_IFW" "$APP_DIR/capsule/src" "$INFIMUM_BIN"; then
+  t0="$(now_ms)"
+  if [[ "$VERIFY" -eq 1 ]]; then
+    echo "[studio-dev] verifying capsule with Z3..."
+    "$INFIMUM_BIN" verify "$CAPSULE_ENTRY"
+  fi
+  echo "[studio-dev] compiling capsule -> infimum_code.ifw..."
+  "$INFIMUM_BIN" compile-wasm "$CAPSULE_ENTRY" -o "$CAPSULE_IFW"
+  if [[ "$VERIFY" -eq 1 ]]; then
+    echo "[studio-dev] capsule:        verified+compiled ($(fmt_dur "$t0"))"
+  else
+    echo "[studio-dev] capsule:        compiled ($(fmt_dur "$t0"))"
+  fi
+else
+  echo "[studio-dev] capsule:        up-to-date"
+fi
+
+# 6. Optional verification & unit tests
+if [[ "$RUN_TESTS" -eq 1 ]]; then
+  t0="$(now_ms)"
+  if [[ -f "$BRIDGE_GEN" ]]; then
+    python3 "$BRIDGE_GEN" --check
+  fi
+  cargo test -p infimum-agentd --quiet
+  echo "[studio-dev] tests:          passed ($(fmt_dur "$t0"))"
+fi
+
+echo "[studio-dev] build complete in $(fmt_dur "$TOTAL_START")"
+
+if [[ "$RESTART" -eq 0 ]]; then
+  exit 0
+fi
+
+# 7. Graceful restart of running studio instances
+echo "[studio-dev] stopping existing Infimum Code instances..."
+pkill -TERM -f "infimum-web.*infimum_code\.ifw" 2>/dev/null || true
+pkill -TERM -f "infimum-agentd" 2>/dev/null || true
+
+for _ in $(seq 1 30); do
+  if ! pgrep -f "infimum-web.*infimum_code\.ifw" >/dev/null 2>&1 \
+     && ! pgrep -f "infimum-agentd" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+
+LAUNCH_CMD=("$APP_DIR/bin/infimum-code")
+if [[ "$DEV_MODE" -eq 1 ]]; then
+  LAUNCH_CMD+=("--dev-mode")
+fi
+LAUNCH_CMD+=("${PASSTHROUGH_ARGS[@]}")
+
+if [[ "$FOREGROUND" -eq 1 ]]; then
+  echo "[studio-dev] launching (fg): ${LAUNCH_CMD[*]}"
+  exec "${LAUNCH_CMD[@]}"
+else
+  LOG_FILE="${TMPDIR:-/tmp}/infimum-studio-dev.log"
+  echo "[studio-dev] launching (bg): ${LAUNCH_CMD[*]} (log: $LOG_FILE)"
+  nohup "${LAUNCH_CMD[@]}" >"$LOG_FILE" 2>&1 &
+  disown 2>/dev/null || true
+  echo "[studio-dev] started pid $!"
+fi

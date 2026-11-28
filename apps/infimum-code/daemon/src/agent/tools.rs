@@ -3031,9 +3031,9 @@ pub(super) fn execute_native_tool(
                 }
             }
         }
-        "git_tool" => tool_git(args, default_proj, policy.is_dev_mode()),
-        "gh_cli" => tool_gh_cli(args, default_proj, policy.is_dev_mode()),
-        "wrangler_cli" => tool_wrangler_cli(args, default_proj, policy.is_dev_mode()),
+        "git_tool" => tool_git(args, default_proj, policy),
+        "gh_cli" => tool_gh_cli(args, default_proj, policy),
+        "wrangler_cli" => tool_wrangler_cli(args, default_proj, policy),
         "web_fetch" => tool_web_fetch(args, policy.is_dev_mode()),
         "web_search" => tool_web_search(args, policy.is_dev_mode()),
         "run_project_command" => {

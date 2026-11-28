@@ -596,12 +596,51 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
                     .join("\n")
             })
             .unwrap_or_default(),
-        ("POST", "/files/open") => {
+        ("POST", "/files/open") | ("POST", "/git/diff") => {
             let total = v.get("total_lines").and_then(|x| x.as_u64()).unwrap_or(1);
             let ws = v.get("win_start").and_then(|x| x.as_u64()).unwrap_or(0);
             let wc = v.get("win_count").and_then(|x| x.as_u64()).unwrap_or(0);
             let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
             format!("{total} {ws} {wc}\n{content}")
+        }
+        ("GET", "/git/status") | ("POST", "/git/status") => {
+            let files = v
+                .get("files")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut out = format!("{}\n", files.len());
+            for item in &files {
+                let st = item.get("status").and_then(|x| x.as_str()).unwrap_or("M");
+                let add = item.get("added").and_then(|x| x.as_u64()).unwrap_or(0);
+                let del = item.get("deleted").and_then(|x| x.as_u64()).unwrap_or(0);
+                let path = item.get("path").and_then(|x| x.as_str()).unwrap_or("");
+                out.push_str(&format!("{st}\t{add}\t{del}\t{path}\n"));
+            }
+            out
+        }
+        ("GET", "/agent/approval") => {
+            let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+            if id == 0 {
+                "0\n".to_string()
+            } else {
+                let title = v
+                    .get("title")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .replace('\n', " ");
+                let cmd = v
+                    .get("command")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .replace('\n', " ");
+                let risk = v
+                    .get("risk")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .replace('\n', " ");
+                format!("{id}\n{title}\n{cmd}\n{risk}\n")
+            }
         }
         ("GET", "/keys/status") | ("POST", "/keys/save") => v
             .get("mask")
@@ -641,27 +680,15 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
             format!("{role} {tl_n} {char_len} {imgs_n}\n{tl_joined}\n{text}")
         }
         ("GET", "/settings") => {
-            if v.get("found").and_then(|b| b.as_bool()).unwrap_or(false) {
-                let dm = if v.get("dev_mode").and_then(|x| x.as_bool()).unwrap_or(false) {
-                    1
-                } else {
-                    0
-                };
-                format!(
-                    "1 {} {} {} {} {}",
-                    v.get("theme").and_then(|x| x.as_i64()).unwrap_or(0),
-                    v.get("font_scale_pct").and_then(|x| x.as_i64()).unwrap_or(120),
-                    v.get("currency_id").and_then(|x| x.as_i64()).unwrap_or(0),
-                    v.get("model_idx").and_then(|x| x.as_i64()).unwrap_or(0),
-                    dm,
-                )
-            } else {
-                "0".to_string()
-            }
+            let found = v.get("found").and_then(|b| b.as_bool()).unwrap_or(false);
+            let dev_eff = v.get("dev_mode").and_then(|b| b.as_bool()).unwrap_or(false);
+            let s = crate::bridge_gen::NativeSettings::from_json(v);
+            s.to_ifm_wire(found, dev_eff)
         }
         ("PUT", "/settings")
         | ("POST", "/agent/start")
         | ("POST", "/agent/cancel")
+        | ("POST", "/agent/approval")
         | ("POST", "/apps/play")
         | ("POST", "/apps/play_project") => {
             if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
@@ -690,14 +717,15 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
             if st == 1 {
                 let el = v.get("elapsed_tenths").and_then(|x| x.as_i64()).unwrap_or(0);
                 let kil = v.get("killing").and_then(|x| x.as_i64()).unwrap_or(0);
+                let approval_id = v.get("approval_id").and_then(|x| x.as_u64()).unwrap_or(0);
                 let line = v
                     .get("status_line")
                     .and_then(|s| s.as_str())
                     .unwrap_or("")
                     .replace('\n', " ");
                 let (tl_n, tl_joined) =
-                    format_timeline_within_budget(tl, line.chars().count() + 64);
-                format!("1 {el} {kil} {tl_n}\n{line}\n{tl_joined}")
+                    format_timeline_within_budget(tl, line.chars().count() + 80);
+                format!("1 {el} {kil} {tl_n} {approval_id}\n{line}\n{tl_joined}")
             } else {
                 let el = v.get("elapsed_tenths").and_then(|x| x.as_i64()).unwrap_or(0);
                 let cm = v.get("cost_milli_ils").and_then(|x| x.as_i64()).unwrap_or(0);
@@ -801,7 +829,7 @@ pub fn handle_request(
                 let idx = text.trim().parse::<u64>().unwrap_or(0);
                 json!({ "index": idx })
             }
-            ("POST", "/files/open") => {
+            ("POST", "/files/open") | ("POST", "/git/diff") => {
                 let mut lines = text.splitn(3, '\n');
                 let proj = lines.next().unwrap_or("").trim();
                 let file = lines.next().unwrap_or("").trim();
@@ -815,22 +843,22 @@ pub fn handle_request(
                     "max_lines": max_lines,
                 })
             }
-            ("POST", "/apps/play_project") => json!({ "project": text.trim() }),
+            ("POST", "/apps/play_project") | ("POST", "/git/status") => {
+                json!({ "project": text.trim() })
+            }
+            ("POST", "/agent/approval") => {
+                let mut it = text.split_whitespace();
+                let id = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+                let allow = it
+                    .next()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .map(|n| n != 0)
+                    .unwrap_or(false);
+                json!({ "id": id, "allow": allow })
+            }
             ("PUT", "/settings") => {
-                let nums: Vec<i64> = text
-                    .split_whitespace()
-                    .filter_map(|s| s.parse::<i64>().ok())
-                    .collect();
-                let mut obj = json!({
-                    "theme": nums.first().copied().unwrap_or(0),
-                    "font_scale_pct": nums.get(1).copied().unwrap_or(120),
-                    "currency_id": nums.get(2).copied().unwrap_or(0),
-                    "model_idx": nums.get(3).copied().unwrap_or(0),
-                });
-                if let Some(dm) = nums.get(4).copied() {
-                    obj["dev_mode"] = json!(dm != 0);
-                }
-                obj
+                let prev = agent::load_native_settings().unwrap_or_default();
+                crate::bridge_gen::NativeSettings::from_ifm_wire(&text, prev).to_json()
             }
             _ => Value::Null,
         }
@@ -1162,34 +1190,21 @@ pub fn handle_request(
             }
             if let Some(s) = agent::load_native_settings() {
                 let effective_dev = s.dev_mode || ctx.policy.dev_mode;
-                (
-                    200,
-                    "OK",
-                    json!({
-                        "ok": true,
-                        "found": true,
-                        "theme": s.theme,
-                        "font_scale_pct": s.font_scale_pct,
-                        "currency_id": s.currency_id,
-                        "model_idx": s.model_idx,
-                        "dev_mode": effective_dev,
-                    }),
-                )
+                let mut out = s.to_json();
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("ok".to_string(), json!(true));
+                    obj.insert("found".to_string(), json!(true));
+                    obj.insert("dev_mode".to_string(), json!(effective_dev));
+                }
+                (200, "OK", out)
             } else if ctx.policy.dev_mode {
-                let d = agent::NativeSettings::default();
-                (
-                    200,
-                    "OK",
-                    json!({
-                        "ok": true,
-                        "found": true,
-                        "theme": d.theme,
-                        "font_scale_pct": d.font_scale_pct,
-                        "currency_id": d.currency_id,
-                        "model_idx": d.model_idx,
-                        "dev_mode": true,
-                    }),
-                )
+                let mut out = crate::bridge_gen::NativeSettings::default().to_json();
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("ok".to_string(), json!(true));
+                    obj.insert("found".to_string(), json!(true));
+                    obj.insert("dev_mode".to_string(), json!(true));
+                }
+                (200, "OK", out)
             } else {
                 (200, "OK", json!({ "ok": true, "found": false }))
             }
@@ -1199,31 +1214,166 @@ pub fn handle_request(
                 return (403, "Forbidden", json!({ "ok": false, "error": "fs_denied" }));
             }
             let prev = agent::load_native_settings().unwrap_or_default();
-            let dev_mode = body_json
-                .get("dev_mode")
-                .and_then(|v| v.as_bool().or_else(|| v.as_i64().map(|n| n != 0)))
-                .unwrap_or(prev.dev_mode);
-            let s = agent::NativeSettings {
-                theme: body_json.get("theme").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                font_scale_pct: body_json
-                    .get("font_scale_pct")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(120) as i32,
-                currency_id: body_json
-                    .get("currency_id")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as i32,
-                model_idx: body_json
-                    .get("model_idx")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as i32,
-                dev_mode,
-            };
+            let s = crate::bridge_gen::NativeSettings::from_json_merge(&body_json, prev);
             if agent::save_native_settings(s) {
-                (200, "OK", json!({ "ok": true, "dev_mode": s.dev_mode }))
+                (
+                    200,
+                    "OK",
+                    json!({
+                        "ok": true,
+                        "dev_mode": s.dev_mode,
+                        "confirm_external_mutations": s.confirm_external_mutations,
+                    }),
+                )
             } else {
-                (500, "Internal Server Error", json!({ "ok": false, "error": "io_failed" }))
+                (
+                    500,
+                    "Internal Server Error",
+                    json!({ "ok": false, "error": "io_failed" }),
+                )
             }
+        }
+        ("GET", "/agent/approval") => {
+            if let Some(p) = agent::approval::pending_approval_snapshot() {
+                (
+                    200,
+                    "OK",
+                    json!({
+                        "ok": true,
+                        "id": p.id,
+                        "title": p.title,
+                        "command": p.command,
+                        "workdir": p.workdir,
+                        "risk": p.risk,
+                    }),
+                )
+            } else {
+                (200, "OK", json!({ "ok": true, "id": 0 }))
+            }
+        }
+        ("POST", "/agent/approval") => {
+            let id = body_json.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+            let allow = body_json
+                .get("allow")
+                .and_then(|x| x.as_bool().or_else(|| x.as_i64().map(|n| n != 0)))
+                .unwrap_or(false);
+            let resolved = if id > 0 {
+                agent::approval::resolve_pending_approval(id, allow)
+            } else {
+                false
+            };
+            (
+                200,
+                "OK",
+                json!({ "ok": resolved, "id": id, "allow": allow }),
+            )
+        }
+        ("GET", "/git/status") | ("POST", "/git/status") => {
+            if !ctx.policy.fs_enabled() {
+                return (403, "Forbidden", json!({ "ok": false, "error": "fs_denied" }));
+            }
+            let req_proj = body_json
+                .get("project")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let workspaces = resolve_project_workspaces(&ctx.policy);
+            let target_ws = if !req_proj.is_empty() {
+                workspaces
+                    .iter()
+                    .find(|w| {
+                        w.file_name()
+                            .map(|f| f.to_string_lossy() == req_proj)
+                            .unwrap_or(false)
+                    })
+                    .or_else(|| workspaces.first())
+            } else {
+                workspaces.first()
+            };
+            let entries = target_ws
+                .map(|ws| agent::diff_view::collect_git_status_entries(ws))
+                .unwrap_or_default();
+            let files: Vec<Value> = entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "status": e.status.to_string(),
+                        "path": e.path,
+                        "added": e.added,
+                        "deleted": e.deleted,
+                    })
+                })
+                .collect();
+            (200, "OK", json!({ "ok": true, "files": files }))
+        }
+        ("POST", "/git/diff") => {
+            if !ctx.policy.fs_enabled() {
+                return (403, "Forbidden", json!({ "ok": false, "error": "fs_denied" }));
+            }
+            let req_proj = body_json
+                .get("project")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim();
+            let req_file = body_json
+                .get("file")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim();
+            let req_start = body_json
+                .get("start_line")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0) as usize;
+            let req_max = body_json
+                .get("max_lines")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(150) as usize;
+            let workspaces = resolve_project_workspaces(&ctx.policy);
+            let target_ws = if !req_proj.is_empty() {
+                workspaces
+                    .iter()
+                    .find(|w| {
+                        w.file_name()
+                            .map(|f| f.to_string_lossy() == req_proj)
+                            .unwrap_or(false)
+                    })
+                    .or_else(|| workspaces.first())
+            } else {
+                workspaces.first()
+            };
+            let page = if let Some(ws) = target_ws {
+                agent::diff_view::collect_git_diff_page(
+                    ws,
+                    if req_file.is_empty() {
+                        None
+                    } else {
+                        Some(req_file)
+                    },
+                    req_start,
+                    req_max,
+                )
+            } else {
+                agent::diff_view::DiffPage {
+                    total_lines: 1,
+                    start_line: 0,
+                    lines: vec!["(Нет открытого рабочего проекта)".to_string()],
+                    truncated: false,
+                }
+            };
+            let content = page.lines.join("\n");
+            (
+                200,
+                "OK",
+                json!({
+                    "ok": true,
+                    "total_lines": page.total_lines,
+                    "win_start": page.start_line,
+                    "win_count": page.lines.len(),
+                    "truncated": page.truncated,
+                    "content": content,
+                }),
+            )
         }
         ("POST", "/agent/start") => {
             let Some(prompt) = body_json
@@ -1327,6 +1477,16 @@ pub fn handle_request(
                     } else {
                         0
                     };
+                    let approval_id = agent::approval::pending_approval_id();
+                    let pending_approval = agent::approval::pending_approval_snapshot().map(|p| {
+                        json!({
+                            "id": p.id,
+                            "title": p.title,
+                            "command": p.command,
+                            "workdir": p.workdir,
+                            "risk": p.risk,
+                        })
+                    });
                     return (
                         200,
                         "OK",
@@ -1336,6 +1496,8 @@ pub fn handle_request(
                             "elapsed_tenths": elapsed,
                             "status_line": status_line,
                             "killing": killing,
+                            "approval_id": approval_id,
+                            "pending_approval": pending_approval,
                             "timeline_words": tl_words,
                         }),
                     );
@@ -1374,6 +1536,7 @@ pub fn handle_request(
         }
         ("POST", "/agent/cancel") => {
             agent::ASYNC_CANCELLED.store(true, Ordering::SeqCst);
+            agent::approval::cancel_pending_approval();
             let pid = agent::ASYNC_GEMINI_PID.swap(0, Ordering::SeqCst);
             if pid > 1 {
                 #[cfg(unix)]
