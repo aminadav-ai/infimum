@@ -34,6 +34,197 @@ pub struct MdTableStep {
   hit_idx: i64,
 }
 
+fn md_is_path_ch(ch: i64) -> bool {
+  (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+    || ch == '_' || ch == '-' || ch == '.' || ch == '/'
+}
+
+fn md_is_alpha(ch: i64) -> bool {
+  (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+}
+
+fn md_is_digit(ch: i64) -> bool {
+  ch >= '0' && ch <= '9'
+}
+
+fn md_is_ref_delim(ch: i64) -> bool {
+  ch <= ' ' || ch == '`' || ch == '(' || ch == ')' || ch == '[' || ch == ']'
+    || ch == '{' || ch == '}' || ch == '"' || ch == '\'' || ch == '<' || ch == '>'
+    || ch == ',' || ch == ';'
+}
+
+fn md_link_color(th: i64) -> i64 {
+  if th == THEME_LIGHT { pack_rgba(37, 99, 235, 255) } else { theme_accent() }
+}
+
+// Parse a `path/to/file.ext:LINE` (optionally `:COL`, `-END`, or `..END`) reference in [s0, e0).
+// Returns 1-based line number (> 0) if valid, or 0 otherwise.
+pub fn md_parse_file_ref_span(ptr: i64, s0: i64, e0: i64) -[Mem]-> i64 {
+  let len = e0 - s0;
+  let mut result = 0;
+  if s0 >= 0 && len >= 4 && len <= 240 {
+    let mut colon = -1;
+    for k in s0..e0 max 240 {
+      if mem_load(ptr + 1 + k) == ':' {
+        colon = k;
+        break;
+      }
+    }
+    let mut ok = colon >= s0 + 3 && colon + 1 < e0;
+    // Reject URL schemes like http:// or https://
+    if ok && colon + 2 < e0 && mem_load(ptr + 1 + colon + 1) == '/' && mem_load(ptr + 1 + colon + 2) == '/' {
+      ok = false;
+    }
+    if ok {
+      let first_ch = mem_load(ptr + 1 + s0);
+      if first_ch == '-' || !md_is_path_ch(first_ch) {
+        ok = false;
+      }
+    }
+    let mut last_dot = -1;
+    let mut last_slash = -1;
+    if ok {
+      for k in s0..colon max 240 {
+        let ch = mem_load(ptr + 1 + k);
+        if !md_is_path_ch(ch) {
+          ok = false;
+          break;
+        }
+        if ch == '/' { last_slash = k; }
+        if ch == '.' { last_dot = k; }
+      }
+    }
+    if ok && (last_dot <= s0 || last_dot <= last_slash + 1) {
+      ok = false;
+    }
+    if ok {
+      let ext_len = colon - last_dot - 1;
+      if ext_len < 1 || ext_len > 8 {
+        ok = false;
+      } else {
+        let ext_s = last_dot + 1;
+        let mut has_ext_alpha = false;
+        for k in ext_s..colon max 10 {
+          let ch = mem_load(ptr + 1 + k);
+          if md_is_alpha(ch) {
+            has_ext_alpha = true;
+          } else if !md_is_digit(ch) {
+            ok = false;
+            break;
+          }
+        }
+        if !has_ext_alpha {
+          ok = false;
+        }
+      }
+    }
+    if ok {
+      let mut p = colon + 1;
+      if p < e0 && mem_load(ptr + 1 + p) == 'L' {
+        p += 1;
+      }
+      let num_start = p;
+      let mut line_no = 0;
+      while p < e0 && p - num_start < 7 max 8 {
+        let ch = mem_load(ptr + 1 + p);
+        if md_is_digit(ch) {
+          line_no = line_no * 10 + (ch - '0');
+          p += 1;
+        } else {
+          break;
+        }
+      }
+      if p == num_start || line_no <= 0 || line_no > 2000000 {
+        ok = false;
+      }
+      if ok && p < e0 {
+        let sep = mem_load(ptr + 1 + p);
+        if sep == ':' || sep == '-' {
+          p += 1;
+        } else if sep == '.' && p + 1 < e0 && mem_load(ptr + 1 + p + 1) == '.' {
+          p += 2;
+        } else {
+          ok = false;
+        }
+        if ok && p < e0 && mem_load(ptr + 1 + p) == 'L' {
+          p += 1;
+        }
+        if ok {
+          let tail_start = p;
+          while p < e0 max 16 {
+            let ch = mem_load(ptr + 1 + p);
+            if md_is_digit(ch) {
+              p += 1;
+            } else {
+              break;
+            }
+          }
+          if p == tail_start || p != e0 {
+            ok = false;
+          }
+        }
+      }
+      if ok {
+        result = line_no;
+      }
+    }
+  }
+  result
+}
+
+// Find a `file:line` reference covering raw char index `hit_idx` in buffer `ptr`.
+// Copies the file path into `out_buf` (length at out_buf[0]) and returns 1-based line number (> 0),
+// or 0 if `hit_idx` is not inside a valid `file:line` reference.
+pub fn md_find_file_ref_at(ptr: i64, hit_idx: i64, out_buf: i64) -[Mem]-> i64 {
+  let total = mem_load(ptr);
+  let mut result = 0;
+  if total > 0 && hit_idx >= 0 && hit_idx <= total {
+    let mut anchor = if hit_idx == total { total - 1 } else { hit_idx };
+    if anchor > 0 && md_is_ref_delim(mem_load(ptr + 1 + anchor)) {
+      anchor -= 1;
+    }
+    if anchor >= 0 && anchor < total && !md_is_ref_delim(mem_load(ptr + 1 + anchor)) {
+      let mut s = anchor;
+      while s > 0 max 240 {
+        if md_is_ref_delim(mem_load(ptr + 1 + s - 1)) { break; }
+        s -= 1;
+      }
+      let mut e = anchor + 1;
+      while e < total max 240 {
+        if md_is_ref_delim(mem_load(ptr + 1 + e)) { break; }
+        e += 1;
+      }
+      while e > s max 8 {
+        let tail = mem_load(ptr + 1 + e - 1);
+        if tail == '.' || tail == ':' {
+          e -= 1;
+        } else {
+          break;
+        }
+      }
+      let line_no = md_parse_file_ref_span(ptr, s, e);
+      if line_no > 0 {
+        let mut colon = -1;
+        for k in s..e max 240 {
+          if mem_load(ptr + 1 + k) == ':' {
+            colon = k;
+            break;
+          }
+        }
+        if colon > s {
+          let plen = min_i64(colon - s, 500);
+          mem_store(out_buf, plen);
+          for k in 0..plen max 500 {
+            mem_store(out_buf + 1 + k, mem_load(ptr + 1 + s + k));
+          }
+          result = line_no;
+        }
+      }
+    }
+  }
+  result
+}
+
 pub fn md_find_backtick(ptr: i64, start: i64, le: i64) -[Mem]-> i64 {
   let mut res = -1;
   for k in start..le max 512 {
@@ -126,6 +317,16 @@ pub fn md_inline_line(
           }
         }
 
+        let is_file_link = if mode == 2 { md_parse_file_ref_span(ptr, i + 1, end_bt) > 0 } else { false };
+        let link_col = md_link_color(th);
+        let pill_bg = if is_file_link {
+          if th == THEME_LIGHT { pack_rgba(219, 234, 254, 255) } else { pack_rgba(30, 58, 138, 95) }
+        } else {
+          theme_code_pill(th)
+        };
+        let pill_bd = if is_file_link { link_col } else { theme_border(th) };
+        let pill_fg = if is_file_link { link_col } else { theme_code_text(th) };
+
         while k < end_bt max 512 {
           if mode == 1 && hit_found == 1 { break; }
           let mut ce = k;
@@ -138,7 +339,7 @@ pub fn md_inline_line(
             ce += 1;
           }
           if mode == 2 && cy + lh >= vis_y0 && cy <= vis_y1 {
-            ui_rect(cx, cy - 2, cw + 10, sz + 5, 5, 1, 0, theme_code_pill(th), theme_border(th), clip);
+            ui_rect(cx, cy - 2, cw + 10, sz + 5, 5, 1, 0, pill_bg, pill_bd, clip);
           }
           cx += 5;
           for ck in k..ce max 256 {
@@ -152,7 +353,10 @@ pub fn md_inline_line(
               if has_sel && ck >= sel_lo_i && ck < sel_hi_i {
                 ui_rect(cx, cy - 1, cadv, sz + 4, 0, 0, 0, sel_bg, 0, clip);
               }
-              ui_glyph(cx, cy + 1, cch, code_sz, 2, theme_code_text(th), clip);
+              ui_glyph(cx, cy + 1, cch, code_sz, 2, pill_fg, clip);
+              if is_file_link {
+                ui_rect(cx, cy + code_sz + 1, cadv, 1, 0, 0, 0, link_col, 0, clip);
+              }
             }
             cx += cadv;
           }
@@ -202,6 +406,33 @@ pub fn md_inline_line(
               md_draw_quote_strip(mode, is_quote, q_x, cy, q_w, lh, th, clip, vis_y0, vis_y1);
             }
           }
+          let mut link_ws = -1;
+          let mut link_wt = -1;
+          if mode == 2 {
+            let mut we = i;
+            let mut scan = 0;
+            while we < le && scan < 96 max 96 {
+              let sc = mem_load(ptr + 1 + we);
+              if sc == ' ' || sc == '`' { break; }
+              if scan > 0 && sc == '*' && we + 1 < le && mem_load(ptr + 1 + we + 1) == '*' { break; }
+              we += 1;
+              scan += 1;
+            }
+            let mut ws = i;
+            let mut wt = we;
+            while ws < wt max 8 {
+              if md_is_ref_delim(mem_load(ptr + 1 + ws)) { ws += 1; } else { break; }
+            }
+            while wt > ws max 8 {
+              let tc = mem_load(ptr + 1 + wt - 1);
+              if md_is_ref_delim(tc) || tc == '.' || tc == ':' { wt -= 1; } else { break; }
+            }
+            if md_parse_file_ref_span(ptr, ws, wt) > 0 {
+              link_ws = ws;
+              link_wt = wt;
+            }
+          }
+          let word_link_col = md_link_color(th);
           let mut steps_w = 0;
           while i < le && steps_w < 96 max 96 {
             if mode == 1 && hit_found == 1 { break; }
@@ -229,7 +460,12 @@ pub fn md_inline_line(
               if has_sel && i >= sel_lo_i && i < sel_hi_i {
                 ui_rect(cx, cy - 1, adv, sz + 5, 0, 0, 0, sel_bg, 0, clip);
               }
-              ui_glyph(cx, cy, c2, sz, cur_style, cur_col, clip);
+              let in_wlink = link_ws >= 0 && i >= link_ws && i < link_wt;
+              let gcol = if in_wlink { word_link_col } else { cur_col };
+              ui_glyph(cx, cy, c2, sz, cur_style, gcol, clip);
+              if in_wlink {
+                ui_rect(cx, cy + sz + 1, adv, 1, 0, 0, 0, word_link_col, 0, clip);
+              }
             }
             cx += adv;
             i += 1;

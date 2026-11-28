@@ -305,6 +305,10 @@ pub fn render_file_viewer(main_x: i64, main_w: i64, h: i64, top_h: i64, key_spec
     }
     px += adv;
   }
+  if StudioMem.file_view_is_diff == 0 && StudioMem.file_view_hl_line > 0 {
+    let lw_hl = ui_fmt(px + 6, (top_h - sm_sz) / 2, ":{StudioMem.file_view_hl_line}", sm_sz, 1, col_accent(), ClipId::Root);
+    px += lw_hl + 8;
+  }
   ui_fmt(px + 12, (top_h - sm_sz) / 2, "{StudioMem.file_view_lines} строк", sm_sz, 0, col_muted(th), ClipId::Root);
 
   // Copy (two sheets / green check on copied) & Close (X) icon buttons
@@ -446,7 +450,12 @@ pub fn render_file_viewer(main_x: i64, main_w: i64, h: i64, top_h: i64, key_spec
           }
         }
       } else {
-        ui_int(main_x + 12, ly, line_no + 1, sm_sz, 2, col_muted(th), ClipId::Feed);
+        let is_hl_row = StudioMem.file_view_hl_line > 0 && (line_no + 1) == StudioMem.file_view_hl_line;
+        if is_hl_row {
+          ui_rect(main_x + 2, ly - 2, main_w - 20, lh, 0, 0, 0, pack_rgba(59, 130, 246, 44), 0, ClipId::Feed);
+          ui_rect(main_x + 2, ly - 2, 3, lh, 0, 0, 0, col_accent(), 0, ClipId::Feed);
+        }
+        ui_int(main_x + 12, ly, line_no + 1, sm_sz, if is_hl_row { 1 } else { 2 }, if is_hl_row { col_accent() } else { col_muted(th) }, ClipId::Feed);
         render_highlighted_line(lstart, llen, code_x, ly, code_max_x, code_sz, th, ClipId::Feed);
       }
     }

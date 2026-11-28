@@ -256,6 +256,7 @@ pub layout StudioMem {
   file_view_lines: word,
   file_view_win_start: word,
   file_view_win_count: word,
+  file_view_hl_line: word,
 
   // Project Tree Expansion Flags
   proj_expanded: words[64],
@@ -329,4 +330,7 @@ pub layout StudioMem {
   diff_added_arr: words[64],
   diff_deleted_arr: words[64],
   diff_path_pool: words[16384],
+
+  // Scratch UTF-32 buffer for clickable `file:line` references in assistant messages
+  link_path_tmp: words[512],
 }

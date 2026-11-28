@@ -1851,3 +1851,147 @@ fn history_compaction_shrinks_old_edit_args_and_preserves_thought_signature_and_
     assert_eq!(acc.in_tokens, 2000);
     assert_eq!(acc.out_tokens, 120);
 }
+
+#[test]
+fn bridge_gen_endpoints_wire_roundtrip() {
+    use crate::bridge_gen::{
+        AgentPollRespWire, ApprovalDecideReq, ApprovalPromptWire, FileWindowReq,
+        FileWindowRespWire, GitStatusReq, GitStatusRespWire, APPROVAL_DECISION_ALLOW_ALWAYS,
+    };
+
+    // Approval prompt (empty + populated with embedded newlines sanitized)
+    let empty_ap = ApprovalPromptWire::from_json(&json!({ "pending": null }));
+    assert_eq!(empty_ap.to_ifm_wire(), "0\n");
+    let ap = ApprovalPromptWire::from_json(&json!({
+        "id": 42,
+        "title": "Confirm\nPush",
+        "command": "git push\norigin main",
+        "risk": "Updates remote"
+    }));
+    assert_eq!(
+        ap.to_ifm_wire(),
+        "42\nConfirm Push\ngit push origin main\nUpdates remote\n"
+    );
+
+    // Approval decision wire -> JSON
+    let dec = ApprovalDecideReq::from_ifm_wire("42 2");
+    assert_eq!(dec.id, 42);
+    assert_eq!(dec.decision, APPROVAL_DECISION_ALLOW_ALWAYS);
+    let dec_j = dec.to_json();
+    assert_eq!(dec_j["allow"], json!(true));
+    assert_eq!(dec_j["always"], json!(true));
+
+    // GitStatus wire
+    let gs_req = GitStatusReq::from_ifm_wire("  /tmp/proj \n");
+    assert_eq!(gs_req.to_json()["project"], json!("/tmp/proj"));
+    let gs_resp = GitStatusRespWire::from_json(&json!({
+        "files": [
+            { "status": "M", "added": 12, "deleted": 3, "path": "src/main.rs" },
+            { "status": "?", "added": 5, "deleted": 0, "path": "new.ifm" }
+        ]
+    }));
+    assert_eq!(
+        gs_resp.to_ifm_wire(),
+        "2\nM\t12\t3\tsrc/main.rs\n?\t5\t0\tnew.ifm\n"
+    );
+
+    // FileWindow wire
+    let fw_req = FileWindowReq::from_ifm_wire("/tmp/proj\nsrc/lib.rs\n120 250");
+    assert_eq!(fw_req.project, "/tmp/proj");
+    assert_eq!(fw_req.file, "src/lib.rs");
+    assert_eq!(fw_req.start_line, 120);
+    assert_eq!(fw_req.max_lines, 250);
+    let fw_resp = FileWindowRespWire::from_json(&json!({
+        "total_lines": 500,
+        "win_start": 120,
+        "win_count": 2,
+        "content": "line 121\nline 122"
+    }));
+    assert_eq!(fw_resp.to_ifm_wire(), "500 120 2\nline 121\nline 122");
+
+    // AgentPoll wire: Idle, Running, Done, and reply budget preservation
+    assert_eq!(AgentPollRespWire::Idle.to_ifm_wire(), "0");
+    let run_wire = AgentPollRespWire::from_json(&json!({
+        "status": 1,
+        "elapsed_tenths": 15,
+        "killing": 0,
+        "approval_id": 7,
+        "status_line": "Running\ncargo",
+        "timeline_words": [1, 2, 3]
+    }))
+    .to_ifm_wire();
+    assert_eq!(run_wire, "1 15 0 3 7\nRunning cargo\n1 2 3");
+
+    let done_wire = AgentPollRespWire::from_json(&json!({
+        "status": 2,
+        "elapsed_tenths": 42,
+        "cost_milli_ils": 18,
+        "total_tokens": 9001,
+        "header": "Gemini 3",
+        "reply": "Fixed modals.ifm:836",
+        "timeline_words": [10, 20]
+    }))
+    .to_ifm_wire();
+    assert_eq!(done_wire, "2 42 18 9001 2\nGemini 3\n10 20\nFixed modals.ifm:836");
+
+    // When reply is huge, timeline is dropped instead of truncating reply
+    let huge_reply = "r".repeat(64_950);
+    let huge_done = AgentPollRespWire::from_json(&json!({
+        "status": 2,
+        "elapsed_tenths": 1,
+        "cost_milli_ils": 0,
+        "total_tokens": 1,
+        "header": "H",
+        "reply": huge_reply,
+        "timeline_words": [1, 2, 3, 4]
+    }))
+    .to_ifm_wire();
+    assert!(huge_done.starts_with("2 1 0 1 0\nH\n\n"));
+    assert!(huge_done.ends_with(&huge_reply));
+}
+
+#[test]
+fn resolve_workspace_file_supports_suffix_basename_and_blocks_traversal() {
+    let base = std::env::temp_dir().join(format!("ifm_resolve_ws_{}", now_millis()));
+    let nested = base.join("apps/infimum-code/capsule/src");
+    let tools = base.join("apps/infimum-code/daemon/src/agent/tools");
+    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    let modals = nested.join("modals.ifm");
+    let tools_mod = tools.join("mod.rs");
+    fs::write(&modals, "// modals\n").unwrap();
+    fs::write(&tools_mod, "// tools\n").unwrap();
+
+    let ws_canon = fs::canonicalize(&base).unwrap();
+    let modals_canon = fs::canonicalize(&modals).unwrap();
+    let tools_canon = fs::canonicalize(&tools_mod).unwrap();
+
+    // Exact relative path
+    assert_eq!(
+        crate::http_server::resolve_workspace_file(&ws_canon, "apps/infimum-code/capsule/src/modals.ifm").unwrap(),
+        modals_canon
+    );
+    // Leading ./ normalization
+    assert_eq!(
+        crate::http_server::resolve_workspace_file(&ws_canon, "./apps/infimum-code/capsule/src/modals.ifm").unwrap(),
+        modals_canon
+    );
+    // Short suffix path
+    assert_eq!(
+        crate::http_server::resolve_workspace_file(&ws_canon, "tools/mod.rs").unwrap(),
+        tools_canon
+    );
+    // Basename-only fallback
+    assert_eq!(
+        crate::http_server::resolve_workspace_file(&ws_canon, "modals.ifm").unwrap(),
+        modals_canon
+    );
+    // Traversal rejected with 403
+    let bad = crate::http_server::resolve_workspace_file(&ws_canon, "../etc/passwd");
+    assert_eq!(bad.unwrap_err().0, 403);
+    // Nonexistent returns 404
+    let miss = crate::http_server::resolve_workspace_file(&ws_canon, "does_not_exist.rs");
+    assert_eq!(miss.unwrap_err().0, 404);
+
+    let _ = fs::remove_dir_all(&base);
+}

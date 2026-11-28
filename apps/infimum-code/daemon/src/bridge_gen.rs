@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 
-pub const BRIDGE_SCHEMA_VERSION: u32 = 1;
+pub const BRIDGE_SCHEMA_VERSION: u32 = 2;
 pub const SETTINGS_WIRE_FIELD_COUNT: usize = 7;
 
 pub const ENDPOINT_SETTINGS: &str = "/settings";
@@ -14,6 +14,7 @@ pub const ENDPOINT_AGENT_POLL: &str = "/agent/poll";
 pub const ENDPOINT_AGENT_APPROVAL: &str = "/agent/approval";
 pub const ENDPOINT_GIT_STATUS: &str = "/git/status";
 pub const ENDPOINT_GIT_DIFF: &str = "/git/diff";
+pub const ENDPOINT_FILES_OPEN: &str = "/files/open";
 
 pub const APPROVAL_DECISION_DENY: i64 = 0;
 pub const APPROVAL_DECISION_ALLOW: i64 = 1;
@@ -21,6 +22,39 @@ pub const APPROVAL_DECISION_ALLOW_ALWAYS: i64 = 2;
 pub const SIDE_TAB_CONVS: i64 = 0;
 pub const SIDE_TAB_FILES: i64 = 1;
 pub const SIDE_TAB_DIFF: i64 = 2;
+pub const POLL_STATUS_IDLE: i64 = 0;
+pub const POLL_STATUS_RUNNING: i64 = 1;
+pub const POLL_STATUS_DONE: i64 = 2;
+pub const GIT_STATUS_MAX_ENTRIES: i64 = 64;
+pub const FILE_WINDOW_MAX_LINES: i64 = 400;
+pub const HTTP_RESP_MAX_CHARS: i64 = 65000;
+
+#[inline]
+pub fn sanitize_wire_line(s: &str) -> String {
+    s.replace(['\r', '\n'], " ")
+}
+
+/// Fit `timeline_words` into the remaining capsule HTTP response buffer budget
+/// without ever truncating the message/reply text.
+pub fn format_timeline_within_budget(tl: &[Value], reserved_chars: usize) -> (usize, String) {
+    let words: Vec<i64> = tl.iter().filter_map(|w| w.as_i64()).collect();
+    format_timeline_within_budget_i64(&words, reserved_chars)
+}
+
+pub fn format_timeline_within_budget_i64(tl: &[i64], reserved_chars: usize) -> (usize, String) {
+    const MAX_HTTP_RESP_CHARS: usize = 65000;
+    if tl.is_empty() || reserved_chars + 64 >= MAX_HTTP_RESP_CHARS {
+        return (0, String::new());
+    }
+    let budget = MAX_HTTP_RESP_CHARS - reserved_chars - 64;
+    let nums: Vec<String> = tl.iter().map(|n| n.to_string()).collect();
+    let joined = nums.join(" ");
+    if joined.len() <= budget {
+        (nums.len(), joined)
+    } else {
+        (0, String::new())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeSettings {
@@ -114,5 +148,258 @@ impl NativeSettings {
             return "0\n".to_string();
         }
         format!("1 {} {} {} {} {} {} {}\n", self.theme, self.font_scale_pct, self.currency_id, self.model_idx, if dev_mode_effective { 1 } else { 0 }, if self.confirm_external_mutations { 1 } else { 0 }, if self.turbo_mode { 1 } else { 0 })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApprovalPromptWire {
+    pub id: u64,
+    pub title: String,
+    pub command: String,
+    pub risk: String,
+}
+
+impl ApprovalPromptWire {
+    pub fn from_json(v: &Value) -> Self {
+        let src = match v.get("pending") {
+            Some(Value::Object(_)) => &v["pending"],
+            Some(Value::Null) => return Self::default(),
+            _ => v,
+        };
+        let id = src.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+        if id == 0 {
+            return Self::default();
+        }
+        Self {
+            id,
+            title: src.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            command: src.get("command").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            risk: src.get("risk").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        }
+    }
+
+    pub fn to_ifm_wire(&self) -> String {
+        if self.id == 0 {
+            return "0\n".to_string();
+        }
+        format!("{}\n{}\n{}\n{}\n", self.id, sanitize_wire_line(&self.title), sanitize_wire_line(&self.command), sanitize_wire_line(&self.risk))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApprovalDecideReq {
+    pub id: u64,
+    pub decision: i64,
+}
+
+impl ApprovalDecideReq {
+    pub fn from_ifm_wire(text: &str) -> Self {
+        let mut parts = text.split_whitespace();
+        let id = parts.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let decision = parts.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(APPROVAL_DECISION_DENY);
+        Self { id, decision }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "decision": self.decision,
+            "allow": self.decision != APPROVAL_DECISION_DENY,
+            "always": self.decision == APPROVAL_DECISION_ALLOW_ALWAYS,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GitStatusReq {
+    pub project: String,
+}
+
+impl GitStatusReq {
+    pub fn from_ifm_wire(text: &str) -> Self {
+        Self { project: text.trim().to_string() }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({ "project": self.project })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GitStatusEntryWire {
+    pub status: String,
+    pub added: u64,
+    pub deleted: u64,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GitStatusRespWire {
+    pub files: Vec<GitStatusEntryWire>,
+}
+
+impl GitStatusRespWire {
+    pub fn from_json(v: &Value) -> Self {
+        let files = v.get("files")
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .take(64)
+                    .map(|f| GitStatusEntryWire {
+                        status: f.get("status").and_then(|x| x.as_str()).unwrap_or("M").to_string(),
+                        added: f.get("added").and_then(|x| x.as_u64()).unwrap_or(0),
+                        deleted: f.get("deleted").and_then(|x| x.as_u64()).unwrap_or(0),
+                        path: f.get("path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { files }
+    }
+
+    pub fn to_ifm_wire(&self) -> String {
+        let count = self.files.len().min(64);
+        let mut out = format!("{count}\n");
+        for f in self.files.iter().take(count) {
+            let st = f.status.chars().next().unwrap_or('M');
+            let path = sanitize_wire_line(&f.path);
+            out.push_str(&format!("{st}\t{}\t{}\t{path}\n", f.added, f.deleted));
+        }
+        out
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileWindowReq {
+    pub project: String,
+    pub file: String,
+    pub start_line: u64,
+    pub max_lines: u64,
+}
+
+impl FileWindowReq {
+    pub fn from_ifm_wire(text: &str) -> Self {
+        let mut lines = text.split('\n');
+        let project = lines.next().unwrap_or("").trim().to_string();
+        let file = lines.next().unwrap_or("").trim().to_string();
+        let range = lines.next().unwrap_or("").trim();
+        let mut parts = range.split_whitespace();
+        let start_line = parts.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let max_lines = parts.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(250);
+        Self { project, file, start_line, max_lines }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "project": self.project,
+            "file": self.file,
+            "start_line": self.start_line,
+            "max_lines": self.max_lines,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileWindowRespWire {
+    pub total_lines: u64,
+    pub win_start: u64,
+    pub win_count: u64,
+    pub content: String,
+}
+
+impl FileWindowRespWire {
+    pub fn from_json(v: &Value) -> Self {
+        Self {
+            total_lines: v.get("total_lines").and_then(|x| x.as_u64()).unwrap_or(1),
+            win_start: v.get("win_start").and_then(|x| x.as_u64()).unwrap_or(0),
+            win_count: v.get("win_count").and_then(|x| x.as_u64()).unwrap_or(0),
+            content: v.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        }
+    }
+
+    pub fn to_ifm_wire(&self) -> String {
+        format!("{} {} {}\n{}", self.total_lines, self.win_start, self.win_count, self.content)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentPollRespWire {
+    Idle,
+    Running {
+        elapsed_tenths: i64,
+        killing: i64,
+        approval_id: u64,
+        status_line: String,
+        timeline_words: Vec<i64>,
+    },
+    Done {
+        elapsed_tenths: i64,
+        cost_milli_ils: i64,
+        total_tokens: i64,
+        header: String,
+        reply: String,
+        timeline_words: Vec<i64>,
+    },
+}
+
+impl AgentPollRespWire {
+    pub fn from_json(v: &Value) -> Self {
+        let status = v.get("status").and_then(|x| x.as_i64()).unwrap_or(POLL_STATUS_IDLE);
+        let elapsed_tenths = v.get("elapsed_tenths").and_then(|x| x.as_i64()).unwrap_or(0);
+        let timeline_words: Vec<i64> = v.get("timeline_words")
+            .and_then(|a| a.as_array())
+            .map(|arr| arr.iter().filter_map(|w| w.as_i64()).collect())
+            .unwrap_or_default();
+        if status == POLL_STATUS_RUNNING {
+            Self::Running {
+                elapsed_tenths,
+                killing: v.get("killing").and_then(|x| x.as_i64()).unwrap_or(0),
+                approval_id: v.get("approval_id").and_then(|x| x.as_u64()).unwrap_or(0),
+                status_line: v.get("status_line").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                timeline_words,
+            }
+        } else if status == POLL_STATUS_DONE {
+            Self::Done {
+                elapsed_tenths,
+                cost_milli_ils: v.get("cost_milli_ils").and_then(|x| x.as_i64()).unwrap_or(0),
+                total_tokens: v.get("total_tokens").and_then(|x| x.as_i64()).unwrap_or(0),
+                header: v.get("header").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                reply: v.get("reply").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                timeline_words,
+            }
+        } else {
+            Self::Idle
+        }
+    }
+
+    pub fn to_ifm_wire(&self) -> String {
+        match self {
+            Self::Idle => "0".to_string(),
+            Self::Running {
+                elapsed_tenths,
+                killing,
+                approval_id,
+                status_line,
+                timeline_words,
+            } => {
+                let status_clean = sanitize_wire_line(status_line);
+                let reserved = 80 + status_clean.chars().count();
+                let (tl_n, tl_joined) = format_timeline_within_budget_i64(timeline_words, reserved);
+                format!("1 {elapsed_tenths} {killing} {tl_n} {approval_id}\n{status_clean}\n{tl_joined}")
+            }
+            Self::Done {
+                elapsed_tenths,
+                cost_milli_ils,
+                total_tokens,
+                header,
+                reply,
+                timeline_words,
+            } => {
+                let header_clean = sanitize_wire_line(header);
+                let reserved = 64 + header_clean.chars().count() + reply.chars().count();
+                let (tl_n, tl_joined) = format_timeline_within_budget_i64(timeline_words, reserved);
+                format!("2 {elapsed_tenths} {cost_milli_ils} {total_tokens} {tl_n}\n{header_clean}\n{tl_joined}\n{reply}")
+            }
+        }
     }
 }

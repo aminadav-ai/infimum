@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "description": "Single source of truth for the Infimum Code daemon <-> capsule typed bridge.",
   "settings": [
     {
@@ -71,7 +71,8 @@
     "AGENT_POLL": "/agent/poll",
     "AGENT_APPROVAL": "/agent/approval",
     "GIT_STATUS": "/git/status",
-    "GIT_DIFF": "/git/diff"
+    "GIT_DIFF": "/git/diff",
+    "FILES_OPEN": "/files/open"
   },
   "constants": {
     "APPROVAL_DECISION_DENY": 0,
@@ -79,6 +80,83 @@
     "APPROVAL_DECISION_ALLOW_ALWAYS": 2,
     "SIDE_TAB_CONVS": 0,
     "SIDE_TAB_FILES": 1,
-    "SIDE_TAB_DIFF": 2
+    "SIDE_TAB_DIFF": 2,
+    "POLL_STATUS_IDLE": 0,
+    "POLL_STATUS_RUNNING": 1,
+    "POLL_STATUS_DONE": 2,
+    "GIT_STATUS_MAX_ENTRIES": 64,
+    "FILE_WINDOW_MAX_LINES": 400,
+    "HTTP_RESP_MAX_CHARS": 65000
+  },
+  "messages": {
+    "approval_prompt": {
+      "endpoint": "AGENT_APPROVAL",
+      "method": "GET",
+      "rust_struct": "ApprovalPromptWire",
+      "id_field": "id",
+      "capsule_id_field": "approval_id",
+      "capsule_loaded_field": "approval_loaded_id",
+      "lines": [
+        { "name": "title", "capsule_buf": "approval_title_buf", "cap": 250 },
+        { "name": "command", "capsule_buf": "approval_cmd_buf", "cap": 500 },
+        { "name": "risk", "capsule_buf": "approval_risk_buf", "cap": 250 }
+      ]
+    },
+    "approval_decide": {
+      "endpoint": "AGENT_APPROVAL",
+      "method": "POST",
+      "rust_struct": "ApprovalDecideReq",
+      "fields": [
+        { "name": "id", "kind": "u64" },
+        { "name": "decision", "kind": "i64" }
+      ]
+    },
+    "git_status": {
+      "endpoint": "GIT_STATUS",
+      "method": "POST",
+      "rust_req_struct": "GitStatusReq",
+      "rust_entry_struct": "GitStatusEntryWire",
+      "rust_resp_struct": "GitStatusRespWire",
+      "max_entries": 64,
+      "path_stride": 256,
+      "path_cap": 250,
+      "capsule_count_field": "diff_count",
+      "capsule_status_arr": "diff_status_arr",
+      "capsule_added_arr": "diff_added_arr",
+      "capsule_deleted_arr": "diff_deleted_arr",
+      "capsule_path_pool": "diff_path_pool"
+    },
+    "file_window": {
+      "endpoints": ["FILES_OPEN", "GIT_DIFF"],
+      "method": "POST",
+      "rust_req_struct": "FileWindowReq",
+      "rust_resp_struct": "FileWindowRespWire",
+      "max_lines": 400,
+      "min_lines": 50,
+      "max_total_lines": 2000000,
+      "body_cap": 65000,
+      "capsule_lines_field": "file_view_lines",
+      "capsule_win_start_field": "file_view_win_start",
+      "capsule_win_count_field": "file_view_win_count",
+      "capsule_body_buf": "file_view_buf"
+    },
+    "agent_poll": {
+      "endpoint": "AGENT_POLL",
+      "method": "GET",
+      "rust_enum": "AgentPollRespWire",
+      "max_resp_chars": 65000,
+      "reply_cap": 32700,
+      "status_cap": 250,
+      "header_cap": 250,
+      "capsule_elapsed_field": "async_elapsed_tenths",
+      "capsule_killing_field": "live_cmd_killing",
+      "capsule_approval_field": "approval_id",
+      "capsule_approval_loaded_field": "approval_loaded_id",
+      "capsule_cost_field": "async_cost_milli_ils",
+      "capsule_tokens_field": "async_total_tokens",
+      "capsule_header_buf": "active_hdr_buf",
+      "capsule_timeline_buf": "live_timeline_buf",
+      "capsule_timeline_words_field": "live_timeline_words"
+    }
   }
 }

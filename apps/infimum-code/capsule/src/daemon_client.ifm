@@ -274,19 +274,7 @@ pub mod daemon {
         http("POST", "/files/open?format=ifm", StudioMem::http_body_tmp)
       };
       if code == 200 {
-        StudioMem.http_key_tmp[0] = 0;
-        let total_l = clamp_i64(parse_i64(StudioMem::http_resp_buf), 1, 2000000);
-        let win_s = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, total_l);
-        let win_c = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, 400);
-        parse_skip_to_next_line(StudioMem::http_resp_buf);
-        let body_start = StudioMem.http_key_tmp[0];
-        let resp_len = buf_len(StudioMem::http_resp_buf, 65500);
-        let rem = clamp_i64(resp_len - body_start, 0, 65000);
-        buf_copy_slice(StudioMem::file_view_buf, 65000, StudioMem::http_resp_buf, body_start, rem);
-        StudioMem.file_view_lines = total_l;
-        StudioMem.file_view_win_start = win_s;
-        StudioMem.file_view_win_count = win_c;
-        1
+        bridge_file_window_decode(StudioMem::http_resp_buf)
       } else {
         0
       }
@@ -313,10 +301,54 @@ pub mod daemon {
     StudioMem.file_view_is_diff = 0;
     let ok = fetch_file_window(0, 250);
     if ok == 1 {
+      StudioMem.file_view_hl_line = 0;
       StudioMem.file_view_scroll_y = 0;
       StudioMem.file_view_open = 1;
       1
     } else {
+      0
+    }
+  }
+
+  // Open a workspace file directly at a 1-based line number (e.g. from clickable `file:line` links),
+  // scrolling the viewport so the target line sits near the top and highlighting it.
+  pub fn open_file_at_line(
+    proj_buf: i64, pstart: i64, plen: i64,
+    fbuf: i64, fstart: i64, flen: i64,
+    target_line: i64
+  ) -[Mem, Net]-> i64 {
+    let prev_is_diff = StudioMem.file_view_is_diff;
+    buf_clear(StudioMem::file_view_req_buf);
+    buf_clear(StudioMem::file_view_path_buf);
+    let p_vis = clamp_i64(plen, 0, 120);
+    for i in 0..p_vis max 120 {
+      let ch = buf_get_cp(proj_buf, pstart + i);
+      buf_push_cp(StudioMem::file_view_req_buf, 250, ch);
+      buf_push_cp(StudioMem::file_view_path_buf, 250, ch);
+    }
+    buf_push_cp(StudioMem::file_view_req_buf, 250, '\n');
+    buf_append_lit(StudioMem::file_view_path_buf, 250, " / ");
+    let f_vis = clamp_i64(flen, 0, 180);
+    for i in 0..f_vis max 180 {
+      let ch = buf_get_cp(fbuf, fstart + i);
+      buf_push_cp(StudioMem::file_view_req_buf, 250, ch);
+      buf_push_cp(StudioMem::file_view_path_buf, 250, ch);
+    }
+    StudioMem.file_view_is_diff = 0;
+    let req_start = max_i64(0, target_line - 45);
+    let ok = fetch_file_window(req_start, 250);
+    if ok == 1 {
+      let total = max_i64(1, StudioMem.file_view_lines);
+      let hl = clamp_i64(target_line, 1, total);
+      let line_idx = max_i64(0, hl - 1);
+      let code_sz = clamp_i64((13 * StudioMem.font_scale_pct + 50) / 100, 10, 44);
+      let lh = clamp_i64(code_sz + 7, 18, 36);
+      StudioMem.file_view_hl_line = hl;
+      StudioMem.file_view_scroll_y = max_i64(0, (line_idx - 6) * lh);
+      StudioMem.file_view_open = 1;
+      1
+    } else {
+      StudioMem.file_view_is_diff = prev_is_diff;
       0
     }
   }
@@ -345,6 +377,7 @@ pub mod daemon {
     StudioMem.file_view_is_diff = 1;
     let ok = fetch_file_window(0, 250);
     if ok == 1 {
+      StudioMem.file_view_hl_line = 0;
       StudioMem.file_view_scroll_y = 0;
       StudioMem.file_view_open = 1;
       1
@@ -358,56 +391,7 @@ pub mod daemon {
     let code = http("POST", "/git/status?format=ifm", proj_buf);
     StudioMem.diff_loaded = 1;
     if code == 200 {
-      StudioMem.http_key_tmp[0] = 0;
-      let cnt = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, 64);
-      parse_skip_to_next_line(StudioMem::http_resp_buf);
-      let mut idx = 0;
-      let resp_n = buf_len(StudioMem::http_resp_buf, 65500);
-      while idx < cnt max 64 {
-        let p0 = StudioMem.http_key_tmp[0];
-        if p0 >= resp_n {
-          break;
-        }
-        let st_ch = buf_get_cp(StudioMem::http_resp_buf, p0);
-        StudioMem.diff_status_arr[idx] = st_ch;
-        let mut p = p0 + 1;
-        while p < resp_n max 16 {
-          let c = buf_get_cp(StudioMem::http_resp_buf, p);
-          p += 1;
-          if c == '\t' || c == '\n' {
-            break;
-          }
-        }
-        StudioMem.http_key_tmp[0] = p;
-        let add_n = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, 999999);
-        StudioMem.diff_added_arr[idx] = add_n;
-        let mut p2 = StudioMem.http_key_tmp[0];
-        if p2 < resp_n && buf_get_cp(StudioMem::http_resp_buf, p2) == '\t' {
-          p2 += 1;
-        }
-        StudioMem.http_key_tmp[0] = p2;
-        let del_n = clamp_i64(parse_i64(StudioMem::http_resp_buf), 0, 999999);
-        StudioMem.diff_deleted_arr[idx] = del_n;
-        let mut p3 = StudioMem.http_key_tmp[0];
-        if p3 < resp_n && buf_get_cp(StudioMem::http_resp_buf, p3) == '\t' {
-          p3 += 1;
-        }
-        let dst_ptr = StudioMem::diff_path_pool + idx * 256;
-        buf_clear(dst_ptr);
-        while p3 < resp_n max 250 {
-          let c = buf_get_cp(StudioMem::http_resp_buf, p3);
-          if c == '\n' || c == '\r' || c == 0 {
-            break;
-          }
-          buf_push_cp(dst_ptr, 250, c);
-          p3 += 1;
-        }
-        StudioMem.http_key_tmp[0] = p3;
-        parse_skip_to_next_line(StudioMem::http_resp_buf);
-        idx += 1;
-      }
-      StudioMem.diff_count = clamp_i64(idx, 0, 64);
-      StudioMem.diff_count
+      bridge_git_status_decode(StudioMem::http_resp_buf)
     } else {
       StudioMem.diff_count = 0;
       0
@@ -418,32 +402,15 @@ pub mod daemon {
   pub fn approval_fetch() -[Mem, Net]-> i64 {
     let code = http("GET", "/agent/approval?format=ifm", 0);
     if code == 200 {
-      StudioMem.http_key_tmp[0] = 0;
-      let id = parse_i64(StudioMem::http_resp_buf);
-      if id > 0 {
-        parse_skip_to_next_line(StudioMem::http_resp_buf);
-        parse_line_into(StudioMem::http_resp_buf, StudioMem::approval_title_buf, 250);
-        parse_line_into(StudioMem::http_resp_buf, StudioMem::approval_cmd_buf, 500);
-        parse_line_into(StudioMem::http_resp_buf, StudioMem::approval_risk_buf, 250);
-        StudioMem.approval_id = id;
-        StudioMem.approval_loaded_id = id;
-        1
-      } else {
-        StudioMem.approval_id = 0;
-        StudioMem.approval_loaded_id = 0;
-        0
-      }
+      bridge_approval_prompt_decode(StudioMem::http_resp_buf)
     } else {
       0
     }
   }
 
-  // Send user Approve (allow=1) or Deny (allow=0) decision for pending external mutation.
+  // Send user Approve (1), Allow Always (2), or Deny (0) decision for pending external mutation.
   pub fn approval_decide(id: i64, allow: i64) -[Mem, Net]-> i64 {
-    buf_clear(StudioMem::http_body_tmp);
-    buf_push_int(StudioMem::http_body_tmp, 64, id);
-    buf_push_cp(StudioMem::http_body_tmp, 64, ' ');
-    buf_push_int(StudioMem::http_body_tmp, 64, allow);
+    bridge_approval_decide_encode(StudioMem::http_body_tmp, id, allow);
     let code = http("POST", "/agent/approval?format=ifm", StudioMem::http_body_tmp);
     StudioMem.approval_id = 0;
     StudioMem.approval_loaded_id = 0;
@@ -550,40 +517,7 @@ pub mod daemon {
     if code != 200 {
       0
     } else {
-      StudioMem.http_key_tmp[0] = 0;
-      let st = parse_i64(StudioMem::http_resp_buf);
-      if st == 1 {
-        StudioMem.async_elapsed_tenths = parse_i64(StudioMem::http_resp_buf);
-        StudioMem.live_cmd_killing = parse_i64(StudioMem::http_resp_buf);
-        let tl_n = parse_i64(StudioMem::http_resp_buf);
-        let appr_id = parse_i64(StudioMem::http_resp_buf);
-        StudioMem.approval_id = max_i64(0, appr_id);
-        if appr_id <= 0 {
-          StudioMem.approval_loaded_id = 0;
-        }
-        parse_skip_to_next_line(StudioMem::http_resp_buf);
-        parse_line_into(StudioMem::http_resp_buf, status_ptr, 240);
-        parse_timeline_words(StudioMem::http_resp_buf, tl_n);
-        1
-      } else if st == 2 {
-        StudioMem.approval_id = 0;
-        StudioMem.approval_loaded_id = 0;
-        StudioMem.async_elapsed_tenths = parse_i64(StudioMem::http_resp_buf);
-        StudioMem.async_cost_milli_ils = parse_i64(StudioMem::http_resp_buf);
-        StudioMem.async_total_tokens = parse_i64(StudioMem::http_resp_buf);
-        let tl_n = parse_i64(StudioMem::http_resp_buf);
-        parse_skip_to_next_line(StudioMem::http_resp_buf);
-        parse_line_into(StudioMem::http_resp_buf, StudioMem::active_hdr_buf, 200);
-        parse_timeline_words(StudioMem::http_resp_buf, tl_n);
-        StudioMem.live_cmd_killing = 0;
-        let total_len = buf_len(StudioMem::http_resp_buf, 65536);
-        let pos = StudioMem.http_key_tmp[0];
-        let rem = clamp_i64(total_len - pos, 0, MAX_MSG_CHARS);
-        buf_copy_slice(reply_ptr, MAX_MSG_CHARS, StudioMem::http_resp_buf, pos, rem);
-        2
-      } else {
-        0
-      }
+      bridge_agent_poll_decode(StudioMem::http_resp_buf, reply_ptr, status_ptr)
     }
   }
 

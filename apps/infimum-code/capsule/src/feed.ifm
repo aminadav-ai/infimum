@@ -399,22 +399,44 @@ pub fn render_feed(
         }
         if fy >= vis_y0 && mty <= vis_y1 {
           if can_sel_feed && in_feed_box && point_in_rect(mx, my, mtx - 4, mty - 4, mtw + 8, mh + 8) {
-            gfx_set_cursor(CursorKind::Text);
+            let hit_i = md::layout_md_ptr(1, mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, th, ClipId::Feed, vis_y0, vis_y1, 0, 0);
+            let ref_line = if StudioMem.msg_sel_dragging == 0 {
+              md::find_file_ref_at(text_ptr, hit_i, StudioMem::link_path_tmp)
+            } else {
+              0
+            };
+            if ref_line > 0 {
+              gfx_set_cursor(CursorKind::Pointer);
+            } else {
+              gfx_set_cursor(CursorKind::Text);
+            }
             if m_clicked == 1 {
-              let hit_i = md::layout_md_ptr(1, mx, my, mtx, mty, mtw, text_ptr, body_sz, line_h, th, ClipId::Feed, vis_y0, vis_y1, 0, 0);
-              if StudioMem.last_msg_click_ptr == text_ptr && (tick - StudioMem.last_msg_click_tick) <= 24 && hit_i >= StudioMem.last_msg_click_idx - 2 && hit_i <= StudioMem.last_msg_click_idx + 2 {
-                select_word_in_msg(text_ptr, hit_i);
-              } else {
-                StudioMem.msg_sel_ptr = text_ptr;
-                StudioMem.msg_sel_anchor = hit_i;
-                StudioMem.msg_sel_focus = hit_i;
-                StudioMem.msg_sel_dragging = 1;
+              let mut link_opened = 0;
+              if ref_line > 0 {
+                let plen = buf_len(StudioMem::active_proj_buf, 200);
+                let flen = buf_len(StudioMem::link_path_tmp, 500);
+                if plen > 0 && flen > 0 {
+                  link_opened = daemon::open_file_at_line(StudioMem::active_proj_buf, 0, plen, StudioMem::link_path_tmp, 0, flen, ref_line);
+                }
               }
-              StudioMem.last_msg_click_tick = tick;
-              StudioMem.last_msg_click_ptr = text_ptr;
-              StudioMem.last_msg_click_idx = hit_i;
-              StudioMem.sel_anchor = StudioMem.cursor_pos;
-              feed_text_clicked = true;
+              if link_opened == 1 {
+                StudioMem.msg_sel_dragging = 0;
+                feed_text_clicked = true;
+              } else {
+                if StudioMem.last_msg_click_ptr == text_ptr && (tick - StudioMem.last_msg_click_tick) <= 24 && hit_i >= StudioMem.last_msg_click_idx - 2 && hit_i <= StudioMem.last_msg_click_idx + 2 {
+                  select_word_in_msg(text_ptr, hit_i);
+                } else {
+                  StudioMem.msg_sel_ptr = text_ptr;
+                  StudioMem.msg_sel_anchor = hit_i;
+                  StudioMem.msg_sel_focus = hit_i;
+                  StudioMem.msg_sel_dragging = 1;
+                }
+                StudioMem.last_msg_click_tick = tick;
+                StudioMem.last_msg_click_ptr = text_ptr;
+                StudioMem.last_msg_click_idx = hit_i;
+                StudioMem.sel_anchor = StudioMem.cursor_pos;
+                feed_text_clicked = true;
+              }
             }
           }
           let ms0 = if StudioMem.msg_sel_ptr == text_ptr { min_i64(StudioMem.msg_sel_anchor, StudioMem.msg_sel_focus) } else { 0 };

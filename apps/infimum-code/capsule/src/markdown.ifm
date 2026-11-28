@@ -17,6 +17,10 @@ pub fn layout_md_ptr(
   md_layout(mode, mx, my, x, y, max_w, ptr, MAX_MSG_CHARS, body_sz, line_h, th, clip, vis_y0, vis_y1, sel_lo_i, sel_hi_i)
 }
 
+pub fn find_file_ref_at(ptr: i64, hit_idx: i64, out_buf: i64) -[Mem]-> i64 {
+  md_find_file_ref_at(ptr, hit_idx, out_buf)
+}
+
 test "markdown table layout and hit-test work" {
   let b = StudioMem::http_body_tmp;
   buf_set_str(b, 64, "|A|B|\n|-|-|\n|1|2|");
@@ -26,4 +30,20 @@ test "markdown table layout and hit-test work" {
   assert(idx_top == 0);
   let idx_mid = layout_md_ptr(1, 16, 10, 0, 0, 400, b, 14, 20, 0, 0, 0, 400, 0, 0);
   assert(idx_mid >= 1 && idx_mid <= 5);
+}
+
+test "markdown file:line reference parsing works" {
+  let b = StudioMem::http_body_tmp;
+  let out = StudioMem::link_path_tmp;
+  buf_set_str(b, 128, "See `tools/mod.rs:65` and (modals.ifm:836-849) not https://a.b:8080 or 12:30");
+  let ln1 = find_file_ref_at(b, 10, out);
+  assert(ln1 == 65);
+  assert(buf_len(out, 512) == 12);
+  let ln2 = find_file_ref_at(b, 32, out);
+  assert(ln2 == 836);
+  assert(buf_len(out, 512) == 10);
+  let ln3 = find_file_ref_at(b, 58, out);
+  assert(ln3 == 0);
+  let ln4 = find_file_ref_at(b, 73, out);
+  assert(ln4 == 0);
 }

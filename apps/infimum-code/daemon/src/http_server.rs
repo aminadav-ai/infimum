@@ -13,7 +13,7 @@ use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -596,51 +596,16 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
                     .join("\n")
             })
             .unwrap_or_default(),
-        ("POST", "/files/open") | ("POST", "/git/diff") => {
-            let total = v.get("total_lines").and_then(|x| x.as_u64()).unwrap_or(1);
-            let ws = v.get("win_start").and_then(|x| x.as_u64()).unwrap_or(0);
-            let wc = v.get("win_count").and_then(|x| x.as_u64()).unwrap_or(0);
-            let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
-            format!("{total} {ws} {wc}\n{content}")
+        ("POST", crate::bridge_gen::ENDPOINT_FILES_OPEN)
+        | ("POST", crate::bridge_gen::ENDPOINT_GIT_DIFF) => {
+            crate::bridge_gen::FileWindowRespWire::from_json(v).to_ifm_wire()
         }
-        ("GET", "/git/status") | ("POST", "/git/status") => {
-            let files = v
-                .get("files")
-                .and_then(|x| x.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let mut out = format!("{}\n", files.len());
-            for item in &files {
-                let st = item.get("status").and_then(|x| x.as_str()).unwrap_or("M");
-                let add = item.get("added").and_then(|x| x.as_u64()).unwrap_or(0);
-                let del = item.get("deleted").and_then(|x| x.as_u64()).unwrap_or(0);
-                let path = item.get("path").and_then(|x| x.as_str()).unwrap_or("");
-                out.push_str(&format!("{st}\t{add}\t{del}\t{path}\n"));
-            }
-            out
+        ("GET", crate::bridge_gen::ENDPOINT_GIT_STATUS)
+        | ("POST", crate::bridge_gen::ENDPOINT_GIT_STATUS) => {
+            crate::bridge_gen::GitStatusRespWire::from_json(v).to_ifm_wire()
         }
-        ("GET", "/agent/approval") => {
-            let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-            if id == 0 {
-                "0\n".to_string()
-            } else {
-                let title = v
-                    .get("title")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .replace('\n', " ");
-                let cmd = v
-                    .get("command")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .replace('\n', " ");
-                let risk = v
-                    .get("risk")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .replace('\n', " ");
-                format!("{id}\n{title}\n{cmd}\n{risk}\n")
-            }
+        ("GET", crate::bridge_gen::ENDPOINT_AGENT_APPROVAL) => {
+            crate::bridge_gen::ApprovalPromptWire::from_json(v).to_ifm_wire()
         }
         ("GET", "/keys/status") | ("POST", "/keys/save") => v
             .get("mask")
@@ -676,7 +641,8 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
                 .and_then(|a| a.as_array())
                 .map(|a| a.as_slice())
                 .unwrap_or(&[]);
-            let (tl_n, tl_joined) = format_timeline_within_budget(tl, char_len + 48);
+            let (tl_n, tl_joined) =
+                crate::bridge_gen::format_timeline_within_budget(tl, char_len + 48);
             format!("{role} {tl_n} {char_len} {imgs_n}\n{tl_joined}\n{text}")
         }
         ("GET", "/settings") => {
@@ -704,67 +670,104 @@ fn format_ifm_payload(method: &str, path: &str, v: &Value) -> String {
                 "0".to_string()
             }
         }
-        ("GET", "/agent/poll") => {
-            let st = v.get("status").and_then(|x| x.as_i64()).unwrap_or(0);
-            if st == 0 {
-                return "0".to_string();
-            }
-            let tl = v
-                .get("timeline_words")
-                .and_then(|a| a.as_array())
-                .map(|a| a.as_slice())
-                .unwrap_or(&[]);
-            if st == 1 {
-                let el = v.get("elapsed_tenths").and_then(|x| x.as_i64()).unwrap_or(0);
-                let kil = v.get("killing").and_then(|x| x.as_i64()).unwrap_or(0);
-                let approval_id = v.get("approval_id").and_then(|x| x.as_u64()).unwrap_or(0);
-                let line = v
-                    .get("status_line")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .replace('\n', " ");
-                let (tl_n, tl_joined) =
-                    format_timeline_within_budget(tl, line.chars().count() + 80);
-                format!("1 {el} {kil} {tl_n} {approval_id}\n{line}\n{tl_joined}")
-            } else {
-                let el = v.get("elapsed_tenths").and_then(|x| x.as_i64()).unwrap_or(0);
-                let cm = v.get("cost_milli_ils").and_then(|x| x.as_i64()).unwrap_or(0);
-                let tok = v.get("total_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
-                let hdr = v
-                    .get("header")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .replace('\n', " ");
-                let reply = v.get("reply").and_then(|s| s.as_str()).unwrap_or("");
-                let (tl_n, tl_joined) = format_timeline_within_budget(
-                    tl,
-                    hdr.chars().count() + reply.chars().count() + 64,
-                );
-                format!("2 {el} {cm} {tok} {tl_n}\n{hdr}\n{tl_joined}\n{reply}")
-            }
+        ("GET", crate::bridge_gen::ENDPOINT_AGENT_POLL) => {
+            crate::bridge_gen::AgentPollRespWire::from_json(v).to_ifm_wire()
         }
         _ => v.to_string(),
     }
 }
 
-/// Fit `timeline_words` into the remaining 65,000-char capsule HTTP response buffer budget
-/// without EVER truncating the message/reply text.
-fn format_timeline_within_budget(tl: &[Value], reserved_chars: usize) -> (usize, String) {
-    const MAX_HTTP_RESP_CHARS: usize = 65_000;
-    if tl.is_empty() || reserved_chars + 64 >= MAX_HTTP_RESP_CHARS {
-        return (0, String::new());
+/// Resolve a workspace-relative path, with safe suffix/basename fallback inside `ws_canon`
+/// so clickable `file:line` references like `modals.ifm:836` or `tools/mod.rs:65` open cleanly.
+pub(crate) fn resolve_workspace_file(
+    ws_canon: &Path,
+    rel_file: &str,
+) -> Result<PathBuf, (u16, &'static str, &'static str)> {
+    let mut clean = rel_file.trim().replace('\\', "/");
+    while let Some(rest) = clean.strip_prefix("./") {
+        clean = rest.to_string();
     }
-    let budget = MAX_HTTP_RESP_CHARS - reserved_chars - 64;
-    let nums: Vec<String> = tl
-        .iter()
-        .filter_map(|w| w.as_i64().map(|n| n.to_string()))
-        .collect();
-    let joined = nums.join(" ");
-    if joined.len() <= budget {
-        (nums.len(), joined)
-    } else {
-        (0, String::new())
+    clean = clean.trim_start_matches('/').to_string();
+    if clean.is_empty() {
+        return Err((400, "Bad Request", "missing_project_or_file"));
     }
+    for comp in Path::new(&clean).components() {
+        if matches!(comp, std::path::Component::ParentDir | std::path::Component::RootDir) {
+            return Err((403, "Forbidden", "file_outside_workspace"));
+        }
+    }
+
+    let direct = ws_canon.join(&clean);
+    if let Ok(canon) = fs::canonicalize(&direct) {
+        if !canon.starts_with(ws_canon) || !canon.is_file() {
+            return Err((403, "Forbidden", "file_outside_workspace"));
+        }
+        return Ok(canon);
+    }
+
+    // Fallback: bounded walk inside workspace for suffix/basename matches
+    let suffix = format!("/{clean}");
+    let mut stack: Vec<(PathBuf, usize)> = vec![(ws_canon.to_path_buf(), 0)];
+    let mut visited: usize = 0;
+    let mut best: Option<(usize, String, PathBuf)> = None;
+
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 8 || visited >= 8000 {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited >= 8000 {
+                break;
+            }
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_s = name.to_string_lossy();
+            if ft.is_dir() {
+                if matches!(
+                    name_s.as_ref(),
+                    "target" | "node_modules" | ".git" | ".cargo" | "dist" | "build" | "__pycache__" | ".venv" | ".next"
+                ) {
+                    continue;
+                }
+                stack.push((path, depth + 1));
+            } else if ft.is_file() {
+                if let Ok(rel) = path.strip_prefix(ws_canon) {
+                    let rel_s = rel.to_string_lossy().replace('\\', "/");
+                    if rel_s == clean || rel_s.ends_with(&suffix) {
+                        let score = rel_s.len();
+                        let replace = match &best {
+                            None => true,
+                            Some((best_len, best_rel, _)) => {
+                                score < *best_len || (score == *best_len && rel_s < *best_rel)
+                            }
+                        };
+                        if replace {
+                            best = Some((score, rel_s, path));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some((_, _, found)) = best {
+        if let Ok(canon) = fs::canonicalize(&found) {
+            if canon.starts_with(ws_canon) && canon.is_file() {
+                return Ok(canon);
+            }
+        }
+    }
+    Err((404, "Not Found", "file_not_found"))
 }
 
 pub fn handle_request(
@@ -829,32 +832,18 @@ pub fn handle_request(
                 let idx = text.trim().parse::<u64>().unwrap_or(0);
                 json!({ "index": idx })
             }
-            ("POST", "/files/open") | ("POST", "/git/diff") => {
-                let mut lines = text.splitn(3, '\n');
-                let proj = lines.next().unwrap_or("").trim();
-                let file = lines.next().unwrap_or("").trim();
-                let mut nums = lines.next().unwrap_or("").split_whitespace();
-                let start_line = nums.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-                let max_lines = nums.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(250);
-                json!({
-                    "project": proj,
-                    "file": file,
-                    "start_line": start_line,
-                    "max_lines": max_lines,
-                })
+            ("POST", crate::bridge_gen::ENDPOINT_FILES_OPEN)
+            | ("POST", crate::bridge_gen::ENDPOINT_GIT_DIFF) => {
+                crate::bridge_gen::FileWindowReq::from_ifm_wire(&text).to_json()
             }
-            ("POST", "/apps/play_project") | ("POST", "/git/status") => {
-                json!({ "project": text.trim() })
+            ("POST", "/apps/play_project") => json!({ "project": text.trim() }),
+            ("POST", crate::bridge_gen::ENDPOINT_GIT_STATUS) => {
+                crate::bridge_gen::GitStatusReq::from_ifm_wire(&text).to_json()
             }
-            ("POST", "/agent/approval") => {
-                let mut it = text.split_whitespace();
-                let id = it.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-                let decision = it.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-                let allow = decision != 0;
-                let always = decision == crate::bridge_gen::APPROVAL_DECISION_ALLOW_ALWAYS;
-                json!({ "id": id, "allow": allow, "always": always })
+            ("POST", crate::bridge_gen::ENDPOINT_AGENT_APPROVAL) => {
+                crate::bridge_gen::ApprovalDecideReq::from_ifm_wire(&text).to_json()
             }
-            ("PUT", "/settings") => {
+            ("PUT", crate::bridge_gen::ENDPOINT_SETTINGS) => {
                 let prev = agent::load_native_settings().unwrap_or_default();
                 crate::bridge_gen::NativeSettings::from_ifm_wire(&text, prev).to_json()
             }
@@ -972,13 +961,12 @@ pub fn handle_request(
             let Ok(ws_canon) = fs::canonicalize(&ws) else {
                 return (404, "Not Found", json!({ "ok": false, "error": "workspace_not_found" }));
             };
-            let candidate = ws_canon.join(rel_file);
-            let Ok(file_canon) = fs::canonicalize(&candidate) else {
-                return (404, "Not Found", json!({ "ok": false, "error": "file_not_found" }));
+            let file_canon = match resolve_workspace_file(&ws_canon, rel_file) {
+                Ok(p) => p,
+                Err((code, status, err)) => {
+                    return (code, status, json!({ "ok": false, "error": err }));
+                }
             };
-            if !file_canon.starts_with(&ws_canon) || !file_canon.is_file() {
-                return (403, "Forbidden", json!({ "ok": false, "error": "file_outside_workspace" }));
-            }
             let start_line = body_json
                 .get("start_line")
                 .and_then(|v| v.as_u64())

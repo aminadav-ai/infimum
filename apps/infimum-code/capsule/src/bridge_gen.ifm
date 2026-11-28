@@ -6,7 +6,7 @@ use "abi.ifm";
 use "primitives.ifm";
 use "std/buf.ifm";
 
-pub const BRIDGE_SCHEMA_VERSION: i64 = 1;
+pub const BRIDGE_SCHEMA_VERSION: i64 = 2;
 pub const SETTINGS_WIRE_FIELD_COUNT: i64 = 7;
 pub const APPROVAL_DECISION_DENY: i64 = 0;
 pub const APPROVAL_DECISION_ALLOW: i64 = 1;
@@ -14,6 +14,12 @@ pub const APPROVAL_DECISION_ALLOW_ALWAYS: i64 = 2;
 pub const SIDE_TAB_CONVS: i64 = 0;
 pub const SIDE_TAB_FILES: i64 = 1;
 pub const SIDE_TAB_DIFF: i64 = 2;
+pub const POLL_STATUS_IDLE: i64 = 0;
+pub const POLL_STATUS_RUNNING: i64 = 1;
+pub const POLL_STATUS_DONE: i64 = 2;
+pub const GIT_STATUS_MAX_ENTRIES: i64 = 64;
+pub const FILE_WINDOW_MAX_LINES: i64 = 400;
+pub const HTTP_RESP_MAX_CHARS: i64 = 65000;
 
 fn bridge_skip_ws(buf: i64) -[Mem]-> unit {
   let n = buf_len(buf, 65536);
@@ -52,6 +58,61 @@ fn bridge_parse_i64(buf: i64) -[Mem]-> i64 {
   if neg { 0 - acc } else { acc }
 }
 
+fn bridge_skip_to_next_line(buf: i64) -[Mem]-> unit {
+  let n = buf_len(buf, 65536);
+  let mut p = StudioMem.http_key_tmp[0];
+  while p < n max 4096 {
+    let ch = buf_get_cp(buf, p);
+    p += 1;
+    if ch == '\n' {
+      break;
+    }
+  }
+  StudioMem.http_key_tmp[0] = p;
+}
+
+fn bridge_parse_line_into(buf: i64, dst: i64, max_cap: i64) -[Mem]-> unit {
+  let n = buf_len(buf, 65536);
+  let mut p = StudioMem.http_key_tmp[0];
+  let mut w = 0;
+  while p < n max 4096 {
+    let ch = buf_get_cp(buf, p);
+    p += 1;
+    if ch == '\n' {
+      break;
+    }
+    if ch != '\r' && w < max_cap {
+      buf_set_cp(dst, w, ch);
+      w += 1;
+    }
+  }
+  buf_set_len(dst, w);
+  StudioMem.http_key_tmp[0] = p;
+}
+
+fn bridge_copy_slice(dst: i64, max_cap: i64, src: i64, start: i64, count: i64) -[Mem]-> unit {
+  let slen = buf_len(src, 65536);
+  let actual = clamp_i64(count, 0, max_cap);
+  let mut written = 0;
+  for i in 0..actual max 65500 {
+    let idx = start + i;
+    if idx >= 0 && idx < slen {
+      buf_set_cp(dst, written, buf_get_cp(src, idx));
+      written += 1;
+    }
+  }
+  buf_set_len(dst, written);
+}
+
+fn bridge_parse_timeline_words(buf: i64, count: i64) -[Mem]-> unit {
+  let capped = clamp_i64(count, 0, LIVE_TIMELINE_MAX_WORDS);
+  for i in 0..capped max 9000 {
+    StudioMem.live_timeline_buf[i] = bridge_parse_i64(buf);
+  }
+  StudioMem.live_timeline_words = capped;
+  bridge_skip_to_next_line(buf);
+}
+
 // Decode GET /settings?format=ifm payload directly into StudioMem fields.
 // Returns 1 if persisted settings were found, 0 otherwise.
 pub fn bridge_settings_decode(resp_buf: i64) -[Mem]-> i64 {
@@ -87,4 +148,141 @@ pub fn bridge_settings_encode(dst_buf: i64) -[Mem]-> unit {
   buf_push_int(dst_buf, 128, StudioMem.confirm_external_mutations);
   buf_push_cp(dst_buf, 128, ' ');
   buf_push_int(dst_buf, 128, StudioMem.turbo_mode);
+}
+
+// Decode GET /agent/approval?format=ifm payload directly into StudioMem.
+pub fn bridge_approval_prompt_decode(resp_buf: i64) -[Mem]-> i64 {
+  StudioMem.http_key_tmp[0] = 0;
+  let id = bridge_parse_i64(resp_buf);
+  bridge_skip_to_next_line(resp_buf);
+  if id > 0 {
+    bridge_parse_line_into(resp_buf, StudioMem::approval_title_buf, 250);
+    bridge_parse_line_into(resp_buf, StudioMem::approval_cmd_buf, 500);
+    bridge_parse_line_into(resp_buf, StudioMem::approval_risk_buf, 250);
+    StudioMem.approval_id = id;
+    StudioMem.approval_loaded_id = id;
+    1
+  } else {
+    StudioMem.approval_id = 0;
+    StudioMem.approval_loaded_id = 0;
+    0
+  }
+}
+
+// Encode POST /agent/approval?format=ifm decision body.
+pub fn bridge_approval_decide_encode(body_buf: i64, id: i64, decision: i64) -[Mem]-> unit {
+  buf_clear(body_buf);
+  buf_push_int(body_buf, 128, id);
+  buf_push_cp(body_buf, 128, ' ');
+  buf_push_int(body_buf, 128, decision);
+}
+
+// Decode POST /git/status?format=ifm into StudioMem diff arrays.
+pub fn bridge_git_status_decode(resp_buf: i64) -[Mem]-> i64 {
+  StudioMem.http_key_tmp[0] = 0;
+  let count = clamp_i64(bridge_parse_i64(resp_buf), 0, 64);
+  bridge_skip_to_next_line(resp_buf);
+  let n = buf_len(resp_buf, 65536);
+  for i in 0..count max 64 {
+    let mut p = StudioMem.http_key_tmp[0];
+    let mut st_ch = 'M';
+    if p < n {
+      st_ch = buf_get_cp(resp_buf, p);
+      p += 1;
+    }
+    if p < n && buf_get_cp(resp_buf, p) == '\t' {
+      p += 1;
+    }
+    StudioMem.http_key_tmp[0] = p;
+    let added = clamp_i64(bridge_parse_i64(resp_buf), 0, 999999);
+    let deleted = clamp_i64(bridge_parse_i64(resp_buf), 0, 999999);
+    let mut p2 = StudioMem.http_key_tmp[0];
+    if p2 < n && buf_get_cp(resp_buf, p2) == '\t' {
+      p2 += 1;
+    }
+    StudioMem.http_key_tmp[0] = p2;
+    let dst = StudioMem::diff_path_pool + i * 256;
+    bridge_parse_line_into(resp_buf, dst, 250);
+    StudioMem.diff_status_arr[i] = st_ch;
+    StudioMem.diff_added_arr[i] = added;
+    StudioMem.diff_deleted_arr[i] = deleted;
+  }
+  StudioMem.diff_count = count;
+  count
+}
+
+// Encode POST /files/open or POST /git/diff request body.
+pub fn bridge_file_window_encode(
+  body_buf: i64,
+  proj_ptr: i64, proj_off: i64, proj_len: i64,
+  file_ptr: i64, file_off: i64, file_len: i64,
+  start_line: i64, max_lines: i64
+) -[Mem]-> unit {
+  buf_clear(body_buf);
+  for i in 0..proj_len max 512 {
+    buf_push_cp(body_buf, 8192, buf_get_cp(proj_ptr, proj_off + i));
+  }
+  buf_push_cp(body_buf, 8192, '\n');
+  for i in 0..file_len max 512 {
+    buf_push_cp(body_buf, 8192, buf_get_cp(file_ptr, file_off + i));
+  }
+  buf_push_cp(body_buf, 8192, '\n');
+  buf_push_int(body_buf, 8192, max_i64(0, start_line));
+  buf_push_cp(body_buf, 8192, ' ');
+  buf_push_int(body_buf, 8192, clamp_i64(max_lines, 50, 400));
+}
+
+// Decode POST /files/open or POST /git/diff response into StudioMem.
+pub fn bridge_file_window_decode(resp_buf: i64) -[Mem]-> i64 {
+  StudioMem.http_key_tmp[0] = 0;
+  let total_lines = clamp_i64(bridge_parse_i64(resp_buf), 1, 2000000);
+  let win_start = clamp_i64(bridge_parse_i64(resp_buf), 0, 2000000);
+  let win_count = clamp_i64(bridge_parse_i64(resp_buf), 0, 2000);
+  bridge_skip_to_next_line(resp_buf);
+  let p = StudioMem.http_key_tmp[0];
+  let rlen = buf_len(resp_buf, 65536);
+  let avail = max_i64(0, rlen - p);
+  bridge_copy_slice(StudioMem::file_view_buf, 65000, resp_buf, p, avail);
+  StudioMem.file_view_lines = total_lines;
+  StudioMem.file_view_win_start = win_start;
+  StudioMem.file_view_win_count = win_count;
+  1
+}
+
+// Decode GET /agent/poll?format=ifm payload into StudioMem + status/reply buffers.
+pub fn bridge_agent_poll_decode(resp_buf: i64, reply_ptr: i64, status_ptr: i64) -[Mem]-> i64 {
+  StudioMem.http_key_tmp[0] = 0;
+  let status = bridge_parse_i64(resp_buf);
+  if status == POLL_STATUS_RUNNING {
+    StudioMem.async_elapsed_tenths = bridge_parse_i64(resp_buf);
+    StudioMem.live_cmd_killing = bridge_parse_i64(resp_buf);
+    let tl_n = bridge_parse_i64(resp_buf);
+    let appr_id = bridge_parse_i64(resp_buf);
+    StudioMem.approval_id = appr_id;
+    if appr_id == 0 {
+      StudioMem.approval_loaded_id = 0;
+    }
+    bridge_skip_to_next_line(resp_buf);
+    bridge_parse_line_into(resp_buf, status_ptr, 250);
+    bridge_parse_timeline_words(resp_buf, tl_n);
+    POLL_STATUS_RUNNING
+  } else if status == POLL_STATUS_DONE {
+    StudioMem.approval_id = 0;
+    StudioMem.approval_loaded_id = 0;
+    StudioMem.live_cmd_killing = 0;
+    StudioMem.async_elapsed_tenths = bridge_parse_i64(resp_buf);
+    StudioMem.async_cost_milli_ils = bridge_parse_i64(resp_buf);
+    StudioMem.async_total_tokens = bridge_parse_i64(resp_buf);
+    let tl_n = bridge_parse_i64(resp_buf);
+    bridge_skip_to_next_line(resp_buf);
+    bridge_parse_line_into(resp_buf, StudioMem::active_hdr_buf, 250);
+    bridge_parse_timeline_words(resp_buf, tl_n);
+    let p = StudioMem.http_key_tmp[0];
+    let rlen = buf_len(resp_buf, 65536);
+    let avail = max_i64(0, rlen - p);
+    bridge_copy_slice(reply_ptr, 32700, resp_buf, p, avail);
+    POLL_STATUS_DONE
+  } else {
+    POLL_STATUS_IDLE
+  }
 }
